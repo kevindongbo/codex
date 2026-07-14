@@ -1,0 +1,29 @@
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+
+from . import views
+
+router = DefaultRouter()
+router.register("organizations", views.OrganizationViewSet, basename="organization")
+router.register("memberships", views.MembershipViewSet, basename="membership")
+router.register("warehouses", views.WarehouseViewSet, basename="warehouse")
+router.register("products", views.ProductViewSet, basename="product")
+router.register("product-images", views.ProductImageViewSet, basename="product-image")
+router.register("skus", views.SKUViewSet, basename="sku")
+router.register("suppliers", views.SupplierViewSet, basename="supplier")
+router.register("purchase-orders", views.PurchaseOrderViewSet, basename="purchase-order")
+router.register("receipts", views.ReceiptViewSet, basename="receipt")
+router.register("stock-balances", views.StockBalanceViewSet, basename="stock-balance")
+router.register("stock-ledger", views.StockLedgerViewSet, basename="stock-ledger")
+router.register("orders", views.SalesOrderViewSet, basename="order")
+router.register("shipments", views.ShipmentViewSet, basename="shipment")
+router.register("returns", views.ReturnOrderViewSet, basename="return")
+router.register("competitors", views.CompetitorProductViewSet, basename="competitor")
+router.register("competitor-snapshots", views.CompetitorSnapshotViewSet, basename="competitor-snapshot")
+router.register("audit-logs", views.AuditLogViewSet, basename="audit-log")
+
+urlpatterns = [
+    path("health/", views.health, name="health"),
+    path("auth/me/", views.me, name="me"),
+    path("", include(router.urls)),
+]
