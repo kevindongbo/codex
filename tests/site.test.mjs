@@ -5,23 +5,40 @@ import worker from "../dist/server/index.js";
 const fetchPath = (path, method = "GET") =>
   worker.fetch(new Request(`https://example.test${path}`, { method }));
 
-test("serves the monitoring dashboard", async () => {
+test("serves the Dongbo cross-border ERP shell", async () => {
   const response = await fetchPath("/");
   const html = await response.text();
 
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type"), /^text\/html/);
-  assert.match(html, /TikTok/);
-  assert.match(html, /styles\.css/);
-  assert.match(html, /app\.js/);
-  assert.match(html, /id="productImageUrl"/);
-  assert.match(html, /id="productImageFile"/);
   assert.match(html, /东铂跨境/);
-  assert.match(html, /id="warehouseRows"/);
-  assert.match(html, /id="productCost"/);
+  assert.match(html, /商品中心/);
+  assert.match(html, /仓配中心/);
+  assert.match(html, /竞品监控/);
+  assert.doesNotMatch(html, />\s*总览\s*</);
+  assert.match(html, /data-module="products"/);
+  assert.match(html, /data-module="warehouse"/);
+  assert.match(html, /data-module="competitors"/);
+  assert.match(html, /data-warehouse-tab="purchase"/);
+  assert.match(html, /data-warehouse-tab="inventory"/);
+  assert.match(html, /data-warehouse-tab="orders"/);
 });
 
-test("serves application assets and rejects unknown routes", async () => {
+test("contains product, warehouse, order and monitoring workflows", async () => {
+  const html = await (await fetchPath("/index.html")).text();
+  const requiredIds = [
+    "productRows", "productCost", "productImageUrl", "productImageFile",
+    "purchaseRows", "purchaseLineList", "receiveForm", "warehouseRows",
+    "movementRows", "orderRows", "orderLineList", "returnForm", "competitorRows",
+    "historyRows", "trendChart", "changeList",
+  ];
+
+  requiredIds.forEach((id) => assert.match(html, new RegExp(`id="${id}"`)));
+  const ids = [...html.matchAll(/id="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(new Set(ids).size, ids.length, "HTML ids must be unique");
+});
+
+test("serves application assets with the versioned warehouse model", async () => {
   const [script, stylesheet, missing] = await Promise.all([
     fetchPath("/app.js"),
     fetchPath("/styles.css"),
@@ -30,12 +47,27 @@ test("serves application assets and rejects unknown routes", async () => {
 
   assert.equal(script.status, 200);
   const scriptText = await script.text();
+  assert.match(scriptText, /STATE_VERSION = 5/);
   assert.match(scriptText, /localStorage/);
+  assert.match(scriptText, /migrateLegacy/);
   assert.match(scriptText, /compressProductImage/);
-  assert.match(scriptText, /image_url/);
-  assert.match(scriptText, /inTransit/);
-  assert.match(scriptText, /stockMovements/);
+  assert.match(scriptText, /purchaseOrders/);
+  assert.match(scriptText, /inventoryBalances/);
+  assert.match(scriptText, /inventoryMovements/);
+  assert.match(scriptText, /reservations/);
+  assert.match(scriptText, /receivePurchaseOrder/);
+  assert.match(scriptText, /reserveOrder/);
+  assert.match(scriptText, /shipOrder/);
+  assert.match(scriptText, /receiveSalesReturn/);
+  assert.match(scriptText, /reserved > balance\.onHand/);
   assert.equal(stylesheet.status, 200);
   assert.match(stylesheet.headers.get("content-type"), /^text\/css/);
+  assert.match(await stylesheet.text(), /\.primary-nav/);
   assert.equal(missing.status, 404);
+});
+
+test("HEAD requests return headers without a response body", async () => {
+  const response = await fetchPath("/", "HEAD");
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "");
 });

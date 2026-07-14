@@ -3,217 +3,291 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="东铂跨境：竞品公开数据监控与电商仓库库存管理。" />
-  <title>东铂跨境 · 竞品监控与仓库管理</title>
+  <meta name="description" content="东铂跨境：商品、采购、仓储、订单与竞品监控一体化运营工作台。" />
+  <title>东铂跨境 · 轻量跨境 ERP</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <a class="brand" href="#top" aria-label="东铂跨境首页">
-        <span class="brand-mark"><i></i><i></i><i></i></span>
-        <span>东铂<b>跨境</b></span>
-      </a>
+  <header class="app-header">
+    <a class="brand" href="#products" aria-label="东铂跨境首页">
+      <span class="brand-mark"><i></i><i></i><i></i></span>
+      <span class="brand-copy"><strong>东铂跨境</strong><small>DONGBO COMMERCE</small></span>
+    </a>
 
-      <nav aria-label="主导航">
-        <a class="nav-item active" href="#dashboard"><span>▦</span>监控总览</a>
-        <a class="nav-item" href="#products"><span>◎</span>商品管理 <b id="navProductCount">0</b></a>
-        <a class="nav-item" href="#warehouse"><span>▤</span>仓库管理 <b id="navWarehouseCount">0</b></a>
-        <a class="nav-item" href="#history"><span>↗</span>快照历史</a>
-        <a class="nav-item" href="#changes"><span>◴</span>变化提醒 <b id="navAlertCount" class="warm">0</b></a>
+    <nav class="primary-nav" aria-label="主导航">
+      <button class="primary-nav-item active" data-module="products"><span>商品中心</span><b id="navProductCount">0</b></button>
+      <button class="primary-nav-item" data-module="warehouse"><span>仓配中心</span><b id="navWarehouseCount">0</b></button>
+      <button class="primary-nav-item" data-module="competitors"><span>竞品监控</span><b id="navAlertCount">0</b></button>
+    </nav>
+
+    <div class="header-tools">
+      <label class="global-search"><span>⌕</span><input id="globalSearch" type="search" placeholder="搜索商品、SKU 或链接" aria-label="全局搜索" /></label>
+      <span class="storage-state"><i></i>本机已保存</span>
+      <input id="csvFile" type="file" accept=".csv,text/csv" hidden />
+      <button class="button secondary header-secondary" id="importCsv">导入</button>
+      <button class="button primary" id="openProductModal">＋ 新增商品</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="module-page active" id="module-products" data-module-page="products">
+      <div class="page-heading">
+        <div>
+          <p class="eyebrow">PRODUCT MASTER</p>
+          <h1>商品中心</h1>
+          <p>所有商品只建立一次。本店 SKU 进入仓配中心，竞品进入监控中心。</p>
+        </div>
+        <div class="page-actions">
+          <button class="button secondary" id="downloadTemplate">下载模板</button>
+          <button class="button secondary" id="exportCsv">导出数据</button>
+          <button class="button primary" id="tableAddProduct">＋ 新增商品</button>
+        </div>
+      </div>
+
+      <section class="summary-strip" aria-label="商品统计">
+        <article><span>全部商品</span><strong id="productTotalMetric">0</strong><small>统一商品主档</small></article>
+        <article><span>本店 SKU</span><strong id="ownProductMetric">0</strong><small>已进入仓配中心</small></article>
+        <article><span>竞品商品</span><strong id="competitorProductMetric">0</strong><small>直接与间接竞品</small></article>
+        <article><span>需要补货</span><strong id="replenishmentMetric">0</strong><small>可用库存低于安全库存</small></article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-toolbar">
+          <div class="filter-group" role="group" aria-label="商品筛选">
+            <button class="filter-chip active" data-product-filter="all">全部</button>
+            <button class="filter-chip" data-product-filter="own">本店 SKU</button>
+            <button class="filter-chip" data-product-filter="direct">直接竞品</button>
+            <button class="filter-chip" data-product-filter="indirect">间接竞品</button>
+            <button class="filter-chip" data-product-filter="inactive">已停用</button>
+          </div>
+          <button class="button tiny danger-outline" id="clearAllData">清空本机数据</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>商品</th><th>类型</th><th>SKU</th><th>标准成本</th><th>在途</th><th>已在库</th><th>可用</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody id="productRows"></tbody>
+          </table>
+          <div class="empty-state" id="productEmpty"><span>◎</span><strong>还没有符合条件的商品</strong><p>新增本店 SKU 或竞品，商品图片、链接和成本会统一保存。</p><button class="button primary" id="emptyAddProduct">新增第一个商品</button></div>
+        </div>
+      </section>
+    </section>
+
+    <section class="module-page" id="module-warehouse" data-module-page="warehouse" hidden>
+      <div class="page-heading compact-heading">
+        <div>
+          <p class="eyebrow">FULFILLMENT CENTER</p>
+          <h1>仓配中心</h1>
+          <p>采购产生在途，收货转入在库，订单锁定并扣减库存。</p>
+        </div>
+      </div>
+
+      <section class="summary-strip warehouse-summary" aria-label="仓配指标">
+        <article><span>在途数量</span><strong id="warehouseTransitTotal">0</strong><small id="warehouseTransitFoot">0 张未完成采购单</small></article>
+        <article><span>已在库</span><strong id="warehouseInStockTotal">0</strong><small>实际物理库存</small></article>
+        <article><span>可用库存</span><strong id="warehouseAvailableTotal">0</strong><small id="warehouseReservedFoot">已锁定 0 件</small></article>
+        <article><span>待出库订单</span><strong id="warehousePendingOrderTotal">0</strong><small id="warehouseValueFoot">库存金额 ¥0.00</small></article>
+      </section>
+
+      <nav class="secondary-tabs" aria-label="仓配中心导航">
+        <button class="secondary-tab active" data-warehouse-tab="purchase">采购与在途 <b id="purchaseTabCount">0</b></button>
+        <button class="secondary-tab" data-warehouse-tab="inventory">库存管理 <b id="inventoryTabCount">0</b></button>
+        <button class="secondary-tab" data-warehouse-tab="orders">订单与出库 <b id="orderTabCount">0</b></button>
       </nav>
 
-      <div class="sidebar-guide">
-        <strong>东铂跨境工作台</strong>
-        <p>竞品监控与本店 SKU 库存分开管理，库存操作可追溯。</p>
-      </div>
-
-      <div class="profile">
-        <div class="avatar">YL</div>
-        <div><strong>东铂跨境</strong><span>当前数据保存在本机</span></div>
-      </div>
-    </aside>
-
-    <main id="top">
-      <header class="topbar">
-        <div class="crumb"><span>东铂跨境</span><em>/</em><strong>竞品与仓库中心</strong></div>
-        <div class="header-actions">
-          <span class="storage-state"><i></i>已自动保存</span>
-          <input id="csvFile" type="file" accept=".csv,text/csv" hidden />
-          <button class="button secondary" id="importCsv">导入 CSV</button>
-          <button class="button secondary" id="exportCsv">导出数据</button>
-          <button class="button primary" id="openProductModal">＋ 添加商品</button>
+      <section class="subpage active" data-warehouse-page="purchase">
+        <div class="subpage-heading">
+          <div><h2>采购与在途</h2><p>按采购单跟踪已下单、运输、部分收货和完成状态。</p></div>
+          <button class="button primary" id="openPurchaseModal">＋ 创建采购单</button>
         </div>
-      </header>
-
-      <section class="content" id="dashboard">
-        <section class="manual-banner">
-          <div class="banner-icon">✎</div>
-          <div><strong>现在使用稳定的手动录入模式</strong><p>复制 TikTok 买家前台看到的数据即可。无需等待安全检查，也不会访问任何卖家后台。</p></div>
-          <button class="text-button" id="downloadTemplate">下载 CSV 模板</button>
-        </section>
-
-        <div class="hero-row">
-          <div>
-            <p class="eyebrow">COMPETITOR PULSE / LOCAL DATA</p>
-            <h1>竞品与库存工作台</h1>
-            <p class="subhead" id="heroSummary">添加商品并录入第一次快照，建立监控基准。</p>
-          </div>
-          <div class="hero-controls">
-            <label>当前查看
-              <select id="activeProduct"></select>
-            </label>
-            <button class="button primary" id="openSnapshotModal">＋ 录入今日快照</button>
-          </div>
-        </div>
-
-        <section class="metric-grid" aria-label="核心指标">
-          <article class="metric-card accent-teal">
-            <div class="metric-label" id="salesMetricLabel">期间新增销量</div>
-            <div class="metric-value" id="salesMetric">—</div>
-            <div class="metric-foot" id="salesMetricFoot">需要至少两次快照</div>
-            <div class="metric-glyph">↗</div>
-          </article>
-          <article class="metric-card accent-amber">
-            <div class="metric-label">当前公开价格</div>
-            <div class="metric-value" id="priceMetric">—</div>
-            <div class="metric-foot" id="priceMetricFoot">等待录入</div>
-            <div class="metric-glyph">¥</div>
-          </article>
-          <article class="metric-card accent-blue">
-            <div class="metric-label">期间销量排名</div>
-            <div class="metric-value" id="rankMetric">—</div>
-            <div class="metric-foot" id="rankMetricFoot">需要可比较的数据</div>
-            <div class="metric-glyph">№</div>
-          </article>
-          <article class="metric-card accent-red">
-            <div class="metric-label">需要关注</div>
-            <div class="metric-value" id="alertMetric">0 <small>项</small></div>
-            <div class="metric-foot" id="alertMetricFoot">暂无异常变化</div>
-            <div class="metric-glyph">!</div>
-          </article>
-        </section>
-
-        <section class="dashboard-grid">
-          <article class="panel chart-panel">
-            <div class="panel-head">
-              <div><h2>趋势对比</h2><p id="chartSubtitle">以每次录入的公开数据为准</p></div>
-              <div class="chart-controls" role="group" aria-label="图表指标">
-                <button class="chart-tab active" data-metric="sales">新增销量</button>
-                <button class="chart-tab" data-metric="price">价格</button>
-                <button class="chart-tab" data-metric="reviews">评价数</button>
-              </div>
+        <section class="panel">
+          <div class="panel-toolbar">
+            <div class="filter-group" role="group" aria-label="采购单筛选">
+              <button class="filter-chip active" data-purchase-filter="open">进行中</button>
+              <button class="filter-chip" data-purchase-filter="overdue">已逾期</button>
+              <button class="filter-chip" data-purchase-filter="all">全部</button>
             </div>
-            <div class="chart-legend" id="chartLegend"></div>
-            <div class="canvas-wrap"><canvas id="trendChart" height="310" aria-label="商品趋势对比图"></canvas><div class="chart-empty" id="chartEmpty">录入更多快照后显示趋势</div></div>
-          </article>
-
-          <article class="panel changes-panel" id="changes">
-            <div class="panel-head"><div><h2>最近变化</h2><p>根据最近两次快照自动生成</p></div><span class="live-dot">LIVE</span></div>
-            <div class="change-list" id="changeList"></div>
-          </article>
-        </section>
-
-        <section class="panel products-panel" id="products">
-          <div class="panel-head">
-            <div><h2>商品管理</h2><p>本店商品可直接作为仓库 SKU；竞品仅用于公开数据监控</p></div>
-            <div class="panel-actions"><button class="button tiny secondary" id="clearAllData">清空全部</button><button class="button tiny primary" id="tableAddProduct">＋ 添加商品</button></div>
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>商品</th><th>类型</th><th>SKU</th><th>标准成本</th><th>最新快照</th><th>价格</th><th>累计销量</th><th>期间新增</th><th>评分 / 评价</th><th>操作</th></tr></thead>
-              <tbody id="productRows"></tbody>
+              <thead><tr><th>采购单</th><th>供应商</th><th>商品明细</th><th>采购 / 已收</th><th>在途</th><th>预计到货</th><th>采购金额</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="purchaseRows"></tbody>
             </table>
-            <div class="empty-state" id="productEmpty"><span>◎</span><strong>还没有商品</strong><p>先添加本店 SKU 或竞品；本店 SKU 可直接进入仓库管理。</p><button class="button primary" id="emptyAddProduct">添加第一个商品</button></div>
+            <div class="empty-state compact" id="purchaseEmpty"><p>还没有采购单。创建采购单后，在途数量会自动计算。</p></div>
           </div>
         </section>
+      </section>
 
-        <section class="panel warehouse-panel" id="warehouse">
-          <div class="panel-head">
-            <div><h2>仓库管理</h2><p>在途来自采购登记；确认收货后才转入在库。</p></div>
-            <div class="panel-actions"><button class="button tiny primary" id="openStockModal">＋ 登记库存变动</button></div>
-          </div>
-          <div class="warehouse-metrics" aria-label="仓库库存指标">
-            <div><span>仓库 SKU</span><strong id="warehouseSkuCount">0</strong></div>
-            <div><span>在途库存</span><strong id="warehouseTransitTotal">0</strong></div>
-            <div><span>已在库</span><strong id="warehouseInStockTotal">0</strong></div>
-            <div><span>在库成本金额</span><strong id="warehouseValueTotal">¥0.00</strong></div>
-          </div>
+      <section class="subpage" data-warehouse-page="inventory" hidden>
+        <div class="subpage-heading">
+          <div><h2>库存管理</h2><p>查看已在库、锁定、可用、安全库存和每一笔库存流水。</p></div>
+          <button class="button primary" id="openStockModal">＋ 库存调整</button>
+        </div>
+        <section class="panel inventory-panel">
           <div class="table-wrap">
             <table>
-              <thead><tr><th>仓库产品</th><th>SKU</th><th>标准成本</th><th>在途</th><th>已在库</th><th>可用</th><th>最近变动</th><th>操作</th></tr></thead>
+              <thead><tr><th>仓库商品</th><th>SKU</th><th>已在库</th><th>锁定</th><th>可用</th><th>安全库存</th><th>库存金额</th><th>状态</th><th>操作</th></tr></thead>
               <tbody id="warehouseRows"></tbody>
             </table>
-            <div class="empty-state compact" id="warehouseEmpty"><p>还没有本店 SKU。将商品类型设为“本店”后，它会自动出现在这里。</p></div>
+            <div class="empty-state compact" id="warehouseEmpty"><p>还没有本店 SKU。请先在商品中心添加本店商品。</p></div>
           </div>
         </section>
 
-        <section class="panel history-panel" id="history">
-          <div class="panel-head">
-            <div><h2>快照历史</h2><p>可筛选商品并删除误录的数据</p></div>
-            <select id="historyProduct"></select>
+        <section class="panel movement-panel">
+          <div class="panel-title"><div><h2>最近库存流水</h2><p>采购收货、订单出库、盘点调整和报损均会留痕。</p></div><select id="movementProduct"><option value="all">全部 SKU</option></select></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>时间</th><th>商品</th><th>类型</th><th>数量变化</th><th>变动后在库</th><th>关联单据</th><th>备注</th></tr></thead>
+              <tbody id="movementRows"></tbody>
+            </table>
+            <div class="empty-state compact" id="movementEmpty"><p>暂无库存流水。</p></div>
           </div>
+        </section>
+      </section>
+
+      <section class="subpage" data-warehouse-page="orders" hidden>
+        <div class="subpage-heading">
+          <div><h2>订单与出库</h2><p>订单创建后锁定库存，完成复核并出库后才扣减已在库。</p></div>
+          <button class="button primary" id="openOrderModal">＋ 创建订单</button>
+        </div>
+        <section class="panel">
+          <div class="panel-toolbar">
+            <div class="filter-group" role="group" aria-label="订单筛选">
+              <button class="filter-chip active" data-order-filter="open">待处理</button>
+              <button class="filter-chip" data-order-filter="shortage">库存不足</button>
+              <button class="filter-chip" data-order-filter="shipped">已出库</button>
+              <button class="filter-chip" data-order-filter="all">全部</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>订单号</th><th>平台 / 店铺</th><th>商品明细</th><th>数量</th><th>下单时间</th><th>物流单号</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="orderRows"></tbody>
+            </table>
+            <div class="empty-state compact" id="orderEmpty"><p>还没有订单。第一版支持手动创建多 SKU 订单。</p></div>
+          </div>
+        </section>
+      </section>
+    </section>
+
+    <section class="module-page" id="module-competitors" data-module-page="competitors" hidden>
+      <div class="page-heading compact-heading">
+        <div>
+          <p class="eyebrow">COMPETITOR INTELLIGENCE</p>
+          <h1>竞品监控</h1>
+          <p>竞品公开销量、价格和评价数据与真实仓库库存完全分开。</p>
+        </div>
+        <div class="page-actions"><button class="button primary" id="competitorAddProduct">＋ 添加竞品</button></div>
+      </div>
+
+      <nav class="secondary-tabs competitor-tabs" aria-label="竞品监控导航">
+        <button class="secondary-tab active" data-competitor-tab="products">竞品商品</button>
+        <button class="secondary-tab" data-competitor-tab="snapshots">数据快照</button>
+        <button class="secondary-tab" data-competitor-tab="trends">趋势对比</button>
+        <button class="secondary-tab" data-competitor-tab="alerts">变化提醒 <b id="competitorAlertCount">0</b></button>
+      </nav>
+
+      <section class="subpage active" data-competitor-page="products">
+        <div class="subpage-heading">
+          <div><h2>竞品商品</h2><p>直接竞品、间接竞品以及参与对比的本店商品。</p></div>
+          <button class="button primary" id="competitorTableAdd">＋ 添加竞品</button>
+        </div>
+        <section class="panel">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>商品</th><th>类型</th><th>最新快照</th><th>公开价格</th><th>累计销量</th><th>期间新增</th><th>评分 / 评价</th><th>操作</th></tr></thead>
+              <tbody id="competitorRows"></tbody>
+            </table>
+            <div class="empty-state compact" id="competitorEmpty"><p>还没有竞品。添加直接或间接竞品后即可开始记录。</p></div>
+          </div>
+        </section>
+      </section>
+
+      <section class="subpage" data-competitor-page="snapshots" hidden>
+        <div class="subpage-heading">
+          <div><h2>数据快照</h2><p>按时间保存公开数据，系统自动计算相邻快照变化。</p></div>
+          <div class="inline-actions"><select id="historyProduct"></select><button class="button primary" id="openSnapshotModal">＋ 录入快照</button></div>
+        </div>
+        <section class="panel">
           <div class="table-wrap">
             <table>
               <thead><tr><th>记录时间</th><th>商品</th><th>价格</th><th>累计销量</th><th>新增销量</th><th>评分</th><th>评价数</th><th>操作</th></tr></thead>
               <tbody id="historyRows"></tbody>
             </table>
-            <div class="empty-state compact" id="historyEmpty"><p>暂无快照记录</p></div>
+            <div class="empty-state compact" id="historyEmpty"><p>暂无快照记录。</p></div>
           </div>
         </section>
-
-        <footer>计算口径：期间新增销量 = 后一次公开累计销量 − 前一次公开累计销量。若累计销量下降，系统会标记为异常而不是负销量。</footer>
       </section>
-    </main>
-  </div>
+
+      <section class="subpage" data-competitor-page="trends" hidden>
+        <div class="trend-heading">
+          <div><h2>趋势对比</h2><p id="heroSummary">选择商品查看最近两次变化。</p></div>
+          <label>当前查看<select id="activeProduct"></select></label>
+        </div>
+        <section class="metric-grid" aria-label="竞品核心指标">
+          <article class="metric-card accent-teal"><span id="salesMetricLabel">期间新增销量</span><strong id="salesMetric">—</strong><small id="salesMetricFoot">需要至少两次快照</small></article>
+          <article class="metric-card accent-amber"><span>当前公开价格</span><strong id="priceMetric">—</strong><small id="priceMetricFoot">等待录入</small></article>
+          <article class="metric-card accent-blue"><span>期间销量排名</span><strong id="rankMetric">—</strong><small id="rankMetricFoot">需要可比较的数据</small></article>
+          <article class="metric-card accent-red"><span>需要关注</span><strong id="alertMetric">0</strong><small id="alertMetricFoot">暂无异常变化</small></article>
+        </section>
+        <section class="panel chart-panel">
+          <div class="panel-title"><div><h2>多商品趋势</h2><p id="chartSubtitle">以每次录入的公开数据为准</p></div><div class="chart-controls" role="group" aria-label="图表指标"><button class="chart-tab active" data-metric="sales">新增销量</button><button class="chart-tab" data-metric="price">价格</button><button class="chart-tab" data-metric="reviews">评价数</button></div></div>
+          <div class="chart-legend" id="chartLegend"></div>
+          <div class="canvas-wrap"><canvas id="trendChart" height="330" aria-label="商品趋势对比图"></canvas><div class="chart-empty" id="chartEmpty">录入更多快照后显示趋势</div></div>
+        </section>
+      </section>
+
+      <section class="subpage" data-competitor-page="alerts" hidden>
+        <div class="subpage-heading"><div><h2>变化提醒</h2><p>根据最近快照自动识别价格、销量、评价与更新异常。</p></div></div>
+        <section class="alert-grid" id="changeList"></section>
+      </section>
+    </section>
+  </main>
 
   <div class="modal-backdrop" id="productModal" aria-hidden="true">
     <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="productModalTitle">
       <button class="modal-close" data-close="productModal" aria-label="关闭">×</button>
       <p class="eyebrow">PRODUCT MASTER</p>
-      <h2 id="productModalTitle">添加商品</h2>
-      <p class="modal-intro">本店商品会自动成为仓库 SKU；商品链接、图片和标准成本用于识别与核算。</p>
+      <h2 id="productModalTitle">新增商品</h2>
+      <p class="modal-intro">商品只建立一次；类型决定它进入仓配中心还是竞品监控。</p>
       <form id="productForm">
         <input type="hidden" id="editProductId" />
         <div class="form-grid two">
           <label>商品名称 <span>*</span><input id="productName" required placeholder="例如：蝴蝶图案帆布托特包" /></label>
-          <label>SKU <span>*</span><input id="productSku" required placeholder="例如：DB-TOTE-001" /></label>
-          <label>店铺名称<input id="sellerName" placeholder="例如：Tas Inspirasi" /></label>
-          <label>监控类型 <span>*</span><select id="productKind" required><option value="own">本店</option><option value="direct" selected>直接竞品</option><option value="indirect">间接竞品</option></select></label>
+          <label>商品类型 <span>*</span><select id="productKind" required><option value="own">本店商品</option><option value="direct">直接竞品</option><option value="indirect">间接竞品</option></select></label>
+          <label class="own-field">SKU <span>*</span><input id="productSku" placeholder="例如：DB-TOTE-001" /></label>
+          <label>店铺名称<input id="sellerName" placeholder="例如：Dongbo MY" /></label>
           <label>市场<select id="productMarket"><option value="MY">马来西亚 MY</option><option value="US">美国 US</option><option value="GB">英国 GB</option><option value="SG">新加坡 SG</option><option value="TH">泰国 TH</option><option value="VN">越南 VN</option><option value="PH">菲律宾 PH</option><option value="ID">印度尼西亚 ID</option><option value="OTHER">其他</option></select></label>
-          <label>币种<select id="productCurrency"><option value="MYR">MYR · RM</option><option value="USD">USD · $</option><option value="GBP">GBP · £</option><option value="SGD">SGD · S$</option><option value="THB">THB · ฿</option><option value="VND">VND · ₫</option><option value="PHP">PHP · ₱</option><option value="IDR">IDR · Rp</option></select></label>
-          <label>标准采购成本 <span>*</span><input id="productCost" type="number" min="0" step="0.01" required placeholder="例如：18.50" /></label>
+          <label>币种<select id="productCurrency"><option value="CNY">CNY · ¥</option><option value="MYR">MYR · RM</option><option value="USD">USD · $</option><option value="GBP">GBP · £</option><option value="SGD">SGD · S$</option><option value="THB">THB · ฿</option><option value="VND">VND · ₫</option><option value="PHP">PHP · ₱</option><option value="IDR">IDR · Rp</option></select></label>
+          <label class="own-field">标准采购成本 <span>*</span><input id="productCost" type="number" min="0" step="0.01" placeholder="例如：18.50" /></label>
+          <label class="own-field">安全库存<input id="productSafetyStock" type="number" min="0" step="1" placeholder="例如：20" /></label>
+          <label class="own-field">供应商<input id="productSupplier" placeholder="例如：义乌供应商 A" /></label>
+          <label>商品状态<select id="productStatus"><option value="active">启用</option><option value="inactive">停用</option></select></label>
           <label class="full">商品链接 <span>*</span><input id="productUrl" type="url" required placeholder="https://www.tiktok.com/view/product/..." /></label>
+          <label class="full own-field">采购链接<input id="productPurchaseUrl" type="url" placeholder="https://detail.1688.com/..." /></label>
+          <label class="checkbox-field full own-field"><input id="productCompare" type="checkbox" /><span><strong>同时参与竞品对比</strong><small>开启后，本店商品也会出现在竞品监控中。</small></span></label>
           <div class="product-image-field full">
-            <span class="field-label">商品图片</span>
+            <span class="field-label">商品图片 <em>*</em></span>
             <div class="product-image-editor">
-              <div class="product-image-preview">
-                <img id="productImagePreview" alt="商品图片预览" hidden />
-                <span id="productImageEmpty">暂无图片</span>
-              </div>
+              <div class="product-image-preview"><img id="productImagePreview" alt="商品图片预览" hidden /><span id="productImageEmpty">暂无图片</span></div>
               <div class="product-image-controls">
                 <label>图片网址<input id="productImageUrl" type="url" placeholder="https://example.com/product.jpg" /></label>
                 <input id="productImageFile" type="file" accept="image/jpeg,image/png,image/webp" hidden />
-                <div class="image-button-row">
-                  <button class="button tiny secondary" id="chooseProductImage" type="button">从电脑选择</button>
-                  <button class="button tiny ghost" id="removeProductImage" type="button" disabled>移除图片</button>
-                </div>
-                <p class="image-help">每个商品必须有图片。可填写图片网址，或从电脑选择图片；本地图片仅保存在当前浏览器。</p>
+                <div class="image-button-row"><button class="button tiny secondary" id="chooseProductImage" type="button">从电脑选择</button><button class="button tiny ghost" id="removeProductImage" type="button" disabled>移除图片</button></div>
+                <p class="image-help">每个商品必须有图片。本地上传会自动压缩并保存在当前浏览器。</p>
               </div>
             </div>
           </div>
         </div>
-
         <div id="initialSnapshotFields">
-          <div class="form-section-title"><strong>第一次公开数据快照（可选）</strong><span>有竞品数据时再填写；仓库 SKU 无需填写</span></div>
+          <div class="form-section-title"><strong>首次公开数据快照（可选）</strong><span>竞品或参与对比的本店商品可填写</span></div>
           <div class="form-grid three">
             <label>记录时间<input id="firstSnapshotAt" type="datetime-local" /></label>
-            <label>当前价格<input id="firstPrice" type="number" min="0" step="0.01" placeholder="18.69" /></label>
-            <label>公开累计销量<input id="firstSold" type="number" min="0" step="1" placeholder="901" /></label>
-            <label>评分<input id="firstRating" type="number" min="0" max="5" step="0.1" placeholder="4.8" /></label>
-            <label>评价总数<input id="firstReviews" type="number" min="0" step="1" placeholder="56" /></label>
-            <label>1–2 星评价数<input id="firstLowReviews" type="number" min="0" step="1" placeholder="1" /></label>
-            <label>店铺评分<input id="firstShopRating" type="number" min="0" max="5" step="0.1" placeholder="可选" /></label>
+            <label>当前价格<input id="firstPrice" type="number" min="0" step="0.01" /></label>
+            <label>公开累计销量<input id="firstSold" type="number" min="0" step="1" /></label>
+            <label>评分<input id="firstRating" type="number" min="0" max="5" step="0.1" /></label>
+            <label>评价总数<input id="firstReviews" type="number" min="0" step="1" /></label>
+            <label>1–2 星评价数<input id="firstLowReviews" type="number" min="0" step="1" /></label>
+            <label>店铺评分<input id="firstShopRating" type="number" min="0" max="5" step="0.1" /></label>
           </div>
         </div>
         <div class="modal-actions"><button class="button secondary" type="button" data-close="productModal">取消</button><button class="button primary" type="submit" id="saveProductButton">保存商品</button></div>
@@ -221,22 +295,81 @@
     </section>
   </div>
 
+  <div class="modal-backdrop" id="purchaseModal" aria-hidden="true">
+    <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="purchaseModalTitle">
+      <button class="modal-close" data-close="purchaseModal" aria-label="关闭">×</button>
+      <p class="eyebrow">PURCHASE ORDER</p><h2 id="purchaseModalTitle">创建采购单</h2><p class="modal-intro">采购单保存后自动计入在途，确认收货后才转入已在库。</p>
+      <form id="purchaseForm">
+        <div class="form-grid three">
+          <label>采购单号 <span>*</span><input id="purchaseNumber" required /></label>
+          <label>供应商 <span>*</span><input id="purchaseSupplier" required /></label>
+          <label>状态 <span>*</span><select id="purchaseStatus"><option value="ordered">已下单</option><option value="transit">在途</option><option value="draft">草稿</option></select></label>
+          <label>下单日期 <span>*</span><input id="purchaseOrderedAt" type="date" required /></label>
+          <label>预计到货日 <span>*</span><input id="purchaseEta" type="date" required /></label>
+          <label>头程及其他费用<input id="purchaseExtraCost" type="number" min="0" step="0.01" value="0" /></label>
+          <label class="full">备注<input id="purchaseNote" maxlength="120" placeholder="例如：海运第一批，分两次到货" /></label>
+        </div>
+        <div class="line-builder">
+          <div class="form-section-title"><strong>采购商品明细</strong><span>一张采购单可包含多个 SKU</span></div>
+          <div class="line-entry four"><label>本店 SKU<select id="purchaseLineProduct"></select></label><label>采购数量<input id="purchaseLineQty" type="number" min="1" step="1" /></label><label>实际单价<input id="purchaseLineCost" type="number" min="0" step="0.01" /></label><button class="button secondary" id="addPurchaseLine" type="button">＋ 加入明细</button></div>
+          <div class="line-list" id="purchaseLineList"></div>
+        </div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="purchaseModal">取消</button><button class="button primary" type="submit">保存采购单</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="receiveModal" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="receiveModalTitle">
+      <button class="modal-close" data-close="receiveModal" aria-label="关闭">×</button>
+      <p class="eyebrow">RECEIVING</p><h2 id="receiveModalTitle">确认收货入库</h2><p class="modal-intro" id="receiveIntro">选择到货商品与数量。</p>
+      <form id="receiveForm">
+        <input id="receivePurchaseId" type="hidden" />
+        <label>采购商品 <span>*</span><select id="receiveLine" required></select></label>
+        <div class="form-grid two"><label>本次收货数量 <span>*</span><input id="receiveQty" type="number" min="1" step="1" required /></label><label>收货时间 <span>*</span><input id="receiveAt" type="datetime-local" required /></label><label class="full">备注<input id="receiveNote" maxlength="100" placeholder="例如：外箱轻微破损，数量无误" /></label></div>
+        <div class="last-value" id="receiveHint"></div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="receiveModal">取消</button><button class="button primary" type="submit">确认收货并入库</button></div>
+      </form>
+    </section>
+  </div>
+
   <div class="modal-backdrop" id="stockModal" aria-hidden="true">
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="stockModalTitle">
       <button class="modal-close" data-close="stockModal" aria-label="关闭">×</button>
-      <p class="eyebrow">WAREHOUSE MOVEMENT</p>
-      <h2 id="stockModalTitle">登记库存变动</h2>
-      <p class="modal-intro">库存以变动记录为准：在途登记、收货入库与出库都会留下记录。</p>
+      <p class="eyebrow">STOCK ADJUSTMENT</p><h2 id="stockModalTitle">库存调整</h2><p class="modal-intro">采购收货和订单出库请走对应单据；此处用于盘点、手动入库和报损。</p>
       <form id="stockForm">
-        <label>仓库产品 <span>*</span><select id="stockProduct" required></select></label>
+        <label>仓库商品 <span>*</span><select id="stockProduct" required></select></label>
         <div class="form-grid two">
-          <label>变动类型 <span>*</span><select id="stockOperation" required><option value="in_transit">采购在途</option><option value="receive">确认收货入库</option><option value="outbound">订单出库</option></select></label>
-          <label>数量 <span>*</span><input id="stockQuantity" type="number" min="1" step="1" required placeholder="例如：50" /></label>
+          <label>调整类型 <span>*</span><select id="stockOperation" required><option value="manual_in">手动入库</option><option value="adjust_add">盘盈增加</option><option value="adjust_sub">盘亏减少</option><option value="damage">报损出库</option></select></label>
+          <label>数量 <span>*</span><input id="stockQuantity" type="number" min="1" step="1" required /></label>
           <label>操作时间 <span>*</span><input id="stockAt" type="datetime-local" required /></label>
-          <label>备注<input id="stockNote" maxlength="100" placeholder="例如：采购单 PO-001" /></label>
+          <label>原因/备注 <span>*</span><input id="stockNote" required maxlength="100" placeholder="例如：月末盘点差异" /></label>
         </div>
         <div class="last-value" id="stockHint"></div>
-        <div class="modal-actions"><button class="button secondary" type="button" data-close="stockModal">取消</button><button class="button primary" type="submit">保存库存变动</button></div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="stockModal">取消</button><button class="button primary" type="submit">保存库存调整</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="orderModal" aria-hidden="true">
+    <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="orderModalTitle">
+      <button class="modal-close" data-close="orderModal" aria-label="关闭">×</button>
+      <p class="eyebrow">SALES ORDER</p><h2 id="orderModalTitle">创建订单</h2><p class="modal-intro">库存充足时自动锁定；库存不足的订单进入缺货状态。</p>
+      <form id="orderForm">
+        <div class="form-grid three">
+          <label>订单号 <span>*</span><input id="orderNumber" required /></label>
+          <label>平台 <span>*</span><select id="orderPlatform"><option>TikTok Shop</option><option>Shopee</option><option>Temu</option><option>Ozon</option><option>手工订单</option></select></label>
+          <label>店铺<input id="orderStore" placeholder="例如：Dongbo MY" /></label>
+          <label>下单时间 <span>*</span><input id="orderAt" type="datetime-local" required /></label>
+          <label>物流单号<input id="orderTracking" /></label>
+          <label>备注<input id="orderNote" maxlength="100" /></label>
+        </div>
+        <div class="line-builder">
+          <div class="form-section-title"><strong>订单商品明细</strong><span>系统会检查并锁定可用库存</span></div>
+          <div class="line-entry three"><label>本店 SKU<select id="orderLineProduct"></select></label><label>订单数量<input id="orderLineQty" type="number" min="1" step="1" /></label><button class="button secondary" id="addOrderLine" type="button">＋ 加入明细</button></div>
+          <div class="line-list" id="orderLineList"></div>
+        </div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="orderModal">取消</button><button class="button primary" type="submit">保存并锁定库存</button></div>
       </form>
     </section>
   </div>
@@ -244,27 +377,35 @@
   <div class="modal-backdrop" id="snapshotModal" aria-hidden="true">
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="snapshotModalTitle">
       <button class="modal-close" data-close="snapshotModal" aria-label="关闭">×</button>
-      <p class="eyebrow">NEW SNAPSHOT</p>
-      <h2 id="snapshotModalTitle">录入今日公开数据</h2>
-      <p class="modal-intro">照着 TikTok 买家页面填写。系统会与上一条记录自动比较。</p>
+      <p class="eyebrow">PUBLIC DATA SNAPSHOT</p><h2 id="snapshotModalTitle">录入公开数据快照</h2><p class="modal-intro">照着买家前台填写，系统会与上一条记录自动比较。</p>
       <form id="snapshotForm">
-        <label>商品 <span>*</span><select id="snapshotProduct" required></select></label>
-        <div class="form-grid two">
-          <label>记录时间 <span>*</span><input id="snapshotAt" type="datetime-local" required /></label>
-          <label>当前价格 <span>*</span><input id="snapshotPrice" type="number" min="0" step="0.01" required /></label>
-          <label>公开累计销量 <span>*</span><input id="snapshotSold" type="number" min="0" step="1" required /></label>
-          <label>评分<input id="snapshotRating" type="number" min="0" max="5" step="0.1" /></label>
-          <label>评价总数<input id="snapshotReviews" type="number" min="0" step="1" /></label>
-          <label>1–2 星评价数<input id="snapshotLowReviews" type="number" min="0" step="1" placeholder="可选" /></label>
-          <label>店铺评分<input id="snapshotShopRating" type="number" min="0" max="5" step="0.1" placeholder="可选" /></label>
-        </div>
+        <label>监控商品 <span>*</span><select id="snapshotProduct" required></select></label>
+        <div class="form-grid two"><label>记录时间 <span>*</span><input id="snapshotAt" type="datetime-local" required /></label><label>当前价格 <span>*</span><input id="snapshotPrice" type="number" min="0" step="0.01" required /></label><label>公开累计销量 <span>*</span><input id="snapshotSold" type="number" min="0" step="1" required /></label><label>评分<input id="snapshotRating" type="number" min="0" max="5" step="0.1" /></label><label>评价总数<input id="snapshotReviews" type="number" min="0" step="1" /></label><label>1–2 星评价数<input id="snapshotLowReviews" type="number" min="0" step="1" /></label><label>店铺评分<input id="snapshotShopRating" type="number" min="0" max="5" step="0.1" /></label></div>
         <div class="last-value" id="lastValueHint"></div>
         <div class="modal-actions"><button class="button secondary" type="button" data-close="snapshotModal">取消</button><button class="button primary" type="submit">保存快照并计算</button></div>
       </form>
     </section>
   </div>
 
-  <div class="confirm-bar" id="confirmBar" aria-hidden="true"><span id="confirmText"></span><div><button class="button tiny secondary" id="cancelConfirm">取消</button><button class="button tiny danger" id="acceptConfirm">确认删除</button></div></div>
+  <div class="modal-backdrop" id="returnModal" aria-hidden="true">
+    <section class="modal small-modal" role="dialog" aria-modal="true" aria-labelledby="returnModalTitle">
+      <button class="modal-close" data-close="returnModal" aria-label="关闭">×</button>
+      <p class="eyebrow">SALES RETURN</p><h2 id="returnModalTitle">退货入库</h2><p class="modal-intro" id="returnIntro">按原订单商品登记可再次入库的退货数量。</p>
+      <form id="returnForm">
+        <input id="returnOrderId" type="hidden" />
+        <label>退货商品 <span>*</span><select id="returnLine" required></select></label>
+        <div class="form-grid two">
+          <label>本次退货数量 <span>*</span><input id="returnQty" type="number" min="1" step="1" required /></label>
+          <label>退货入库时间 <span>*</span><input id="returnAt" type="datetime-local" required /></label>
+          <label class="full">退货原因/备注 <span>*</span><input id="returnNote" maxlength="100" required placeholder="例如：买家无理由退货，商品完好" /></label>
+        </div>
+        <div class="last-value" id="returnHint"></div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="returnModal">取消</button><button class="button primary" type="submit">确认退货入库</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div class="confirm-bar" id="confirmBar" aria-hidden="true"><span id="confirmText"></span><div><button class="button tiny secondary" id="cancelConfirm">取消</button><button class="button tiny danger" id="acceptConfirm">确认</button></div></div>
   <div class="toast" id="toast" role="status"></div>
 
   <script src="app.js"></script>
