@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="手动录入 TikTok Shop 竞品公开数据，自动计算销量、价格与口碑变化。" />
+  <title>PulseTrack · TikTok 竞品手动监控</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#top" aria-label="PulseTrack 首页">
+        <span class="brand-mark"><i></i><i></i><i></i></span>
+        <span>pulse<b>track</b></span>
+      </a>
+
+      <nav aria-label="主导航">
+        <a class="nav-item active" href="#dashboard"><span>▦</span>监控总览</a>
+        <a class="nav-item" href="#products"><span>◎</span>商品管理 <b id="navProductCount">0</b></a>
+        <a class="nav-item" href="#history"><span>↗</span>快照历史</a>
+        <a class="nav-item" href="#changes"><span>◴</span>变化提醒 <b id="navAlertCount" class="warm">0</b></a>
+      </nav>
+
+      <div class="sidebar-guide">
+        <strong>手动数据模式</strong>
+        <p>每天录一次公开累计销量，系统会自动计算期间新增销量。</p>
+      </div>
+
+      <div class="profile">
+        <div class="avatar">YL</div>
+        <div><strong>我的竞品库</strong><span>数据仅保存在本机</span></div>
+      </div>
+    </aside>
+
+    <main id="top">
+      <header class="topbar">
+        <div class="crumb"><span>竞品监控</span><em>/</em><strong>手动数据中心</strong></div>
+        <div class="header-actions">
+          <span class="storage-state"><i></i>已自动保存</span>
+          <input id="csvFile" type="file" accept=".csv,text/csv" hidden />
+          <button class="button secondary" id="importCsv">导入 CSV</button>
+          <button class="button secondary" id="exportCsv">导出数据</button>
+          <button class="button primary" id="openProductModal">＋ 添加监控商品</button>
+        </div>
+      </header>
+
+      <section class="content" id="dashboard">
+        <section class="manual-banner">
+          <div class="banner-icon">✎</div>
+          <div><strong>现在使用稳定的手动录入模式</strong><p>复制 TikTok 买家前台看到的数据即可。无需等待安全检查，也不会访问任何卖家后台。</p></div>
+          <button class="text-button" id="downloadTemplate">下载 CSV 模板</button>
+        </section>
+
+        <div class="hero-row">
+          <div>
+            <p class="eyebrow">COMPETITOR PULSE / LOCAL DATA</p>
+            <h1>竞品销量监控台</h1>
+            <p class="subhead" id="heroSummary">添加商品并录入第一次快照，建立监控基准。</p>
+          </div>
+          <div class="hero-controls">
+            <label>当前查看
+              <select id="activeProduct"></select>
+            </label>
+            <button class="button primary" id="openSnapshotModal">＋ 录入今日快照</button>
+          </div>
+        </div>
+
+        <section class="metric-grid" aria-label="核心指标">
+          <article class="metric-card accent-teal">
+            <div class="metric-label" id="salesMetricLabel">期间新增销量</div>
+            <div class="metric-value" id="salesMetric">—</div>
+            <div class="metric-foot" id="salesMetricFoot">需要至少两次快照</div>
+            <div class="metric-glyph">↗</div>
+          </article>
+          <article class="metric-card accent-amber">
+            <div class="metric-label">当前公开价格</div>
+            <div class="metric-value" id="priceMetric">—</div>
+            <div class="metric-foot" id="priceMetricFoot">等待录入</div>
+            <div class="metric-glyph">¥</div>
+          </article>
+          <article class="metric-card accent-blue">
+            <div class="metric-label">期间销量排名</div>
+            <div class="metric-value" id="rankMetric">—</div>
+            <div class="metric-foot" id="rankMetricFoot">需要可比较的数据</div>
+            <div class="metric-glyph">№</div>
+          </article>
+          <article class="metric-card accent-red">
+            <div class="metric-label">需要关注</div>
+            <div class="metric-value" id="alertMetric">0 <small>项</small></div>
+            <div class="metric-foot" id="alertMetricFoot">暂无异常变化</div>
+            <div class="metric-glyph">!</div>
+          </article>
+        </section>
+
+        <section class="dashboard-grid">
+          <article class="panel chart-panel">
+            <div class="panel-head">
+              <div><h2>趋势对比</h2><p id="chartSubtitle">以每次录入的公开数据为准</p></div>
+              <div class="chart-controls" role="group" aria-label="图表指标">
+                <button class="chart-tab active" data-metric="sales">新增销量</button>
+                <button class="chart-tab" data-metric="price">价格</button>
+                <button class="chart-tab" data-metric="reviews">评价数</button>
+              </div>
+            </div>
+            <div class="chart-legend" id="chartLegend"></div>
+            <div class="canvas-wrap"><canvas id="trendChart" height="310" aria-label="商品趋势对比图"></canvas><div class="chart-empty" id="chartEmpty">录入更多快照后显示趋势</div></div>
+          </article>
+
+          <article class="panel changes-panel" id="changes">
+            <div class="panel-head"><div><h2>最近变化</h2><p>根据最近两次快照自动生成</p></div><span class="live-dot">LIVE</span></div>
+            <div class="change-list" id="changeList"></div>
+          </article>
+        </section>
+
+        <section class="panel products-panel" id="products">
+          <div class="panel-head">
+            <div><h2>监控商品</h2><p>本店、直接竞品和间接竞品统一对比</p></div>
+            <div class="panel-actions"><button class="button tiny secondary" id="clearAllData">清空全部</button><button class="button tiny primary" id="tableAddProduct">＋ 添加商品</button></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>商品</th><th>类型</th><th>最新快照</th><th>价格</th><th>累计销量</th><th>期间新增</th><th>评分 / 评价</th><th>操作</th></tr></thead>
+              <tbody id="productRows"></tbody>
+            </table>
+            <div class="empty-state" id="productEmpty"><span>◎</span><strong>还没有监控商品</strong><p>先添加自己的商品或一个竞品，随后每天录入一次快照。</p><button class="button primary" id="emptyAddProduct">添加第一个商品</button></div>
+          </div>
+        </section>
+
+        <section class="panel history-panel" id="history">
+          <div class="panel-head">
+            <div><h2>快照历史</h2><p>可筛选商品并删除误录的数据</p></div>
+            <select id="historyProduct"></select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>记录时间</th><th>商品</th><th>价格</th><th>累计销量</th><th>新增销量</th><th>评分</th><th>评价数</th><th>操作</th></tr></thead>
+              <tbody id="historyRows"></tbody>
+            </table>
+            <div class="empty-state compact" id="historyEmpty"><p>暂无快照记录</p></div>
+          </div>
+        </section>
+
+        <footer>计算口径：期间新增销量 = 后一次公开累计销量 − 前一次公开累计销量。若累计销量下降，系统会标记为异常而不是负销量。</footer>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="productModal" aria-hidden="true">
+    <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="productModalTitle">
+      <button class="modal-close" data-close="productModal" aria-label="关闭">×</button>
+      <p class="eyebrow">PRODUCT WATCH</p>
+      <h2 id="productModalTitle">添加监控商品</h2>
+      <p class="modal-intro">商品资料只需填写一次；添加时同时建立第一条公开数据快照。</p>
+      <form id="productForm">
+        <input type="hidden" id="editProductId" />
+        <div class="form-grid two">
+          <label>商品名称 <span>*</span><input id="productName" required placeholder="例如：蝴蝶图案帆布托特包" /></label>
+          <label>店铺名称<input id="sellerName" placeholder="例如：Tas Inspirasi" /></label>
+          <label>监控类型 <span>*</span><select id="productKind" required><option value="own">本店</option><option value="direct" selected>直接竞品</option><option value="indirect">间接竞品</option></select></label>
+          <label>市场<select id="productMarket"><option value="MY">马来西亚 MY</option><option value="US">美国 US</option><option value="GB">英国 GB</option><option value="SG">新加坡 SG</option><option value="TH">泰国 TH</option><option value="VN">越南 VN</option><option value="PH">菲律宾 PH</option><option value="ID">印度尼西亚 ID</option><option value="OTHER">其他</option></select></label>
+          <label>币种<select id="productCurrency"><option value="MYR">MYR · RM</option><option value="USD">USD · $</option><option value="GBP">GBP · £</option><option value="SGD">SGD · S$</option><option value="THB">THB · ฿</option><option value="VND">VND · ₫</option><option value="PHP">PHP · ₱</option><option value="IDR">IDR · Rp</option></select></label>
+          <label class="full">TikTok 商品链接<input id="productUrl" type="url" placeholder="https://www.tiktok.com/view/product/..." /></label>
+        </div>
+
+        <div id="initialSnapshotFields">
+          <div class="form-section-title"><strong>第一次公开数据快照</strong><span>以后使用“录入今日快照”追加数据</span></div>
+          <div class="form-grid three">
+            <label>记录时间 <span>*</span><input id="firstSnapshotAt" type="datetime-local" required /></label>
+            <label>当前价格 <span>*</span><input id="firstPrice" type="number" min="0" step="0.01" required placeholder="18.69" /></label>
+            <label>公开累计销量 <span>*</span><input id="firstSold" type="number" min="0" step="1" required placeholder="901" /></label>
+            <label>评分<input id="firstRating" type="number" min="0" max="5" step="0.1" placeholder="4.8" /></label>
+            <label>评价总数<input id="firstReviews" type="number" min="0" step="1" placeholder="56" /></label>
+            <label>1–2 星评价数<input id="firstLowReviews" type="number" min="0" step="1" placeholder="1" /></label>
+            <label>店铺评分<input id="firstShopRating" type="number" min="0" max="5" step="0.1" placeholder="可选" /></label>
+          </div>
+        </div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="productModal">取消</button><button class="button primary" type="submit" id="saveProductButton">保存并建立基准</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="snapshotModal" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="snapshotModalTitle">
+      <button class="modal-close" data-close="snapshotModal" aria-label="关闭">×</button>
+      <p class="eyebrow">NEW SNAPSHOT</p>
+      <h2 id="snapshotModalTitle">录入今日公开数据</h2>
+      <p class="modal-intro">照着 TikTok 买家页面填写。系统会与上一条记录自动比较。</p>
+      <form id="snapshotForm">
+        <label>商品 <span>*</span><select id="snapshotProduct" required></select></label>
+        <div class="form-grid two">
+          <label>记录时间 <span>*</span><input id="snapshotAt" type="datetime-local" required /></label>
+          <label>当前价格 <span>*</span><input id="snapshotPrice" type="number" min="0" step="0.01" required /></label>
+          <label>公开累计销量 <span>*</span><input id="snapshotSold" type="number" min="0" step="1" required /></label>
+          <label>评分<input id="snapshotRating" type="number" min="0" max="5" step="0.1" /></label>
+          <label>评价总数<input id="snapshotReviews" type="number" min="0" step="1" /></label>
+          <label>1–2 星评价数<input id="snapshotLowReviews" type="number" min="0" step="1" placeholder="可选" /></label>
+          <label>店铺评分<input id="snapshotShopRating" type="number" min="0" max="5" step="0.1" placeholder="可选" /></label>
+        </div>
+        <div class="last-value" id="lastValueHint"></div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="snapshotModal">取消</button><button class="button primary" type="submit">保存快照并计算</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div class="confirm-bar" id="confirmBar" aria-hidden="true"><span id="confirmText"></span><div><button class="button tiny secondary" id="cancelConfirm">取消</button><button class="button tiny danger" id="acceptConfirm">确认删除</button></div></div>
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
