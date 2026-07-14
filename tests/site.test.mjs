@@ -30,12 +30,14 @@ test("contains product, warehouse, order and monitoring workflows", async () => 
     "productRows", "productCost", "productImageUrl", "productImageFile",
     "purchaseRows", "purchaseLineList", "receiveForm", "warehouseRows",
     "movementRows", "orderRows", "orderLineList", "returnForm", "competitorRows",
-    "historyRows", "trendChart", "changeList",
+    "historyRows", "trendChart", "changeList", "moduleSidebar", "sidebarToggle",
+    "sidebarScrim", "saveProductDraft", "inventoryListPanel", "movementPanel",
   ];
 
   requiredIds.forEach((id) => assert.match(html, new RegExp(`id="${id}"`)));
   const ids = [...html.matchAll(/id="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(ids).size, ids.length, "HTML ids must be unique");
+  assert.ok((html.match(/data-side-link/g) || []).length >= 15, "contextual side navigation must expose all ERP workflows");
 });
 
 test("serves application assets with the versioned warehouse model", async () => {
@@ -60,9 +62,21 @@ test("serves application assets with the versioned warehouse model", async () =>
   assert.match(scriptText, /shipOrder/);
   assert.match(scriptText, /receiveSalesReturn/);
   assert.match(scriptText, /reserved > balance\.onHand/);
+  assert.match(scriptText, /modal\.classList\.add\('open'\)/);
+  assert.match(scriptText, /modal\.classList\.remove\('open'\)/);
+  assert.doesNotMatch(scriptText, /modal-backdrop\.show/);
+  assert.match(scriptText, /saveProductFromForm/);
+  assert.match(scriptText, /draft && current && current\.kind === 'own' && hasBusinessReferences\(current\.id\)/);
+  assert.match(scriptText, /handleSideLink/);
+  assert.match(scriptText, /route \+= '\/low'/);
+  assert.match(scriptText, /inventorySection = parts\[2\] === 'movements'/);
   assert.equal(stylesheet.status, 200);
   assert.match(stylesheet.headers.get("content-type"), /^text\/css/);
-  assert.match(await stylesheet.text(), /\.primary-nav/);
+  const stylesheetText = await stylesheet.text();
+  assert.match(stylesheetText, /\.primary-nav/);
+  assert.match(stylesheetText, /\.module-sidebar/);
+  assert.match(stylesheetText, /\.modal-backdrop\.open/);
+  assert.doesNotMatch(stylesheetText, /\.modal-backdrop\.show/);
   assert.equal(missing.status, 404);
 });
 

@@ -79,6 +79,8 @@ let state = loadState();
 let productFilter = 'all';
 let purchaseFilter = 'open';
 let orderFilter = 'open';
+let inventoryFilter = 'all';
+let inventorySection = 'list';
 let chartMetric = 'sales';
 let searchTerm = '';
 let pendingConfirm = null;
@@ -175,7 +177,7 @@ function normalizeProduct(product) {
     standardCost: standardCost,
     safetyStock: integer(product.safetyStock),
     defaultSupplier: String(product.defaultSupplier || product.supplier || '').trim(),
-    status: product.status === 'inactive' ? 'inactive' : 'active',
+    status: ['active', 'inactive', 'draft'].includes(product.status) ? product.status : 'active',
     productUrl: String(product.productUrl || product.url || '').trim(),
     purchaseUrl: String(product.purchaseUrl || '').trim(),
     image: image,
@@ -226,7 +228,10 @@ function normalizeV5(saved) {
   base.legacyStockEvents = Array.isArray(saved.legacyStockEvents) ? saved.legacyStockEvents : [];
   base.migrationIssues = Array.isArray(saved.migrationIssues) ? saved.migrationIssues : [];
   base.selectedProductId = saved.selectedProductId || '';
-  base.ui = Object.assign(base.ui, saved.ui || {});
+  const savedUi = saved.ui && typeof saved.ui === 'object' ? saved.ui : {};
+  if (['products', 'warehouse', 'competitors'].includes(savedUi.module)) base.ui.module = savedUi.module;
+  if (['purchase', 'inventory', 'orders'].includes(savedUi.warehouseTab)) base.ui.warehouseTab = savedUi.warehouseTab;
+  if (['products', 'snapshots', 'trends', 'alerts'].includes(savedUi.competitorTab)) base.ui.competitorTab = savedUi.competitorTab;
   base.version = STATE_VERSION;
   ownProducts(base, true).forEach(function (product) {
     if (!base.inventoryBalances.some(function (item) { return item.productId === product.id; })) {
@@ -681,7 +686,7 @@ function pulseStorage() {
 function openModal(id) {
   const modal = $('#' + id);
   if (!modal) return;
-  modal.classList.add('show');
+  modal.classList.add('open');
   modal.setAttribute('aria-hidden', 'false');
   document.body.classList.add('modal-open');
   const focusable = modal.querySelector('input:not([type="hidden"]), select, button');
@@ -690,9 +695,9 @@ function openModal(id) {
 function closeModal(id) {
   const modal = $('#' + id);
   if (!modal) return;
-  modal.classList.remove('show');
+  modal.classList.remove('open');
   modal.setAttribute('aria-hidden', 'true');
-  if (!$$('.modal-backdrop.show').length) document.body.classList.remove('modal-open');
+  if (!$$('.modal-backdrop.open').length) document.body.classList.remove('modal-open');
 }
 function askConfirm(text, callback) {
   pendingConfirm = callback;
@@ -732,16 +737,36 @@ function setRoute(module, subtab) {
   state.ui.module = module;
   if (module === 'warehouse' && subtab) state.ui.warehouseTab = subtab;
   if (module === 'competitors' && subtab) state.ui.competitorTab = subtab;
-  const suffix = module === 'products' ? '' : '/' + (module === 'warehouse' ? state.ui.warehouseTab : state.ui.competitorTab);
-  history.replaceState(null, '', '#' + module + suffix);
+  let route = '#' + module;
+  if (module === 'products' && productFilter !== 'all') route += '/' + productFilter;
+  if (module === 'warehouse') {
+    route += '/' + state.ui.warehouseTab;
+    if (state.ui.warehouseTab === 'purchase' && purchaseFilter !== 'open') route += '/' + purchaseFilter;
+    if (state.ui.warehouseTab === 'orders' && orderFilter !== 'open') route += '/' + orderFilter;
+    if (state.ui.warehouseTab === 'inventory') {
+      if (inventoryFilter === 'low') route += '/low';
+      else if (inventorySection === 'movements') route += '/movements';
+    }
+  }
+  if (module === 'competitors') route += '/' + state.ui.competitorTab;
+  history.replaceState(null, '', route);
   saveUiQuietly();
-  renderNavigation();
-  if (module === 'competitors' && state.ui.competitorTab === 'trends') requestAnimationFrame(renderChart);
+  closeSidebar();
+  render();
 }
 function applyHashRoute() {
   const parts = location.hash.replace(/^#/, '').split('/');
   if (['products', 'warehouse', 'competitors'].includes(parts[0])) state.ui.module = parts[0];
-  if (parts[0] === 'warehouse' && ['purchase', 'inventory', 'orders'].includes(parts[1])) state.ui.warehouseTab = parts[1];
+  if (parts[0] === 'products') productFilter = ['own', 'direct', 'indirect', 'inactive'].includes(parts[1]) ? parts[1] : 'all';
+  if (parts[0] === 'warehouse' && ['purchase', 'inventory', 'orders'].includes(parts[1])) {
+    state.ui.warehouseTab = parts[1];
+    if (parts[1] === 'purchase') purchaseFilter = ['overdue', 'all'].includes(parts[2]) ? parts[2] : 'open';
+    if (parts[1] === 'orders') orderFilter = ['shortage', 'shipped', 'all'].includes(parts[2]) ? parts[2] : 'open';
+    if (parts[1] === 'inventory') {
+      inventoryFilter = parts[2] === 'low' ? 'low' : 'all';
+      inventorySection = parts[2] === 'movements' ? 'movements' : 'list';
+    }
+  }
   if (parts[0] === 'competitors' && ['products', 'snapshots', 'trends', 'alerts'].includes(parts[1])) state.ui.competitorTab = parts[1];
 }
 function renderNavigation() {
@@ -773,6 +798,92 @@ function renderNavigation() {
   });
 }
 
+function renderSidebar() {
+  $$('[data-sidebar-module]').forEach(function (section) {
+    const active = section.dataset.sidebarModule === state.ui.module;
+    section.hidden = !active;
+    section.classList.toggle('active', active);
+  });
+  $$('[data-side-link]').forEach(function (button) {
+    let active = false;
+    if (!button.dataset.sideAction && state.ui.module === 'products' && button.dataset.productView) {
+      active = button.dataset.productView === productFilter;
+    }
+    if (state.ui.module === 'warehouse' && button.dataset.warehouseView === state.ui.warehouseTab) {
+      if (state.ui.warehouseTab === 'purchase') active = button.dataset.purchaseView === purchaseFilter;
+      if (state.ui.warehouseTab === 'orders') active = button.dataset.orderView === orderFilter;
+      if (state.ui.warehouseTab === 'inventory') {
+        if (button.dataset.productView === 'low-stock') active = inventoryFilter === 'low';
+        else if (button.dataset.scrollTarget === 'movementPanel') active = inventoryFilter === 'all' && inventorySection === 'movements';
+        else active = inventoryFilter === 'all' && inventorySection === 'list';
+      }
+    }
+    if (state.ui.module === 'competitors' && button.dataset.competitorView) {
+      active = button.dataset.competitorView === state.ui.competitorTab;
+    }
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
+  });
+  $$('[data-product-filter]:not([data-side-link])').forEach(function (button) {
+    button.classList.toggle('active', button.dataset.productFilter === productFilter);
+  });
+  $$('[data-purchase-filter]:not([data-side-link])').forEach(function (button) {
+    button.classList.toggle('active', button.dataset.purchaseFilter === purchaseFilter);
+  });
+  $$('[data-order-filter]:not([data-side-link])').forEach(function (button) {
+    button.classList.toggle('active', button.dataset.orderFilter === orderFilter);
+  });
+}
+
+function closeSidebar() {
+  document.body.classList.remove('sidebar-open');
+  const toggle = $('#sidebarToggle');
+  const scrim = $('#sidebarScrim');
+  if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  if (scrim) scrim.setAttribute('aria-hidden', 'true');
+}
+function toggleSidebar() {
+  const opening = !document.body.classList.contains('sidebar-open');
+  document.body.classList.toggle('sidebar-open', opening);
+  if ($('#sidebarToggle')) $('#sidebarToggle').setAttribute('aria-expanded', String(opening));
+  if ($('#sidebarScrim')) $('#sidebarScrim').setAttribute('aria-hidden', String(!opening));
+}
+function scrollToPanel(id) {
+  if (!id) return;
+  requestAnimationFrame(function () {
+    const target = $('#' + id);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+function handleSideLink(button) {
+  const action = button.dataset.sideAction;
+  if (action === 'import' || action === 'export') {
+    closeSidebar();
+    const target = $('#' + button.dataset.scrollTarget);
+    if (target) target.click();
+    return;
+  }
+  if (button.dataset.productView && !button.dataset.warehouseView) {
+    productFilter = button.dataset.productView;
+    setRoute('products');
+    return;
+  }
+  if (button.dataset.warehouseView) {
+    const view = button.dataset.warehouseView;
+    if (view === 'purchase') purchaseFilter = button.dataset.purchaseView || 'open';
+    if (view === 'orders') orderFilter = button.dataset.orderView || 'open';
+    if (view === 'inventory') {
+      inventoryFilter = button.dataset.productView === 'low-stock' ? 'low' : 'all';
+      inventorySection = button.dataset.scrollTarget === 'movementPanel' ? 'movements' : 'list';
+    }
+    const scrollTarget = button.dataset.scrollTarget;
+    setRoute('warehouse', view);
+    scrollToPanel(scrollTarget);
+    return;
+  }
+  if (button.dataset.competitorView) setRoute('competitors', button.dataset.competitorView);
+}
+
 function renderProductSummary() {
   const activeProducts = state.products.filter(function (item) { return item.status === 'active'; });
   const owns = ownProducts(state);
@@ -796,12 +907,14 @@ function renderProducts() {
     const balance = balanceFor(product.id);
     const transit = product.kind === 'own' ? purchaseTransitFor(product.id) : 0;
     const available = product.kind === 'own' ? availableFor(product.id) : 0;
-    let actions = rowButton('edit-product', product.id, '编辑', 'primary');
-    if (product.kind === 'own') actions += rowButton('open-warehouse', product.id, '看库存');
-    if (product.kind !== 'own' || product.monitoringEnabled) actions += rowButton('add-snapshot', product.id, '录快照');
-    actions += rowButton(product.status === 'active' ? 'deactivate-product' : 'activate-product', product.id, product.status === 'active' ? '停用' : '启用');
+    let actions = rowButton('edit-product', product.id, product.status === 'draft' ? '继续完善' : '编辑', 'primary');
+    if (product.kind === 'own' && product.status === 'active' && !product.needsReview) actions += rowButton('open-warehouse', product.id, '看库存');
+    if (product.status === 'active' && (product.kind !== 'own' || product.monitoringEnabled)) actions += rowButton('add-snapshot', product.id, '录快照');
+    if (product.status !== 'draft') actions += rowButton(product.status === 'active' ? 'deactivate-product' : 'activate-product', product.id, product.status === 'active' ? '停用' : '启用');
     actions += rowButton('delete-product', product.id, '删除', 'danger');
-    const status = product.needsReview ? statusPill('待完善', 'shortage') : statusPill(product.status === 'active' ? '启用' : '停用', product.status);
+    const status = product.status === 'draft'
+      ? statusPill(product.needsReview ? '草稿 · 待完善' : '草稿', 'draft')
+      : (product.needsReview ? statusPill('待完善', 'shortage') : statusPill(product.status === 'active' ? '启用' : '停用', product.status));
     return '<tr><td>' + productMedia(product) + '</td><td><span class="type-pill ' + product.kind + '">' + KIND_LABELS[product.kind] + '</span></td>' +
       '<td>' + escapeHtml(product.sku || '—') + '</td><td>' + (product.kind === 'own' ? money(product.standardCost, product.costCurrency) : '—') + '</td>' +
       '<td>' + (product.kind === 'own' ? '<span class="stock-number transit">' + transit + '</span>' : '—') + '</td>' +
@@ -893,7 +1006,12 @@ function renderPurchases() {
 }
 
 function renderInventory() {
-  const products = ownProducts(state, true).filter(function (product) { return searchMatches(product); });
+  let products = ownProducts(state, true).filter(function (product) {
+    return (product.status !== 'draft' || hasBusinessReferences(product.id)) && (!product.needsReview || hasBusinessReferences(product.id)) && searchMatches(product);
+  });
+  if (inventoryFilter === 'low') {
+    products = products.filter(function (product) { return product.status === 'active' && availableFor(product.id) < integer(product.safetyStock); });
+  }
   $('#warehouseRows').innerHTML = products.map(function (product) {
     const balance = balanceFor(product.id);
     const available = Math.max(0, balance.onHand - balance.reserved);
@@ -902,8 +1020,8 @@ function renderInventory() {
       '<td><span class="stock-number instock">' + balance.onHand + '</span></td><td>' + balance.reserved + '</td>' +
       '<td><span class="stock-number ' + (low ? 'low' : 'instock') + '">' + available + '</span></td><td>' + integer(product.safetyStock) + '</td>' +
       '<td>' + money(balance.onHand * nonNegative(product.standardCost), product.costCurrency) + '</td>' +
-      '<td>' + (product.needsReview ? statusPill('待完善', 'shortage') : (low ? statusPill('需补货', 'shortage') : statusPill('正常', 'active'))) + '</td>' +
-      '<td><div class="row-actions">' + rowButton('adjust-stock', product.id, '库存调整', 'primary') + rowButton('view-movements', product.id, '看流水') + '</div></td></tr>';
+      '<td>' + (product.status === 'draft' ? statusPill('草稿 · 有库存', 'shortage') : (product.status === 'inactive' ? statusPill('已停用', 'inactive') : (product.needsReview ? statusPill('待完善', 'shortage') : (low ? statusPill('需补货', 'shortage') : statusPill('正常', 'active'))))) + '</td>' +
+      '<td><div class="row-actions">' + (product.status === 'active' && !product.needsReview ? rowButton('adjust-stock', product.id, '库存调整', 'primary') : rowButton('edit-product', product.id, '完善商品', 'primary')) + rowButton('view-movements', product.id, '看流水') + '</div></td></tr>';
   }).join('');
   toggleEmpty('#warehouseEmpty', products.length === 0);
 }
@@ -1049,8 +1167,11 @@ function renderTrendMetrics() {
   if (!product) {
     setText('#heroSummary', '添加竞品并录入快照后查看趋势。');
     setText('#salesMetric', '—');
+    setText('#salesMetricFoot', '需要至少两次快照');
     setText('#priceMetric', '—');
+    setText('#priceMetricFoot', '等待可比较数据');
     setText('#rankMetric', '—');
+    setText('#rankMetricFoot', '需要可比较的数据');
     return;
   }
   const change = snapshotChange(product.id);
@@ -1170,6 +1291,7 @@ function renderChart() {
 
 function render() {
   renderNavigation();
+  renderSidebar();
   renderProductSummary();
   renderProducts();
   renderWarehouseSummary();
@@ -1205,6 +1327,7 @@ function openProductEditor(productId, presetKind) {
   $('#editProductId').value = product ? product.id : '';
   $('#productModalTitle').textContent = product ? '编辑商品' : '新增商品';
   $('#saveProductButton').textContent = product ? '保存修改' : '保存商品';
+  if ($('#saveProductDraft')) $('#saveProductDraft').textContent = product ? '存为草稿' : '保存草稿';
   $('#productName').value = product ? product.name : '';
   $('#productKind').value = product ? product.kind : (presetKind || 'own');
   $('#productSku').value = product ? product.sku : '';
@@ -1234,6 +1357,17 @@ function validUrl(value) {
   } catch (_) {
     return false;
   }
+}
+function productMissingFields(product, rawCost) {
+  const missing = [];
+  if (!product.name) missing.push('商品名称');
+  if (!validUrl(product.productUrl)) missing.push('商品链接');
+  if (!product.image) missing.push('商品图片');
+  if (product.kind === 'own') {
+    if (!product.sku) missing.push('SKU');
+    if (rawCost === '' || !Number.isFinite(Number(rawCost)) || Number(rawCost) < 0) missing.push('商品成本');
+  }
+  return missing;
 }
 function snapshotFromForm(prefix, product, required) {
   const first = prefix === '#firstSnapshot';
@@ -1334,8 +1468,18 @@ function openOrderEditor() {
   openModal('orderModal');
 }
 function openStockEditor(productId) {
-  if (!ownProducts(state).length) {
-    showToast('请先新增本店 SKU。');
+  const readyProducts = ownProducts(state).filter(function (item) { return !item.needsReview; });
+  if (!readyProducts.length) {
+    const incomplete = ownProducts(state, true).find(function (item) { return item.status !== 'inactive'; });
+    showToast(incomplete ? '该商品资料尚未完善，请先补齐 SKU、成本、链接和图片。' : '请先新增并完善一个本店 SKU。');
+    setRoute('products');
+    if (incomplete) openProductEditor(incomplete.id);
+    return;
+  }
+  if (productId && !readyProducts.some(function (item) { return item.id === productId; })) {
+    showToast('该商品尚未达到入库条件，请先完善商品资料。');
+    setRoute('products');
+    openProductEditor(productId);
     return;
   }
   $('#stockForm').reset();
@@ -1470,11 +1614,12 @@ function productCsvRows() {
   return [headers].concat(rows).map(function (row) { return row.map(csvEscape).join(','); }).join('\n');
 }
 
-function handleProductSubmit(event) {
-  event.preventDefault();
+function saveProductFromForm(forceDraft) {
   const editId = $('#editProductId').value;
   const current = editId ? productById(editId) : null;
   const kind = $('#productKind').value;
+  const requestedStatus = $('#productStatus').value;
+  const draft = Boolean(forceDraft || requestedStatus === 'draft');
   const image = safeImageUrl(pendingProductImage || $('#productImageUrl').value);
   const product = normalizeProduct({
     id: editId || uid('product'),
@@ -1488,7 +1633,7 @@ function handleProductSubmit(event) {
     standardCost: kind === 'own' ? $('#productCost').value : 0,
     safetyStock: kind === 'own' ? $('#productSafetyStock').value : 0,
     defaultSupplier: kind === 'own' ? $('#productSupplier').value : '',
-    status: $('#productStatus').value,
+    status: draft ? 'draft' : requestedStatus,
     productUrl: $('#productUrl').value,
     purchaseUrl: kind === 'own' ? $('#productPurchaseUrl').value : '',
     image: image,
@@ -1497,29 +1642,37 @@ function handleProductSubmit(event) {
     createdAt: current ? current.createdAt : new Date().toISOString(),
     updatedAt: new Date().toISOString()
   });
-  if (!product.name) return showToast('请填写商品名称。');
-  if (!validUrl(product.productUrl)) return showToast('请填写有效的商品链接。');
-  if (!product.image) return showToast('每条商品链接都必须配一张商品图片。');
-  if (kind === 'own' && !product.sku) return showToast('本店商品必须填写 SKU。');
-  if (kind === 'own' && ($('#productCost').value === '' || asNumber($('#productCost').value) < 0)) return showToast('本店商品必须填写有效成本。');
-  if (kind === 'own' && state.products.some(function (item) { return item.id !== editId && item.kind === 'own' && normalizeSku(item.sku) === normalizeSku(product.sku); })) {
+  const missing = productMissingFields(product, kind === 'own' ? $('#productCost').value : 0);
+  product.needsReview = missing.length > 0;
+  if (!product.name) return showToast('草稿也需要填写商品名称，便于后续识别。');
+  if (!draft && missing.length) return showToast('请先补齐：' + missing.join('、') + '。');
+  if (kind === 'own' && product.sku && state.products.some(function (item) { return item.id !== editId && item.kind === 'own' && normalizeSku(item.sku) === normalizeSku(product.sku); })) {
     return showToast('SKU 已存在，请使用唯一的本店 SKU。');
   }
   if (current && current.kind === 'own' && kind !== 'own' && hasBusinessReferences(current.id)) {
     return showToast('该商品已有库存或业务单据，只能停用，不能改为竞品。');
   }
+  if (draft && current && current.kind === 'own' && hasBusinessReferences(current.id)) {
+    return showToast('该商品已有库存或业务单据，不能改为草稿；可继续启用或设为停用。');
+  }
   let initialSnapshot = null;
-  try { if (!current && product.monitoringEnabled) initialSnapshot = snapshotFromForm('#firstSnapshot', product, false); }
+  try { if (!draft && !current && product.monitoringEnabled) initialSnapshot = snapshotFromForm('#firstSnapshot', product, false); }
   catch (error) { return showToast(error.message); }
   const saved = commit(function (next) {
     const index = next.products.findIndex(function (item) { return item.id === product.id; });
     if (index >= 0) next.products[index] = product; else next.products.push(product);
     if (product.kind === 'own') ensureBalance(next, product.id);
     if (initialSnapshot) next.snapshots.push(initialSnapshot);
-    if (!next.selectedProductId && product.monitoringEnabled) next.selectedProductId = product.id;
-    next.migrationIssues = next.migrationIssues.filter(function (issue) { return issue.productId !== product.id; });
-  }, current ? '商品已更新。' : '商品已添加。');
+    if (!next.selectedProductId && product.status === 'active' && product.monitoringEnabled) next.selectedProductId = product.id;
+    if (!product.needsReview) next.migrationIssues = next.migrationIssues.filter(function (issue) { return issue.productId !== product.id; });
+  }, draft
+    ? (missing.length ? '商品草稿已保存；补齐 ' + missing.join('、') + ' 后即可用于仓库业务。' : '商品草稿已保存。')
+    : (current ? '商品已更新。' : '商品已添加。'));
   if (saved) closeModal('productModal');
+}
+function handleProductSubmit(event) {
+  event.preventDefault();
+  saveProductFromForm(false);
 }
 
 function handlePurchaseSubmit(event) {
@@ -1624,9 +1777,18 @@ function handleAction(action, id) {
   }
   if (action === 'activate-product' || action === 'deactivate-product') {
     const active = action === 'activate-product';
+    const current = productById(id);
+    if (active && current) {
+      const missing = productMissingFields(current, current.standardCost);
+      if (current.needsReview || missing.length) {
+        showToast('启用前请先完善：' + (missing.length ? missing.join('、') : '商品资料') + '。');
+        openProductEditor(id);
+        return;
+      }
+    }
     return commit(function (next) {
       const product = productById(id, next);
-      if (product) { product.status = active ? 'active' : 'inactive'; product.updatedAt = new Date().toISOString(); }
+      if (product) { product.status = active ? 'active' : 'inactive'; product.needsReview = false; product.updatedAt = new Date().toISOString(); }
     }, active ? '商品已启用。' : '商品已停用，历史单据和库存均已保留。');
   }
   if (action === 'delete-product') {
@@ -1698,6 +1860,8 @@ function handleAction(action, id) {
 
 function bindEvents() {
   document.addEventListener('click', function (event) {
+    const sideLink = event.target.closest('[data-side-link]');
+    if (sideLink) return handleSideLink(sideLink);
     const moduleButton = event.target.closest('[data-module]');
     if (moduleButton) return setRoute(moduleButton.dataset.module);
     const warehouseTab = event.target.closest('[data-warehouse-tab]');
@@ -1707,20 +1871,17 @@ function bindEvents() {
     const productChip = event.target.closest('[data-product-filter]');
     if (productChip) {
       productFilter = productChip.dataset.productFilter;
-      $$('[data-product-filter]').forEach(function (node) { node.classList.toggle('active', node === productChip); });
-      return renderProducts();
+      return setRoute('products');
     }
     const purchaseChip = event.target.closest('[data-purchase-filter]');
     if (purchaseChip) {
       purchaseFilter = purchaseChip.dataset.purchaseFilter;
-      $$('[data-purchase-filter]').forEach(function (node) { node.classList.toggle('active', node === purchaseChip); });
-      return renderPurchases();
+      return setRoute('warehouse', 'purchase');
     }
     const orderChip = event.target.closest('[data-order-filter]');
     if (orderChip) {
       orderFilter = orderChip.dataset.orderFilter;
-      $$('[data-order-filter]').forEach(function (node) { node.classList.toggle('active', node === orderChip); });
-      return renderOrders();
+      return setRoute('warehouse', 'orders');
     }
     const chartTab = event.target.closest('[data-metric]');
     if (chartTab) {
@@ -1748,10 +1909,14 @@ function bindEvents() {
   });
   document.addEventListener('keydown', function (event) {
     if (event.key === 'Escape') {
-      const open = $('.modal-backdrop.show');
-      if (open) closeModal(open.id); else closeConfirm();
+      const open = $('.modal-backdrop.open');
+      if (open) closeModal(open.id);
+      else if ($('#confirmBar').classList.contains('show')) closeConfirm();
+      else closeSidebar();
     }
   });
+  if ($('#sidebarToggle')) $('#sidebarToggle').addEventListener('click', toggleSidebar);
+  if ($('#sidebarScrim')) $('#sidebarScrim').addEventListener('click', closeSidebar);
   $('#globalSearch').addEventListener('input', function (event) {
     searchTerm = event.target.value.trim().toLowerCase();
     renderProducts(); renderPurchases(); renderInventory(); renderMovements(); renderOrders(); renderCompetitorProducts();
@@ -1779,6 +1944,7 @@ function bindEvents() {
   });
   $('#removeProductImage').addEventListener('click', function () { pendingProductImage = ''; $('#productImageUrl').value = ''; updateProductImagePreview(); });
   $('#productForm').addEventListener('submit', handleProductSubmit);
+  if ($('#saveProductDraft')) $('#saveProductDraft').addEventListener('click', function () { saveProductFromForm(true); });
   $('#openPurchaseModal').addEventListener('click', openPurchaseEditor);
   $('#purchaseLineProduct').addEventListener('change', function () {
     const product = productById(this.value);
@@ -1836,7 +2002,11 @@ function bindEvents() {
   });
   $('#clearAllData').addEventListener('click', function () {
     askConfirm('确认清空本机全部商品、采购、库存、订单和快照数据？', function () {
-      commit(function (next) { Object.assign(next, emptyState()); }, '本机业务数据已清空。');
+      const saved = commit(function (next) { Object.assign(next, emptyState()); }, '本机业务数据已清空。');
+      if (saved) {
+        productFilter = 'all'; purchaseFilter = 'open'; orderFilter = 'open'; inventoryFilter = 'all'; inventorySection = 'list';
+        setRoute('products');
+      }
     });
   });
   $('#exportCsv').addEventListener('click', function () {
@@ -1900,9 +2070,10 @@ function bindEvents() {
     }
   });
   window.addEventListener('resize', function () {
+    if (window.innerWidth >= 900) closeSidebar();
     if (state.ui.module === 'competitors' && state.ui.competitorTab === 'trends') renderChart();
   });
-  window.addEventListener('hashchange', function () { applyHashRoute(); renderNavigation(); });
+  window.addEventListener('hashchange', function () { applyHashRoute(); closeSidebar(); render(); });
 }
 
 applyHashRoute();

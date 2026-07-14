@@ -21,6 +21,7 @@
     </nav>
 
     <div class="header-tools">
+      <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-controls="moduleSidebar" aria-expanded="false"><span aria-hidden="true">☰</span><span>功能</span></button>
       <label class="global-search"><span>⌕</span><input id="globalSearch" type="search" placeholder="搜索商品、SKU 或链接" aria-label="全局搜索" /></label>
       <span class="storage-state"><i></i>本机已保存</span>
       <input id="csvFile" type="file" accept=".csv,text/csv" hidden />
@@ -29,7 +30,72 @@
     </div>
   </header>
 
-  <main class="workspace">
+  <div class="app-body">
+    <aside class="module-sidebar" id="moduleSidebar" aria-label="当前模块功能导航">
+      <section class="sidebar-module active" data-sidebar-module="products">
+        <div class="sidebar-heading"><span>商品中心</span><small>PRODUCT MASTER</small></div>
+        <nav class="sidebar-nav" aria-label="商品中心功能">
+          <div class="sidebar-group">
+            <p>商品档案</p>
+            <button class="side-link active" type="button" data-side-link data-product-view="all" data-product-filter="all"><span class="side-icon">▦</span><span>全部商品</span></button>
+            <button class="side-link" type="button" data-side-link data-product-view="own" data-product-filter="own"><span class="side-icon">◇</span><span>本店 SKU</span></button>
+            <button class="side-link" type="button" data-side-link data-product-view="direct" data-product-filter="direct"><span class="side-icon">◎</span><span>直接竞品</span></button>
+            <button class="side-link" type="button" data-side-link data-product-view="indirect" data-product-filter="indirect"><span class="side-icon">◌</span><span>间接竞品</span></button>
+            <button class="side-link" type="button" data-side-link data-product-view="inactive" data-product-filter="inactive"><span class="side-icon">⊘</span><span>已停用</span></button>
+          </div>
+          <div class="sidebar-group">
+            <p>数据维护</p>
+            <button class="side-link" type="button" data-side-link data-scroll-target="importCsv" data-side-action="import"><span class="side-icon">⇧</span><span>导入商品</span></button>
+            <button class="side-link" type="button" data-side-link data-scroll-target="exportCsv" data-side-action="export"><span class="side-icon">⇩</span><span>导出数据</span></button>
+          </div>
+        </nav>
+      </section>
+
+      <section class="sidebar-module" data-sidebar-module="warehouse">
+        <div class="sidebar-heading"><span>仓配中心</span><small>FULFILLMENT</small></div>
+        <nav class="sidebar-nav" aria-label="仓配中心功能">
+          <div class="sidebar-group">
+            <p>采购管理</p>
+            <button class="side-link active" type="button" data-side-link data-warehouse-view="purchase" data-purchase-view="open" data-warehouse-tab="purchase"><span class="side-icon">◫</span><span>采购与在途</span><b id="purchaseTabCount">0</b></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="purchase" data-purchase-view="overdue" data-purchase-filter="overdue"><span class="side-icon">!</span><span>已逾期</span></button>
+          </div>
+          <div class="sidebar-group">
+            <p>库存管理</p>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="inventory" data-warehouse-tab="inventory" data-scroll-target="inventoryListPanel"><span class="side-icon">▤</span><span>库存列表</span><b id="inventoryTabCount">0</b></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="inventory" data-scroll-target="movementPanel"><span class="side-icon">↕</span><span>库存流水</span></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="inventory" data-product-view="low-stock" data-scroll-target="inventoryListPanel"><span class="side-icon">△</span><span>低库存</span></button>
+          </div>
+          <div class="sidebar-group">
+            <p>订单履约</p>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="orders" data-order-view="open" data-warehouse-tab="orders"><span class="side-icon">□</span><span>订单处理</span><b id="orderTabCount">0</b></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="orders" data-order-view="shortage" data-order-filter="shortage"><span class="side-icon">!</span><span>库存不足</span></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="orders" data-order-view="shipped" data-order-filter="shipped"><span class="side-icon">✓</span><span>已出库 / 退货</span></button>
+          </div>
+        </nav>
+      </section>
+
+      <section class="sidebar-module" data-sidebar-module="competitors">
+        <div class="sidebar-heading"><span>竞品监控</span><small>COMPETITOR INTELLIGENCE</small></div>
+        <nav class="sidebar-nav" aria-label="竞品监控功能">
+          <div class="sidebar-group">
+            <p>竞品管理</p>
+            <button class="side-link active" type="button" data-side-link data-competitor-view="products" data-competitor-tab="products"><span class="side-icon">◎</span><span>竞品商品</span></button>
+            <button class="side-link" type="button" data-side-link data-competitor-view="snapshots" data-competitor-tab="snapshots"><span class="side-icon">◴</span><span>数据快照</span></button>
+          </div>
+          <div class="sidebar-group">
+            <p>分析洞察</p>
+            <button class="side-link" type="button" data-side-link data-competitor-view="trends" data-competitor-tab="trends"><span class="side-icon">↗</span><span>趋势对比</span></button>
+            <button class="side-link" type="button" data-side-link data-competitor-view="alerts" data-competitor-tab="alerts"><span class="side-icon">!</span><span>变化提醒</span><b id="competitorAlertCount">0</b></button>
+          </div>
+        </nav>
+      </section>
+
+      <div class="sidebar-status"><i></i><div><strong>数据保存在本机</strong><span>库存与竞品记录自动保存</span></div></div>
+    </aside>
+
+    <button class="sidebar-scrim" id="sidebarScrim" type="button" aria-label="关闭功能导航" aria-hidden="true"></button>
+
+    <main class="workspace">
     <section class="module-page active" id="module-products" data-module-page="products">
       <div class="page-heading">
         <div>
@@ -88,12 +154,6 @@
         <article><span>待出库订单</span><strong id="warehousePendingOrderTotal">0</strong><small id="warehouseValueFoot">库存金额 ¥0.00</small></article>
       </section>
 
-      <nav class="secondary-tabs" aria-label="仓配中心导航">
-        <button class="secondary-tab active" data-warehouse-tab="purchase">采购与在途 <b id="purchaseTabCount">0</b></button>
-        <button class="secondary-tab" data-warehouse-tab="inventory">库存管理 <b id="inventoryTabCount">0</b></button>
-        <button class="secondary-tab" data-warehouse-tab="orders">订单与出库 <b id="orderTabCount">0</b></button>
-      </nav>
-
       <section class="subpage active" data-warehouse-page="purchase">
         <div class="subpage-heading">
           <div><h2>采购与在途</h2><p>按采购单跟踪已下单、运输、部分收货和完成状态。</p></div>
@@ -122,7 +182,7 @@
           <div><h2>库存管理</h2><p>查看已在库、锁定、可用、安全库存和每一笔库存流水。</p></div>
           <button class="button primary" id="openStockModal">＋ 库存调整</button>
         </div>
-        <section class="panel inventory-panel">
+        <section class="panel inventory-panel" id="inventoryListPanel">
           <div class="table-wrap">
             <table>
               <thead><tr><th>仓库商品</th><th>SKU</th><th>已在库</th><th>锁定</th><th>可用</th><th>安全库存</th><th>库存金额</th><th>状态</th><th>操作</th></tr></thead>
@@ -132,7 +192,7 @@
           </div>
         </section>
 
-        <section class="panel movement-panel">
+        <section class="panel movement-panel" id="movementPanel">
           <div class="panel-title"><div><h2>最近库存流水</h2><p>采购收货、订单出库、盘点调整和报损均会留痕。</p></div><select id="movementProduct"><option value="all">全部 SKU</option></select></div>
           <div class="table-wrap">
             <table>
@@ -178,13 +238,6 @@
         </div>
         <div class="page-actions"><button class="button primary" id="competitorAddProduct">＋ 添加竞品</button></div>
       </div>
-
-      <nav class="secondary-tabs competitor-tabs" aria-label="竞品监控导航">
-        <button class="secondary-tab active" data-competitor-tab="products">竞品商品</button>
-        <button class="secondary-tab" data-competitor-tab="snapshots">数据快照</button>
-        <button class="secondary-tab" data-competitor-tab="trends">趋势对比</button>
-        <button class="secondary-tab" data-competitor-tab="alerts">变化提醒 <b id="competitorAlertCount">0</b></button>
-      </nav>
 
       <section class="subpage active" data-competitor-page="products">
         <div class="subpage-heading">
@@ -241,7 +294,8 @@
         <section class="alert-grid" id="changeList"></section>
       </section>
     </section>
-  </main>
+    </main>
+  </div>
 
   <div class="modal-backdrop" id="productModal" aria-hidden="true">
     <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="productModalTitle">
@@ -261,7 +315,7 @@
           <label class="own-field">标准采购成本 <span>*</span><input id="productCost" type="number" min="0" step="0.01" placeholder="例如：18.50" /></label>
           <label class="own-field">安全库存<input id="productSafetyStock" type="number" min="0" step="1" placeholder="例如：20" /></label>
           <label class="own-field">供应商<input id="productSupplier" placeholder="例如：义乌供应商 A" /></label>
-          <label>商品状态<select id="productStatus"><option value="active">启用</option><option value="inactive">停用</option></select></label>
+          <label>商品状态<select id="productStatus"><option value="active">启用</option><option value="draft">草稿</option><option value="inactive">停用</option></select></label>
           <label class="full">商品链接 <span>*</span><input id="productUrl" type="url" required placeholder="https://www.tiktok.com/view/product/..." /></label>
           <label class="full own-field">采购链接<input id="productPurchaseUrl" type="url" placeholder="https://detail.1688.com/..." /></label>
           <label class="checkbox-field full own-field"><input id="productCompare" type="checkbox" /><span><strong>同时参与竞品对比</strong><small>开启后，本店商品也会出现在竞品监控中。</small></span></label>
@@ -290,7 +344,7 @@
             <label>店铺评分<input id="firstShopRating" type="number" min="0" max="5" step="0.1" /></label>
           </div>
         </div>
-        <div class="modal-actions"><button class="button secondary" type="button" data-close="productModal">取消</button><button class="button primary" type="submit" id="saveProductButton">保存商品</button></div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="productModal">取消</button><button class="button secondary" type="button" id="saveProductDraft">保存草稿</button><button class="button primary" type="submit" id="saveProductButton">保存商品</button></div>
       </form>
     </section>
   </div>
