@@ -1,10 +1,11 @@
-const STORAGE_KEY = 'pulsetrack.manual.v2';
+const STORAGE_KEY = 'dongbo-crossborder.v1';
+const LEGACY_STORAGE_KEY = 'pulsetrack.manual.v2';
 const COLORS = ['#0e8e86', '#e89a42', '#607cce', '#cf655d', '#7a9b55', '#8c6bb1'];
 const KIND_LABELS = { own: '本店', direct: '直接竞品', indirect: '间接竞品' };
 const CURRENCY = { MYR: 'RM', USD: '$', GBP: '£', SGD: 'S$', THB: '฿', VND: '₫', PHP: '₱', IDR: 'Rp' };
 
 const seedState = {
-  version: 3,
+  version: 4,
   products: [{
     id: 'tt-my-1734050283349837382',
     name: '蝴蝶图案帆布托特包',
@@ -27,7 +28,9 @@ const seedState = {
     lowReviews: 1,
     shopRating: null
   }],
-  selectedProductId: 'tt-my-1734050283349837382'
+  selectedProductId: 'tt-my-1734050283349837382',
+  inventory: [],
+  stockMovements: []
 };
 
 let state = loadState();
@@ -54,13 +57,39 @@ function safeImageUrl(value = '') {
   } catch (_) { return ''; }
 }
 function exportableImageUrl(value = '') { const image = safeImageUrl(value); return /^https?:/i.test(image) ? image : ''; }
+function validCost(value) { return Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : 0; }
+function normalizeProduct(product) {
+  return {
+    ...product,
+    image: safeImageUrl(product.image || ''),
+    sku: String(product.sku || '').trim(),
+    cost: validCost(product.cost),
+  };
+}
+function inventoryFor(productId) {
+  return state.inventory.find(item => item.productId === productId) || { productId, inTransit: 0, inStock: 0, updatedAt: '' };
+}
+function ownProducts() { return state.products.filter(product => product.kind === 'own'); }
+function ensureInventory(productId) {
+  let inventory = state.inventory.find(item => item.productId === productId);
+  if (!inventory) {
+    inventory = { productId, inTransit: 0, inStock: 0, updatedAt: '' };
+    state.inventory.push(inventory);
+  }
+  return inventory;
+}
 
 function loadState() {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY));
     if (saved && Array.isArray(saved.products) && Array.isArray(saved.snapshots)) {
-      saved.version = 3;
-      saved.products = saved.products.map(product => ({ ...product, image: safeImageUrl(product.image || '') }));
+      saved.version = 4;
+      saved.products = saved.products.map(normalizeProduct);
+      saved.inventory = Array.isArray(saved.inventory) ? saved.inventory.map(item => ({ productId: item.productId, inTransit: Math.max(0, Number(item.inTransit) || 0), inStock: Math.max(0, Number(item.inStock) || 0), updatedAt: item.updatedAt || '' })) : [];
+      saved.stockMovements = Array.isArray(saved.stockMovements) ? saved.stockMovements : [];
+      saved.products.filter(product => product.kind === 'own').forEach(product => {
+        if (!saved.inventory.some(item => item.productId === product.id)) saved.inventory.push({ productId: product.id, inTransit: 0, inStock: 0, updatedAt: '' });
+      });
       return saved;
     }
   } catch (_) { /* use seed */ }
@@ -117,7 +146,9 @@ function render() {
   renderHistory();
   renderChanges();
   renderChart();
+  renderWarehouse();
   $('#navProductCount').textContent = state.products.length;
+  $('#navWarehouseCount').textContent = ownProducts().length;
 }
 
 function renderSelectors() {
@@ -172,6 +203,8 @@ function renderProducts() {
     return `<tr>
       <td><div class="product-cell"><span class="product-media">${media}</span><div class="product-copy"><strong>${escapeHtml(product.name)}</strong><span>${escapeHtml(product.seller || '未填写店铺')} · ${escapeHtml(product.market)}${product.url ? ' · 已保存链接' : ''}</span></div></div></td>
       <td><span class="type-pill ${product.kind}">${KIND_LABELS[product.kind]}</span></td>
+      <td>${escapeHtml(product.sku || '未设置')}</td>
+      <td>${fmtMoney(product.cost, product.currency)}</td>
       <td>${latest ? fmtDate(latest.at) : '—'}</td><td>${latest ? fmtMoney(latest.price, product.currency) : '—'}</td><td>${latest ? fmtNumber(latest.sold) : '—'}</td><td>${delta}</td>
       <td>${latest?.rating ?? '—'} / ${latest?.reviews ?? '—'}</td>
       <td><div class="row-actions"><button class="row-action primary" data-action="snapshot" data-id="${product.id}">录快照</button><button class="row-action" data-action="edit" data-id="${product.id}">编辑</button><button class="row-action danger" data-action="delete-product" data-id="${product.id}">删除</button></div></td>
@@ -180,6 +213,42 @@ function renderProducts() {
   $('#productRows').innerHTML = rows;
   $$('#productRows .product-media img').forEach(image => image.addEventListener('error', () => { image.hidden = true; }));
   $('#productEmpty').classList.toggle('show', !state.products.length);
+}
+
+function productMedia(product) {
+  const image = safeImageUrl(product.image);
+  return `${image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(product.name)}" loading="lazy" />` : ''}<span class="product-badge own">ME</span>`;
+}
+
+function renderWarehouse() {
+  const products = ownProducts();
+  const totalTransit = products.reduce((sum, product) => sum + inventoryFor(product.id).inTransit, 0);
+  const totalInStock = products.reduce((sum, product) => sum + inventoryFor(product.id).inStock, 0);
+  const totalValue = products.reduce((sum, product) => sum + inventoryFor(product.id).inStock * validCost(product.cost), 0);
+  $('#warehouseSkuCount').textContent = fmtNumber(products.length);
+  $('#warehouseTransitTotal').textContent = fmtNumber(totalTransit);
+  $('#warehouseInStockTotal').textContent = fmtNumber(totalInStock);
+  $('#warehouseValueTotal').textContent = `¥${totalValue.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  $('#warehouseRows').innerHTML = products.map(product => {
+    const inventory = inventoryFor(product.id);
+    const latestMovement = state.stockMovements.filter(item => item.productId === product.id).sort((a, b) => new Date(b.at) - new Date(a.at))[0];
+    return `<tr>
+      <td><div class="product-cell"><span class="product-media">${productMedia(product)}</span><div class="product-copy"><strong>${escapeHtml(product.name)}</strong><span>${escapeHtml(product.url ? '已保存商品链接' : '未填写链接')}</span></div></div></td>
+      <td>${escapeHtml(product.sku || '未设置')}</td>
+      <td>${fmtMoney(product.cost, product.currency)}</td>
+      <td><span class="stock-number transit">${fmtNumber(inventory.inTransit)}</span></td>
+      <td><span class="stock-number instock">${fmtNumber(inventory.inStock)}</span></td>
+      <td>${fmtNumber(inventory.inStock)}</td>
+      <td>${latestMovement ? `${stockOperationLabel(latestMovement.type)} · ${fmtDate(latestMovement.at)}` : '暂无变动'}</td>
+      <td><div class="row-actions"><button class="row-action primary" data-action="stock" data-id="${product.id}" data-stock-operation="in_transit">在途</button><button class="row-action" data-action="stock" data-id="${product.id}" data-stock-operation="receive">收货</button><button class="row-action" data-action="stock" data-id="${product.id}" data-stock-operation="outbound">出库</button></div></td>
+    </tr>`;
+  }).join('');
+  $$('#warehouseRows .product-media img').forEach(image => image.addEventListener('error', () => { image.hidden = true; }));
+  $('#warehouseEmpty').classList.toggle('show', !products.length);
+}
+
+function stockOperationLabel(type) {
+  return ({ in_transit: '采购在途', receive: '收货入库', outbound: '订单出库' }[type] || '库存变动');
 }
 
 function renderHistory() {
@@ -339,13 +408,13 @@ async function compressProductImage(file) {
 }
 
 function openNewProduct() {
-  $('#productForm').reset(); $('#editProductId').value = ''; $('#productModalTitle').textContent = '添加监控商品'; $('#saveProductButton').textContent = '保存并建立基准'; $('#initialSnapshotFields').hidden = false;
-  updateProductImagePreview(''); $('#firstSnapshotAt').value = localDateTime(); $('#productMarket').value = 'MY'; $('#productCurrency').value = 'MYR'; $('#productKind').value = 'direct'; openModal('productModal'); $('#productName').focus();
+  $('#productForm').reset(); $('#editProductId').value = ''; $('#productModalTitle').textContent = '添加商品'; $('#saveProductButton').textContent = '保存商品'; $('#initialSnapshotFields').hidden = false;
+  updateProductImagePreview(''); $('#firstSnapshotAt').value = localDateTime(); $('#productMarket').value = 'MY'; $('#productCurrency').value = 'MYR'; $('#productKind').value = 'own'; openModal('productModal'); $('#productName').focus();
 }
 
 function openEditProduct(id) {
   const product = state.products.find(p => p.id === id); if (!product) return;
-  $('#productForm').reset(); $('#editProductId').value = product.id; $('#productName').value = product.name; $('#sellerName').value = product.seller || ''; $('#productKind').value = product.kind; $('#productMarket').value = product.market; $('#productUrl').value = product.url || ''; $('#productCurrency').value = product.currency; $('#productImageUrl').value = exportableImageUrl(product.image); updateProductImagePreview(product.image);
+  $('#productForm').reset(); $('#editProductId').value = product.id; $('#productName').value = product.name; $('#productSku').value = product.sku || ''; $('#productCost').value = validCost(product.cost); $('#sellerName').value = product.seller || ''; $('#productKind').value = product.kind; $('#productMarket').value = product.market; $('#productUrl').value = product.url || ''; $('#productCurrency').value = product.currency; $('#productImageUrl').value = exportableImageUrl(product.image); updateProductImagePreview(product.image);
   $('#productModalTitle').textContent = '编辑商品资料'; $('#saveProductButton').textContent = '保存修改'; $('#initialSnapshotFields').hidden = true; openModal('productModal');
 }
 
@@ -361,27 +430,86 @@ function prefillSnapshot() {
   $('#lastValueHint').innerHTML = `上次记录：${fmtDate(latest.at)}　价格 <b>${fmtMoney(latest.price, product.currency)}</b>　累计销量 <b>${fmtNumber(latest.sold)}</b>　评价 <b>${latest.reviews ?? '—'}</b>`;
 }
 
+function openStockModal(productId = '', operation = 'in_transit') {
+  const products = ownProducts();
+  if (!products.length) { showToast('请先添加一个“本店”商品，它会自动成为仓库 SKU。'); return; }
+  $('#stockForm').reset();
+  $('#stockProduct').innerHTML = products.map(product => `<option value="${product.id}">${escapeHtml(product.sku || product.name)} · ${escapeHtml(product.name)}</option>`).join('');
+  $('#stockProduct').value = products.some(product => product.id === productId) ? productId : products[0].id;
+  $('#stockOperation').value = operation;
+  $('#stockAt').value = localDateTime();
+  updateStockHint();
+  openModal('stockModal');
+  $('#stockQuantity').focus();
+}
+
+function updateStockHint() {
+  const product = state.products.find(item => item.id === $('#stockProduct').value);
+  const inventory = product ? inventoryFor(product.id) : { inTransit: 0, inStock: 0 };
+  const operation = $('#stockOperation').value;
+  const actionText = {
+    in_transit: '采购在途会增加在途数量，不会增加已在库。',
+    receive: '确认收货会从在途中扣减数量，并转入已在库。',
+    outbound: '订单出库会从已在库中扣减数量。',
+  }[operation];
+  $('#stockHint').innerHTML = `${actionText}<br>当前：在途 <b>${fmtNumber(inventory.inTransit)}</b>，已在库 <b>${fmtNumber(inventory.inStock)}</b>。`;
+}
+
+$('#stockForm').addEventListener('submit', event => {
+  event.preventDefault();
+  const productId = $('#stockProduct').value;
+  const quantity = Number($('#stockQuantity').value);
+  const operation = $('#stockOperation').value;
+  const inventory = ensureInventory(productId);
+  if (!Number.isInteger(quantity) || quantity <= 0) { showToast('数量必须是大于 0 的整数。'); return; }
+  if (operation === 'receive' && quantity > inventory.inTransit) { showToast(`收货数量不能超过当前在途数量 ${inventory.inTransit}。`); return; }
+  if (operation === 'outbound' && quantity > inventory.inStock) { showToast(`出库数量不能超过当前已在库数量 ${inventory.inStock}。`); return; }
+  if (operation === 'in_transit') inventory.inTransit += quantity;
+  if (operation === 'receive') { inventory.inTransit -= quantity; inventory.inStock += quantity; }
+  if (operation === 'outbound') inventory.inStock -= quantity;
+  inventory.updatedAt = new Date($('#stockAt').value).toISOString();
+  state.stockMovements.push({ id: uid('movement'), productId, type: operation, quantity, at: inventory.updatedAt, note: $('#stockNote').value.trim() });
+  if (!saveState()) return;
+  closeModal('stockModal'); render(); showToast(`${stockOperationLabel(operation)}已保存。`);
+});
+
 $('#productForm').addEventListener('submit', event => {
   event.preventDefault();
   const imageUrlValue = $('#productImageUrl').value.trim();
   const image = imageUrlValue ? safeImageUrl(imageUrlValue) : safeImageUrl(pendingProductImage);
   if (imageUrlValue && !image) { showToast('图片网址无效，请使用 http 或 https 地址。'); return; }
+  if (!image) { showToast('请为每个商品填写图片网址或上传图片。'); return; }
+  const productInput = {
+    name: $('#productName').value.trim(),
+    sku: $('#productSku').value.trim(),
+    cost: validCost($('#productCost').value),
+    seller: $('#sellerName').value.trim(),
+    kind: $('#productKind').value,
+    market: $('#productMarket').value,
+    currency: $('#productCurrency').value,
+    url: $('#productUrl').value.trim(),
+    image,
+  };
   const editId = $('#editProductId').value;
   if (editId) {
     const product = state.products.find(p => p.id === editId); if (!product) return;
     const before = clone(product);
-    Object.assign(product, { name: $('#productName').value.trim(), seller: $('#sellerName').value.trim(), kind: $('#productKind').value, market: $('#productMarket').value, currency: $('#productCurrency').value, url: $('#productUrl').value.trim(), image });
+    Object.assign(product, productInput);
+    if (product.kind === 'own') ensureInventory(product.id);
     if (!saveState()) { Object.assign(product, before); return; }
     closeModal('productModal'); render(); showToast('商品资料已更新。'); return;
   }
   const id = uid('product');
-  const snapshotId = uid('snapshot');
   const previousSelection = state.selectedProductId;
-  state.products.push({ id, name: $('#productName').value.trim(), seller: $('#sellerName').value.trim(), kind: $('#productKind').value, market: $('#productMarket').value, currency: $('#productCurrency').value, url: $('#productUrl').value.trim(), image, createdAt: new Date().toISOString() });
-  state.snapshots.push({ id: snapshotId, productId: id, at: new Date($('#firstSnapshotAt').value).toISOString(), price: Number($('#firstPrice').value), sold: Number($('#firstSold').value), rating: valueOrNull('#firstRating'), reviews: valueOrNull('#firstReviews'), lowReviews: valueOrNull('#firstLowReviews'), shopRating: valueOrNull('#firstShopRating') });
+  const wantsSnapshot = ['#firstSnapshotAt', '#firstPrice', '#firstSold'].some(selector => $(selector).value !== '');
+  if (wantsSnapshot && ['#firstSnapshotAt', '#firstPrice', '#firstSold'].some(selector => $(selector).value === '')) { showToast('首次快照请完整填写时间、价格和累计销量，或全部留空。'); return; }
+  const snapshotId = wantsSnapshot ? uid('snapshot') : '';
+  state.products.push({ id, ...productInput, createdAt: new Date().toISOString() });
+  if (productInput.kind === 'own') ensureInventory(id);
+  if (wantsSnapshot) state.snapshots.push({ id: snapshotId, productId: id, at: new Date($('#firstSnapshotAt').value).toISOString(), price: Number($('#firstPrice').value), sold: Number($('#firstSold').value), rating: valueOrNull('#firstRating'), reviews: valueOrNull('#firstReviews'), lowReviews: valueOrNull('#firstLowReviews'), shopRating: valueOrNull('#firstShopRating') });
   state.selectedProductId = id;
-  if (!saveState()) { state.products = state.products.filter(product => product.id !== id); state.snapshots = state.snapshots.filter(snapshot => snapshot.id !== snapshotId); state.selectedProductId = previousSelection; return; }
-  closeModal('productModal'); render(); showToast('商品已添加，第一条基准快照已建立。');
+  if (!saveState()) { state.products = state.products.filter(product => product.id !== id); state.snapshots = state.snapshots.filter(snapshot => snapshot.id !== snapshotId); state.inventory = state.inventory.filter(item => item.productId !== id); state.selectedProductId = previousSelection; return; }
+  closeModal('productModal'); render(); showToast(wantsSnapshot ? '商品已添加，并建立了竞品快照基准。' : '商品已添加；本店商品已同步到仓库管理。');
 });
 
 $('#snapshotForm').addEventListener('submit', event => {
@@ -406,13 +534,17 @@ document.addEventListener('click', event => {
   const { action: type, id } = action.dataset;
   if (type === 'snapshot') openNewSnapshot(id);
   if (type === 'edit') openEditProduct(id);
-  if (type === 'delete-product') { const product = state.products.find(p => p.id === id); askConfirm(`删除“${product?.name || '该商品'}”及全部快照？`, () => { state.products = state.products.filter(p => p.id !== id); state.snapshots = state.snapshots.filter(s => s.productId !== id); if (state.selectedProductId === id) state.selectedProductId = state.products[0]?.id || ''; saveState(); render(); showToast('商品及其快照已删除。'); }); }
+  if (type === 'stock') openStockModal(id, action.dataset.stockOperation);
+  if (type === 'delete-product') { const product = state.products.find(p => p.id === id); askConfirm(`删除“${product?.name || '该商品'}”及全部快照与库存记录？`, () => { state.products = state.products.filter(p => p.id !== id); state.snapshots = state.snapshots.filter(s => s.productId !== id); state.inventory = state.inventory.filter(item => item.productId !== id); state.stockMovements = state.stockMovements.filter(item => item.productId !== id); if (state.selectedProductId === id) state.selectedProductId = state.products[0]?.id || ''; saveState(); render(); showToast('商品、快照与库存记录已删除。'); }); }
   if (type === 'delete-snapshot') askConfirm('删除这条快照？删除后相关增量会重新计算。', () => { state.snapshots = state.snapshots.filter(s => s.id !== id); saveState(); render(); showToast('快照已删除，变化数据已重新计算。'); });
 });
 
 ['openProductModal', 'tableAddProduct', 'emptyAddProduct'].forEach(id => $(`#${id}`).addEventListener('click', openNewProduct));
 $('#openSnapshotModal').addEventListener('click', () => openNewSnapshot());
+$('#openStockModal').addEventListener('click', () => openStockModal());
 $('#snapshotProduct').addEventListener('change', prefillSnapshot);
+$('#stockProduct').addEventListener('change', updateStockHint);
+$('#stockOperation').addEventListener('change', updateStockHint);
 $('#activeProduct').addEventListener('change', event => { state.selectedProductId = event.target.value; saveState(); render(); });
 $('#historyProduct').addEventListener('change', renderHistory);
 $$('.chart-tab').forEach(button => button.addEventListener('click', () => { $$('.chart-tab').forEach(item => item.classList.remove('active')); button.classList.add('active'); chartMetric = button.dataset.metric; renderChart(); }));
@@ -441,19 +573,19 @@ $('#productImageFile').addEventListener('change', async event => {
   finally { button.disabled = false; button.textContent = oldText; event.target.value = ''; }
 });
 
-$('#clearAllData').addEventListener('click', () => askConfirm('清空所有商品和快照？建议先导出数据备份。', () => { state = { version: 3, products: [], snapshots: [], selectedProductId: '' }; saveState(); render(); showToast('全部本机数据已清空。'); }));
+$('#clearAllData').addEventListener('click', () => askConfirm('清空所有商品、快照和库存记录？建议先导出数据备份。', () => { state = { version: 4, products: [], snapshots: [], selectedProductId: '', inventory: [], stockMovements: [] }; saveState(); render(); showToast('全部本机数据已清空。'); }));
 
 function csvEscape(value) { const text = value == null ? '' : String(value); return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text; }
 function exportCsv(template = false) {
-  const header = ['date','name','seller','type','url','image_url','market','currency','price','cumulative_sales','rating','reviews','low_star_reviews','shop_rating'];
+  const header = ['date','name','sku','unit_cost','seller','type','url','image_url','market','currency','price','cumulative_sales','rating','reviews','low_star_reviews','shop_rating'];
   let rows = [];
-  if (template) rows = [[localDateTime().replace('T',' '),'示例商品','示例店铺','direct','https://www.tiktok.com/view/product/...','https://example.com/product.jpg','MY','MYR','18.69','901','4.8','56','1','4.7']];
+  if (template) rows = [[localDateTime().replace('T',' '),'示例商品','DB-001','18.50','示例店铺','direct','https://www.tiktok.com/view/product/...','https://example.com/product.jpg','MY','MYR','18.69','901','4.8','56','1','4.7']];
   else {
     const map = Object.fromEntries(state.products.map(p => [p.id, p]));
-    rows = [...state.snapshots].sort((a,b) => new Date(a.at)-new Date(b.at)).map(s => { const p = map[s.productId]; return p ? [s.at,p.name,p.seller,p.kind,p.url,exportableImageUrl(p.image),p.market,p.currency,s.price,s.sold,s.rating,s.reviews,s.lowReviews,s.shopRating] : null; }).filter(Boolean);
+    rows = [...state.snapshots].sort((a,b) => new Date(a.at)-new Date(b.at)).map(s => { const p = map[s.productId]; return p ? [s.at,p.name,p.sku,p.cost,p.seller,p.kind,p.url,exportableImageUrl(p.image),p.market,p.currency,s.price,s.sold,s.rating,s.reviews,s.lowReviews,s.shopRating] : null; }).filter(Boolean);
   }
   const csv = '\ufeff' + [header, ...rows].map(row => row.map(csvEscape).join(',')).join('\r\n');
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = template ? 'pulsetrack-import-template.csv' : `pulsetrack-export-${new Date().toISOString().slice(0,10)}.csv`; link.click(); URL.revokeObjectURL(url);
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = template ? 'dongbo-crossborder-import-template.csv' : `dongbo-crossborder-export-${new Date().toISOString().slice(0,10)}.csv`; link.click(); URL.revokeObjectURL(url);
 }
 
 function parseCsv(text) {
@@ -471,8 +603,16 @@ $('#csvFile').addEventListener('change', async event => {
       const record = Object.fromEntries(headers.map((h, i) => [h, values[i]?.trim() ?? ''])); if (!record.name || !record.date) return;
       const image = exportableImageUrl(record.image_url || record.image || '');
       let product = state.products.find(p => p.url && record.url && p.url === record.url) || state.products.find(p => p.name === record.name && p.market === (record.market || 'MY'));
-      if (!product) { product = { id: uid('product'), name: record.name, seller: record.seller || '', kind: normalizeKind(record.type), market: record.market || 'MY', currency: record.currency || 'MYR', url: record.url || '', image, createdAt: new Date().toISOString() }; state.products.push(product); addedProducts++; }
-      else if (image) product.image = image;
+      if (!product) {
+        product = normalizeProduct({ id: uid('product'), name: record.name, sku: record.sku || '', cost: record.unit_cost || 0, seller: record.seller || '', kind: normalizeKind(record.type), market: record.market || 'MY', currency: record.currency || 'MYR', url: record.url || '', image, createdAt: new Date().toISOString() });
+        state.products.push(product);
+        if (product.kind === 'own') ensureInventory(product.id);
+        addedProducts++;
+      } else {
+        if (image) product.image = image;
+        if (record.sku) product.sku = record.sku;
+        if (record.unit_cost !== '') product.cost = validCost(record.unit_cost);
+      }
       state.snapshots.push({ id: uid('snapshot'), productId: product.id, at: new Date(record.date.replace(' ', 'T')).toISOString(), price: Number(record.price || 0), sold: Number(record.cumulative_sales || 0), rating: record.rating === '' ? null : Number(record.rating), reviews: record.reviews === '' ? null : Number(record.reviews), lowReviews: record.low_star_reviews === '' ? null : Number(record.low_star_reviews), shopRating: record.shop_rating === '' ? null : Number(record.shop_rating) }); addedSnapshots++;
     });
     if (!state.selectedProductId) state.selectedProductId = state.products[0]?.id || '';
