@@ -161,6 +161,24 @@
           <label>市场<select id="productMarket"><option value="MY">马来西亚 MY</option><option value="US">美国 US</option><option value="GB">英国 GB</option><option value="SG">新加坡 SG</option><option value="TH">泰国 TH</option><option value="VN">越南 VN</option><option value="PH">菲律宾 PH</option><option value="ID">印度尼西亚 ID</option><option value="OTHER">其他</option></select></label>
           <label>币种<select id="productCurrency"><option value="MYR">MYR · RM</option><option value="USD">USD · $</option><option value="GBP">GBP · £</option><option value="SGD">SGD · S$</option><option value="THB">THB · ฿</option><option value="VND">VND · ₫</option><option value="PHP">PHP · ₱</option><option value="IDR">IDR · Rp</option></select></label>
           <label class="full">TikTok 商品链接<input id="productUrl" type="url" placeholder="https://www.tiktok.com/view/product/..." /></label>
+          <div class="product-image-field full">
+            <span class="field-label">商品图片</span>
+            <div class="product-image-editor">
+              <div class="product-image-preview">
+                <img id="productImagePreview" alt="商品图片预览" hidden />
+                <span id="productImageEmpty">暂无图片</span>
+              </div>
+              <div class="product-image-controls">
+                <label>图片网址<input id="productImageUrl" type="url" placeholder="https://example.com/product.jpg" /></label>
+                <input id="productImageFile" type="file" accept="image/jpeg,image/png,image/webp" hidden />
+                <div class="image-button-row">
+                  <button class="button tiny secondary" id="chooseProductImage" type="button">从电脑选择</button>
+                  <button class="button tiny ghost" id="removeProductImage" type="button" disabled>移除图片</button>
+                </div>
+                <p class="image-help">本地上传会自动压缩，但仅保存在当前浏览器；团队共享图片请填写公开图片网址。</p>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div id="initialSnapshotFields">

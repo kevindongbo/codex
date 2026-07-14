@@ -4,7 +4,7 @@ const KIND_LABELS = { own: '本店', direct: '直接竞品', indirect: '间接�
 const CURRENCY = { MYR: 'RM', USD: '$', GBP: '£', SGD: 'S$', THB: '฿', VND: '₫', PHP: '₱', IDR: 'Rp' };
 
 const seedState = {
-  version: 2,
+  version: 3,
   products: [{
     id: 'tt-my-1734050283349837382',
     name: '蝴蝶图案帆布托特包',
@@ -13,6 +13,7 @@ const seedState = {
     market: 'MY',
     currency: 'MYR',
     url: 'https://www.tiktok.com/view/product/1734050283349837382',
+    image: '',
     createdAt: '2026-07-14T17:37:26+08:00'
   }],
   snapshots: [{
@@ -32,6 +33,7 @@ const seedState = {
 let state = loadState();
 let chartMetric = 'sales';
 let pendingConfirm = null;
+let pendingProductImage = '';
 let toastTimer;
 
 const $ = (selector) => document.querySelector(selector);
@@ -41,19 +43,40 @@ function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function uid(prefix) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
 function escapeHtml(value = '') { return String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char])); }
 function localDateTime(date = new Date()) { const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000); return local.toISOString().slice(0, 16); }
+function safeImageUrl(value = '') {
+  const text = String(value).trim();
+  if (!text) return '';
+  if (/^data:image\/(?:png|jpe?g|webp);base64,/i.test(text)) return text.length <= 560000 ? text : '';
+  if (text.length > 4096) return '';
+  try {
+    const url = new URL(text);
+    return ['http:', 'https:'].includes(url.protocol) ? text : '';
+  } catch (_) { return ''; }
+}
+function exportableImageUrl(value = '') { const image = safeImageUrl(value); return /^https?:/i.test(image) ? image : ''; }
 
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved && Array.isArray(saved.products) && Array.isArray(saved.snapshots)) return saved;
+    if (saved && Array.isArray(saved.products) && Array.isArray(saved.snapshots)) {
+      saved.version = 3;
+      saved.products = saved.products.map(product => ({ ...product, image: safeImageUrl(product.image || '') }));
+      return saved;
+    }
   } catch (_) { /* use seed */ }
   return clone(seedState);
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  const chip = $('.storage-state');
-  if (chip) { chip.innerHTML = '<i></i>刚刚已保存'; setTimeout(() => { chip.innerHTML = '<i></i>已自动保存'; }, 1400); }
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    const chip = $('.storage-state');
+    if (chip) { chip.innerHTML = '<i></i>刚刚已保存'; setTimeout(() => { chip.innerHTML = '<i></i>已自动保存'; }, 1400); }
+    return true;
+  } catch (_) {
+    showToast('浏览器存储空间不足，请移除本地图片或改用图片网址。');
+    return false;
+  }
 }
 
 function productSnapshots(productId) {
@@ -143,9 +166,11 @@ function renderProducts() {
   const rows = state.products.map(product => {
     const { latest } = latestPair(product.id);
     const change = changeFor(product.id);
+    const image = safeImageUrl(product.image);
+    const media = `${image ? `<img src="${escapeHtml(image)}" alt="${escapeHtml(product.name)}" loading="lazy" />` : ''}<span class="product-badge ${product.kind}">${product.kind === 'own' ? 'ME' : product.kind === 'direct' ? 'DC' : 'IC'}</span>`;
     const delta = change.soldAnomaly ? '<span class="delta-pill down">异常</span>' : change.sold == null ? '<span class="delta-pill neutral">待比较</span>' : `<span class="delta-pill ${change.sold > 0 ? 'up' : 'neutral'}">+${fmtNumber(change.sold)}</span>`;
     return `<tr>
-      <td><div class="product-cell"><span class="product-badge ${product.kind}">${product.kind === 'own' ? 'ME' : product.kind === 'direct' ? 'DC' : 'IC'}</span><div><strong>${escapeHtml(product.name)}</strong><span>${escapeHtml(product.seller || '未填写店铺')} · ${product.market}${product.url ? ' · 已保存链接' : ''}</span></div></div></td>
+      <td><div class="product-cell"><span class="product-media">${media}</span><div class="product-copy"><strong>${escapeHtml(product.name)}</strong><span>${escapeHtml(product.seller || '未填写店铺')} · ${escapeHtml(product.market)}${product.url ? ' · 已保存链接' : ''}</span></div></div></td>
       <td><span class="type-pill ${product.kind}">${KIND_LABELS[product.kind]}</span></td>
       <td>${latest ? fmtDate(latest.at) : '—'}</td><td>${latest ? fmtMoney(latest.price, product.currency) : '—'}</td><td>${latest ? fmtNumber(latest.sold) : '—'}</td><td>${delta}</td>
       <td>${latest?.rating ?? '—'} / ${latest?.reviews ?? '—'}</td>
@@ -153,6 +178,7 @@ function renderProducts() {
     </tr>`;
   }).join('');
   $('#productRows').innerHTML = rows;
+  $$('#productRows .product-media img').forEach(image => image.addEventListener('error', () => { image.hidden = true; }));
   $('#productEmpty').classList.toggle('show', !state.products.length);
 }
 
@@ -256,14 +282,70 @@ function openModal(id) { const modal = $(`#${id}`); modal.classList.add('open');
 function closeModal(id) { const modal = $(`#${id}`); modal.classList.remove('open'); modal.setAttribute('aria-hidden', 'true'); }
 function showToast(message) { clearTimeout(toastTimer); const toast = $('#toast'); toast.textContent = message; toast.classList.add('show'); toastTimer = setTimeout(() => toast.classList.remove('show'), 2800); }
 
+function updateProductImagePreview(value = '') {
+  pendingProductImage = safeImageUrl(value);
+  const preview = $('#productImagePreview');
+  const empty = $('#productImageEmpty');
+  if (pendingProductImage) {
+    preview.src = pendingProductImage;
+    preview.hidden = false;
+    empty.hidden = true;
+    $('#removeProductImage').disabled = false;
+  } else {
+    preview.removeAttribute('src');
+    preview.hidden = true;
+    empty.hidden = false;
+    empty.textContent = '暂无图片';
+    $('#removeProductImage').disabled = true;
+  }
+}
+
+function loadLocalImage(file) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => { URL.revokeObjectURL(objectUrl); resolve(image); };
+    image.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('无法读取这张图片')); };
+    image.src = objectUrl;
+  });
+}
+
+function renderCompressedImage(image, maxSide, quality) {
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+  const dataUrl = canvas.toDataURL('image/webp', quality);
+  if (!/^data:image\/(?:png|jpe?g|webp);base64,/i.test(dataUrl)) throw new Error('浏览器无法压缩这张图片');
+  return dataUrl;
+}
+
+async function compressProductImage(file) {
+  const supported = ['image/jpeg', 'image/png', 'image/webp'];
+  if (!supported.includes(file.type)) throw new Error('请选择 JPG、PNG 或 WebP 图片');
+  if (file.size > 12 * 1024 * 1024) throw new Error('原图片不能超过 12 MB');
+  const image = await loadLocalImage(file);
+  let maxSide = 720;
+  let quality = .78;
+  let result = renderCompressedImage(image, maxSide, quality);
+  while (result.length > 360000 && maxSide > 280) {
+    maxSide = Math.round(maxSide * .78);
+    quality = Math.max(.5, quality - .08);
+    result = renderCompressedImage(image, maxSide, quality);
+  }
+  if (result.length > 560000) throw new Error('压缩后仍然过大，请换一张图片或使用图片网址');
+  return result;
+}
+
 function openNewProduct() {
   $('#productForm').reset(); $('#editProductId').value = ''; $('#productModalTitle').textContent = '添加监控商品'; $('#saveProductButton').textContent = '保存并建立基准'; $('#initialSnapshotFields').hidden = false;
-  $('#firstSnapshotAt').value = localDateTime(); $('#productMarket').value = 'MY'; $('#productCurrency').value = 'MYR'; $('#productKind').value = 'direct'; openModal('productModal'); $('#productName').focus();
+  updateProductImagePreview(''); $('#firstSnapshotAt').value = localDateTime(); $('#productMarket').value = 'MY'; $('#productCurrency').value = 'MYR'; $('#productKind').value = 'direct'; openModal('productModal'); $('#productName').focus();
 }
 
 function openEditProduct(id) {
   const product = state.products.find(p => p.id === id); if (!product) return;
-  $('#editProductId').value = product.id; $('#productName').value = product.name; $('#sellerName').value = product.seller || ''; $('#productKind').value = product.kind; $('#productMarket').value = product.market; $('#productUrl').value = product.url || ''; $('#productCurrency').value = product.currency;
+  $('#productForm').reset(); $('#editProductId').value = product.id; $('#productName').value = product.name; $('#sellerName').value = product.seller || ''; $('#productKind').value = product.kind; $('#productMarket').value = product.market; $('#productUrl').value = product.url || ''; $('#productCurrency').value = product.currency; $('#productImageUrl').value = exportableImageUrl(product.image); updateProductImagePreview(product.image);
   $('#productModalTitle').textContent = '编辑商品资料'; $('#saveProductButton').textContent = '保存修改'; $('#initialSnapshotFields').hidden = true; openModal('productModal');
 }
 
@@ -281,22 +363,34 @@ function prefillSnapshot() {
 
 $('#productForm').addEventListener('submit', event => {
   event.preventDefault();
+  const imageUrlValue = $('#productImageUrl').value.trim();
+  const image = imageUrlValue ? safeImageUrl(imageUrlValue) : safeImageUrl(pendingProductImage);
+  if (imageUrlValue && !image) { showToast('图片网址无效，请使用 http 或 https 地址。'); return; }
   const editId = $('#editProductId').value;
   if (editId) {
     const product = state.products.find(p => p.id === editId); if (!product) return;
-    Object.assign(product, { name: $('#productName').value.trim(), seller: $('#sellerName').value.trim(), kind: $('#productKind').value, market: $('#productMarket').value, currency: $('#productCurrency').value, url: $('#productUrl').value.trim() });
-    saveState(); closeModal('productModal'); render(); showToast('商品资料已更新。'); return;
+    const before = clone(product);
+    Object.assign(product, { name: $('#productName').value.trim(), seller: $('#sellerName').value.trim(), kind: $('#productKind').value, market: $('#productMarket').value, currency: $('#productCurrency').value, url: $('#productUrl').value.trim(), image });
+    if (!saveState()) { Object.assign(product, before); return; }
+    closeModal('productModal'); render(); showToast('商品资料已更新。'); return;
   }
   const id = uid('product');
-  state.products.push({ id, name: $('#productName').value.trim(), seller: $('#sellerName').value.trim(), kind: $('#productKind').value, market: $('#productMarket').value, currency: $('#productCurrency').value, url: $('#productUrl').value.trim(), createdAt: new Date().toISOString() });
-  state.snapshots.push({ id: uid('snapshot'), productId: id, at: new Date($('#firstSnapshotAt').value).toISOString(), price: Number($('#firstPrice').value), sold: Number($('#firstSold').value), rating: valueOrNull('#firstRating'), reviews: valueOrNull('#firstReviews'), lowReviews: valueOrNull('#firstLowReviews'), shopRating: valueOrNull('#firstShopRating') });
-  state.selectedProductId = id; saveState(); closeModal('productModal'); render(); showToast('商品已添加，第一条基准快照已建立。');
+  const snapshotId = uid('snapshot');
+  const previousSelection = state.selectedProductId;
+  state.products.push({ id, name: $('#productName').value.trim(), seller: $('#sellerName').value.trim(), kind: $('#productKind').value, market: $('#productMarket').value, currency: $('#productCurrency').value, url: $('#productUrl').value.trim(), image, createdAt: new Date().toISOString() });
+  state.snapshots.push({ id: snapshotId, productId: id, at: new Date($('#firstSnapshotAt').value).toISOString(), price: Number($('#firstPrice').value), sold: Number($('#firstSold').value), rating: valueOrNull('#firstRating'), reviews: valueOrNull('#firstReviews'), lowReviews: valueOrNull('#firstLowReviews'), shopRating: valueOrNull('#firstShopRating') });
+  state.selectedProductId = id;
+  if (!saveState()) { state.products = state.products.filter(product => product.id !== id); state.snapshots = state.snapshots.filter(snapshot => snapshot.id !== snapshotId); state.selectedProductId = previousSelection; return; }
+  closeModal('productModal'); render(); showToast('商品已添加，第一条基准快照已建立。');
 });
 
 $('#snapshotForm').addEventListener('submit', event => {
   event.preventDefault(); const productId = $('#snapshotProduct').value;
-  state.snapshots.push({ id: uid('snapshot'), productId, at: new Date($('#snapshotAt').value).toISOString(), price: Number($('#snapshotPrice').value), sold: Number($('#snapshotSold').value), rating: valueOrNull('#snapshotRating'), reviews: valueOrNull('#snapshotReviews'), lowReviews: valueOrNull('#snapshotLowReviews'), shopRating: valueOrNull('#snapshotShopRating') });
-  state.selectedProductId = productId; saveState(); closeModal('snapshotModal'); render(); const change = changeFor(productId); showToast(change.soldAnomaly ? '快照已保存；累计销量下降，已标记异常。' : `快照已保存，期间新增销量 ${change.sold ?? '待下次计算'} 件。`);
+  const snapshotId = uid('snapshot'); const previousSelection = state.selectedProductId;
+  state.snapshots.push({ id: snapshotId, productId, at: new Date($('#snapshotAt').value).toISOString(), price: Number($('#snapshotPrice').value), sold: Number($('#snapshotSold').value), rating: valueOrNull('#snapshotRating'), reviews: valueOrNull('#snapshotReviews'), lowReviews: valueOrNull('#snapshotLowReviews'), shopRating: valueOrNull('#snapshotShopRating') });
+  state.selectedProductId = productId;
+  if (!saveState()) { state.snapshots = state.snapshots.filter(snapshot => snapshot.id !== snapshotId); state.selectedProductId = previousSelection; return; }
+  closeModal('snapshotModal'); render(); const change = changeFor(productId); showToast(change.soldAnomaly ? '快照已保存；累计销量下降，已标记异常。' : `快照已保存，期间新增销量 ${change.sold ?? '待下次计算'} 件。`);
 });
 
 function valueOrNull(selector) { const value = $(selector).value; return value === '' ? null : Number(value); }
@@ -326,16 +420,37 @@ $$('.modal-backdrop').forEach(modal => modal.addEventListener('click', event => 
 document.addEventListener('keydown', event => { if (event.key === 'Escape') $$('.modal-backdrop.open').forEach(modal => closeModal(modal.id)); });
 window.addEventListener('resize', debounce(renderChart, 120));
 
-$('#clearAllData').addEventListener('click', () => askConfirm('清空所有商品和快照？建议先导出数据备份。', () => { state = { version: 2, products: [], snapshots: [], selectedProductId: '' }; saveState(); render(); showToast('全部本机数据已清空。'); }));
+$('#productImagePreview').addEventListener('load', event => { event.target.hidden = false; $('#productImageEmpty').hidden = true; });
+$('#productImagePreview').addEventListener('error', event => { event.target.hidden = true; const empty = $('#productImageEmpty'); empty.hidden = false; empty.textContent = '图片无法显示'; });
+$('#chooseProductImage').addEventListener('click', () => $('#productImageFile').click());
+$('#removeProductImage').addEventListener('click', () => { $('#productImageUrl').value = ''; $('#productImageFile').value = ''; updateProductImagePreview(''); });
+$('#productImageUrl').addEventListener('change', event => {
+  const value = event.target.value.trim();
+  if (value && !safeImageUrl(value)) { showToast('图片网址无效，请使用 http 或 https 地址。'); return; }
+  updateProductImagePreview(value);
+});
+$('#productImageFile').addEventListener('change', async event => {
+  const file = event.target.files[0]; if (!file) return;
+  const button = $('#chooseProductImage'); const oldText = button.textContent; button.disabled = true; button.textContent = '正在压缩…';
+  try {
+    const image = await compressProductImage(file);
+    $('#productImageUrl').value = '';
+    updateProductImagePreview(image);
+    showToast('图片已压缩并加入商品资料。');
+  } catch (error) { showToast(error.message); }
+  finally { button.disabled = false; button.textContent = oldText; event.target.value = ''; }
+});
+
+$('#clearAllData').addEventListener('click', () => askConfirm('清空所有商品和快照？建议先导出数据备份。', () => { state = { version: 3, products: [], snapshots: [], selectedProductId: '' }; saveState(); render(); showToast('全部本机数据已清空。'); }));
 
 function csvEscape(value) { const text = value == null ? '' : String(value); return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text; }
 function exportCsv(template = false) {
-  const header = ['date','name','seller','type','url','market','currency','price','cumulative_sales','rating','reviews','low_star_reviews','shop_rating'];
+  const header = ['date','name','seller','type','url','image_url','market','currency','price','cumulative_sales','rating','reviews','low_star_reviews','shop_rating'];
   let rows = [];
-  if (template) rows = [[localDateTime().replace('T',' '),'示例商品','示例店铺','direct','https://www.tiktok.com/view/product/...','MY','MYR','18.69','901','4.8','56','1','4.7']];
+  if (template) rows = [[localDateTime().replace('T',' '),'示例商品','示例店铺','direct','https://www.tiktok.com/view/product/...','https://example.com/product.jpg','MY','MYR','18.69','901','4.8','56','1','4.7']];
   else {
     const map = Object.fromEntries(state.products.map(p => [p.id, p]));
-    rows = state.snapshots.sort((a,b) => new Date(a.at)-new Date(b.at)).map(s => { const p = map[s.productId]; return p ? [s.at,p.name,p.seller,p.kind,p.url,p.market,p.currency,s.price,s.sold,s.rating,s.reviews,s.lowReviews,s.shopRating] : null; }).filter(Boolean);
+    rows = [...state.snapshots].sort((a,b) => new Date(a.at)-new Date(b.at)).map(s => { const p = map[s.productId]; return p ? [s.at,p.name,p.seller,p.kind,p.url,exportableImageUrl(p.image),p.market,p.currency,s.price,s.sold,s.rating,s.reviews,s.lowReviews,s.shopRating] : null; }).filter(Boolean);
   }
   const csv = '\ufeff' + [header, ...rows].map(row => row.map(csvEscape).join(',')).join('\r\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = template ? 'pulsetrack-import-template.csv' : `pulsetrack-export-${new Date().toISOString().slice(0,10)}.csv`; link.click(); URL.revokeObjectURL(url);
@@ -350,14 +465,19 @@ function parseCsv(text) {
 $('#csvFile').addEventListener('change', async event => {
   const file = event.target.files[0]; if (!file) return;
   try {
+    const before = clone(state);
     const rows = parseCsv((await file.text()).replace(/^\ufeff/, '')); const headers = rows.shift().map(h => h.trim()); let addedProducts = 0, addedSnapshots = 0;
     rows.forEach(values => {
       const record = Object.fromEntries(headers.map((h, i) => [h, values[i]?.trim() ?? ''])); if (!record.name || !record.date) return;
+      const image = exportableImageUrl(record.image_url || record.image || '');
       let product = state.products.find(p => p.url && record.url && p.url === record.url) || state.products.find(p => p.name === record.name && p.market === (record.market || 'MY'));
-      if (!product) { product = { id: uid('product'), name: record.name, seller: record.seller || '', kind: normalizeKind(record.type), market: record.market || 'MY', currency: record.currency || 'MYR', url: record.url || '', createdAt: new Date().toISOString() }; state.products.push(product); addedProducts++; }
+      if (!product) { product = { id: uid('product'), name: record.name, seller: record.seller || '', kind: normalizeKind(record.type), market: record.market || 'MY', currency: record.currency || 'MYR', url: record.url || '', image, createdAt: new Date().toISOString() }; state.products.push(product); addedProducts++; }
+      else if (image) product.image = image;
       state.snapshots.push({ id: uid('snapshot'), productId: product.id, at: new Date(record.date.replace(' ', 'T')).toISOString(), price: Number(record.price || 0), sold: Number(record.cumulative_sales || 0), rating: record.rating === '' ? null : Number(record.rating), reviews: record.reviews === '' ? null : Number(record.reviews), lowReviews: record.low_star_reviews === '' ? null : Number(record.low_star_reviews), shopRating: record.shop_rating === '' ? null : Number(record.shop_rating) }); addedSnapshots++;
     });
-    if (!state.selectedProductId) state.selectedProductId = state.products[0]?.id || ''; saveState(); render(); showToast(`导入完成：${addedProducts} 个新商品，${addedSnapshots} 条快照。`);
+    if (!state.selectedProductId) state.selectedProductId = state.products[0]?.id || '';
+    if (!saveState()) { state = before; return; }
+    render(); showToast(`导入完成：${addedProducts} 个新商品，${addedSnapshots} 条快照。`);
   } catch (error) { showToast(`导入失败：${error.message}`); }
   event.target.value = '';
 });
