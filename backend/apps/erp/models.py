@@ -64,10 +64,22 @@ class OrganizationScopedModel(TimeStampedModel):
 
 
 class Warehouse(OrganizationScopedModel):
+    class Type(models.TextChoices):
+        OVERSEAS = "overseas", "海外仓"
+        FORWARDER = "forwarder", "货代仓"
+        SCHOOL = "school", "学校仓"
+        DOMESTIC = "domestic", "国内仓"
+        OTHER = "other", "其他"
+
     code = models.CharField(max_length=40)
     name = models.CharField(max_length=120)
+    warehouse_type = models.CharField(max_length=20, choices=Type.choices, default=Type.OTHER)
     country = models.CharField(max_length=2, default="CN")
     address = models.JSONField(default=dict, blank=True)
+    timezone = models.CharField(max_length=64, default="Asia/Shanghai")
+    contact = models.JSONField(default=dict, blank=True)
+    can_receive = models.BooleanField(default=True)
+    can_ship = models.BooleanField(default=True)
     active = models.BooleanField(default=True)
 
     class Meta:
@@ -85,6 +97,10 @@ class Product(OrganizationScopedModel):
 
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
+    seller = models.CharField(max_length=160, blank=True)
+    market = models.CharField(max_length=8, blank=True)
+    sales_currency = models.CharField(max_length=3, default="CNY")
+    monitoring_enabled = models.BooleanField(default=False)
     source_url = models.URLField(blank=True)
     purchase_url = models.URLField(blank=True)
     default_supplier = models.ForeignKey(
@@ -152,12 +168,16 @@ class PurchaseOrder(OrganizationScopedModel):
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="purchase_orders")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     currency = models.CharField(max_length=3, default="CNY")
+    extra_cost = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0"))
     ordered_at = models.DateTimeField(null=True, blank=True)
     expected_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["organization", "number"], name="uniq_org_po_number")]
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "number"], name="uniq_org_po_number"),
+            models.CheckConstraint(condition=Q(extra_cost__gte=0), name="po_extra_cost_nonnegative"),
+        ]
 
 
 class PurchaseOrderLine(TimeStampedModel):
@@ -233,6 +253,50 @@ class StockBalance(OrganizationScopedModel):
         return self.on_hand - self.reserved
 
 
+class ReplenishmentPolicy(OrganizationScopedModel):
+    warehouse = models.ForeignKey(
+        Warehouse, on_delete=models.PROTECT, related_name="replenishment_policies"
+    )
+    sku = models.ForeignKey(
+        SKU, on_delete=models.PROTECT, related_name="replenishment_policies"
+    )
+    lead_time_override = models.PositiveIntegerField(null=True, blank=True)
+    review_cycle_days = models.PositiveIntegerField(default=7)
+    target_days = models.PositiveIntegerField(default=30)
+    min_order_qty = models.DecimalField(
+        max_digits=14, decimal_places=3, default=Decimal("1")
+    )
+    pack_size = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("1"))
+    safety_stock_override = models.DecimalField(
+        max_digits=14, decimal_places=3, null=True, blank=True
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "warehouse", "sku"],
+                name="uniq_replenishment_policy",
+            ),
+            models.CheckConstraint(
+                condition=Q(review_cycle_days__gt=0), name="replenishment_review_positive"
+            ),
+            models.CheckConstraint(
+                condition=Q(target_days__gt=0), name="replenishment_target_positive"
+            ),
+            models.CheckConstraint(
+                condition=Q(min_order_qty__gt=0), name="replenishment_moq_positive"
+            ),
+            models.CheckConstraint(
+                condition=Q(pack_size__gt=0), name="replenishment_pack_positive"
+            ),
+            models.CheckConstraint(
+                condition=Q(safety_stock_override__isnull=True)
+                | Q(safety_stock_override__gte=0),
+                name="replenishment_safety_nonnegative",
+            ),
+        ]
+
+
 class StockLedger(OrganizationScopedModel):
     class Type(models.TextChoices):
         RECEIPT = "receipt", "采购收货"
@@ -241,6 +305,9 @@ class StockLedger(OrganizationScopedModel):
         RELEASE = "release", "释放"
         SHIPMENT = "shipment", "出库"
         RETURN = "return", "退货入库"
+        TRANSFER_OUT = "transfer_out", "调拨发出"
+        TRANSFER_IN = "transfer_in", "调拨收货"
+        TRANSFER_CANCEL = "transfer_cancel", "调拨撤回"
 
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="stock_ledger")
     sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="stock_ledger")
@@ -279,6 +346,125 @@ class StockLedger(OrganizationScopedModel):
         raise ValidationError("库存流水不可删除")
 
 
+class StockTransferQuerySet(models.QuerySet):
+    def delete(self):
+        if self.exclude(status="draft").exists():
+            raise ValidationError("已过账的调拨单不可删除")
+        return super().delete()
+
+
+class StockTransfer(OrganizationScopedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "草稿"
+        IN_TRANSIT = "in_transit", "调拨在途"
+        RECEIVED = "received", "已收货"
+        CANCELLED = "cancelled", "已取消"
+
+    number = models.CharField(max_length=60)
+    source_warehouse = models.ForeignKey(
+        Warehouse, on_delete=models.PROTECT, related_name="outbound_transfers"
+    )
+    destination_warehouse = models.ForeignKey(
+        Warehouse, on_delete=models.PROTECT, related_name="inbound_transfers"
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    notes = models.TextField(blank=True)
+    dispatch_idempotency_key = models.CharField(max_length=120, blank=True)
+    receive_idempotency_key = models.CharField(max_length=120, blank=True)
+    dispatched_at = models.DateTimeField(null=True, blank=True)
+    dispatched_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="dispatched_stock_transfers",
+    )
+    received_at = models.DateTimeField(null=True, blank=True)
+    received_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="received_stock_transfers",
+    )
+
+    objects = StockTransferQuerySet.as_manager()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "number"], name="uniq_org_transfer_number"
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "dispatch_idempotency_key"],
+                condition=~Q(dispatch_idempotency_key=""),
+                name="uniq_org_transfer_dispatch_idem",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "receive_idempotency_key"],
+                condition=~Q(receive_idempotency_key=""),
+                name="uniq_org_transfer_receive_idem",
+            ),
+            models.CheckConstraint(
+                condition=~Q(source_warehouse=F("destination_warehouse")),
+                name="transfer_warehouses_differ",
+            ),
+        ]
+
+    def delete(self, *args, **kwargs):
+        persisted_status = (
+            type(self).objects.filter(pk=self.pk).values_list("status", flat=True).first()
+        )
+        if persisted_status != self.Status.DRAFT:
+            raise ValidationError("已过账的调拨单不可删除")
+        return super().delete(*args, **kwargs)
+
+
+class StockTransferLineQuerySet(models.QuerySet):
+    def _assert_draft(self):
+        if self.exclude(transfer__status=StockTransfer.Status.DRAFT).exists():
+            raise ValidationError("已过账调拨单的明细不可修改或删除")
+
+    def update(self, **kwargs):
+        self._assert_draft()
+        return super().update(**kwargs)
+
+    def delete(self):
+        self._assert_draft()
+        return super().delete()
+
+
+class StockTransferLine(TimeStampedModel):
+    transfer = models.ForeignKey(StockTransfer, on_delete=models.CASCADE, related_name="lines")
+    sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="transfer_lines")
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+
+    objects = StockTransferLineQuerySet.as_manager()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["transfer", "sku"], name="uniq_transfer_sku"),
+            models.CheckConstraint(condition=Q(quantity__gt=0), name="transfer_qty_positive"),
+        ]
+
+    def delete(self, *args, **kwargs):
+        persisted_status = StockTransfer.objects.filter(pk=self.transfer_id).values_list(
+            "status", flat=True
+        ).first()
+        if persisted_status != StockTransfer.Status.DRAFT:
+            raise ValidationError("已过账调拨单的明细不可删除")
+        return super().delete(*args, **kwargs)
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            persisted_status = StockTransfer.objects.filter(pk=self.transfer_id).values_list(
+                "status", flat=True
+            ).first()
+            if persisted_status != StockTransfer.Status.DRAFT:
+                raise ValidationError("已过账调拨单的明细不可修改")
+        return super().save(*args, **kwargs)
+
+
 class SalesOrder(OrganizationScopedModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "草稿"
@@ -292,6 +478,9 @@ class SalesOrder(OrganizationScopedModel):
     number = models.CharField(max_length=60)
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="sales_orders")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    platform = models.CharField(max_length=40, blank=True)
+    store = models.CharField(max_length=120, blank=True)
+    ordered_at = models.DateTimeField(null=True, blank=True)
     external_ref = models.CharField(max_length=100, blank=True)
     customer = models.JSONField(default=dict, blank=True)
     notes = models.TextField(blank=True)
@@ -444,8 +633,21 @@ class ReturnReceiptLine(TimeStampedModel):
 
 
 class CompetitorProduct(OrganizationScopedModel):
+    class Kind(models.TextChoices):
+        DIRECT = "direct", "直接竞品"
+        INDIRECT = "indirect", "间接竞品"
+
     name = models.CharField(max_length=200)
+    linked_product = models.OneToOneField(
+        Product,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="monitoring_profile",
+    )
+    kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.DIRECT)
     platform = models.CharField(max_length=40, default="other")
+    market = models.CharField(max_length=8, blank=True)
     url = models.URLField(max_length=1000)
     image_url = models.URLField(max_length=1000, blank=True)
     seller = models.CharField(max_length=160, blank=True)
@@ -507,3 +709,52 @@ class AuditLog(OrganizationScopedModel):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("审计日志不可删除")
+
+
+class LocalImport(OrganizationScopedModel):
+    class Status(models.TextChoices):
+        COMPLETED = "completed", "已完成"
+
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="local_imports")
+    idempotency_key = models.CharField(max_length=160)
+    source_version = models.PositiveIntegerField(default=0)
+    source_hash = models.CharField(max_length=64)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.COMPLETED)
+    summary = models.JSONField(default=dict)
+    mapping = models.JSONField(default=dict)
+    warnings = models.JSONField(default=list)
+    imported_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="erp_local_imports",
+    )
+    imported_at = models.DateTimeField(auto_now_add=True)
+
+    objects = AppendOnlyManager()
+
+    class Meta:
+        ordering = ["-imported_at", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization"],
+                name="uniq_org_local_import",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "idempotency_key"],
+                name="uniq_org_local_import_idem",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "source_hash"],
+                name="uniq_org_local_import_hash",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("本机迁移报告不可修改")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("本机迁移报告不可删除")

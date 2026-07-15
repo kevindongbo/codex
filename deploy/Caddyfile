@@ -14,6 +14,13 @@
     reverse_proxy api:8000
   }
 
+  @runtimeConfig path /runtime-config.js
+  handle @runtimeConfig {
+    header Content-Type "application/javascript; charset=utf-8"
+    header Cache-Control "no-store"
+    respond `window.DONGBO_CONFIG = { mode: "team", apiBase: "/api", allowLocalFallback: false };` 200
+  }
+
   handle_path /static/* {
     root * /srv/django-static
     file_server

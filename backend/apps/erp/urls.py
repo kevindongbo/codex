@@ -15,15 +15,27 @@ router.register("purchase-orders", views.PurchaseOrderViewSet, basename="purchas
 router.register("receipts", views.ReceiptViewSet, basename="receipt")
 router.register("stock-balances", views.StockBalanceViewSet, basename="stock-balance")
 router.register("stock-ledger", views.StockLedgerViewSet, basename="stock-ledger")
+router.register("stock-transfers", views.StockTransferViewSet, basename="stock-transfer")
+router.register(
+    "replenishment-policies",
+    views.ReplenishmentPolicyViewSet,
+    basename="replenishment-policy",
+)
 router.register("orders", views.SalesOrderViewSet, basename="order")
 router.register("shipments", views.ShipmentViewSet, basename="shipment")
 router.register("returns", views.ReturnOrderViewSet, basename="return")
 router.register("competitors", views.CompetitorProductViewSet, basename="competitor")
 router.register("competitor-snapshots", views.CompetitorSnapshotViewSet, basename="competitor-snapshot")
 router.register("audit-logs", views.AuditLogViewSet, basename="audit-log")
+router.register("local-imports", views.LocalImportViewSet, basename="local-import")
 
 urlpatterns = [
     path("health/", views.health, name="health"),
     path("auth/me/", views.me, name="me"),
+    path(
+        "replenishment/recommendations/",
+        views.replenishment_recommendations,
+        name="replenishment-recommendations",
+    ),
     path("", include(router.urls)),
 ]

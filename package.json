@@ -1,0 +1,10 @@
+{
+  "name": "tiktok-sales-monitor-cn",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-site.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  }
+}

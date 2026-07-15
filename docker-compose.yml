@@ -33,6 +33,7 @@ services:
       DJANGO_SECURE_SSL_REDIRECT: ${DJANGO_SECURE_SSL_REDIRECT:-false}
       DJANGO_SESSION_COOKIE_SECURE: ${DJANGO_SESSION_COOKIE_SECURE:-false}
       DJANGO_CSRF_COOKIE_SECURE: ${DJANGO_CSRF_COOKIE_SECURE:-false}
+      DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE: ${DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE:-26214400}
       DATABASE_URL: ${DATABASE_URL:?请在 .env 中配置 DATABASE_URL}
     command:
       - gunicorn
@@ -76,6 +77,7 @@ services:
       - ./index.html:/srv/www/index.html:ro
       - ./styles.css:/srv/www/styles.css:ro
       - ./app.js:/srv/www/app.js:ro
+      - ./team.js:/srv/www/team.js:ro
       - ./monitoring-targets.json:/srv/www/monitoring-targets.json:ro
       - django_static:/srv/django-static:ro
       - django_media:/srv/django-media:ro

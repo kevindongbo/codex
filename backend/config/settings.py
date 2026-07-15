@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import dj_database_url
+from corsheaders.defaults import default_headers
 from django.core.exceptions import ImproperlyConfigured
 
 
@@ -87,8 +88,10 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE", str(25 * 1024 * 1024)))
 
 CORS_ALLOWED_ORIGINS = [v.strip() for v in os.getenv("DJANGO_CORS_ALLOWED_ORIGINS", "").split(",") if v.strip()]
+CORS_ALLOW_HEADERS = (*default_headers, "x-organization-id")
 CSRF_TRUSTED_ORIGINS = [v.strip() for v in os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if v.strip()]
 
 # The API container is only reachable through the trusted Caddy service in the

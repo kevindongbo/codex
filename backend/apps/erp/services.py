@@ -1,4 +1,6 @@
+from copy import deepcopy
 from decimal import Decimal
+from hashlib import sha256
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -6,6 +8,8 @@ from django.utils import timezone
 
 from .models import (
     AuditLog,
+    CompetitorProduct,
+    CompetitorSnapshot,
     PurchaseOrder,
     PurchaseOrderLine,
     Receipt,
@@ -21,6 +25,8 @@ from .models import (
     StockBalance,
     StockLedger,
     StockReservation,
+    StockTransfer,
+    StockTransferLine,
 )
 
 
@@ -150,6 +156,209 @@ def post_stock(
 
 
 @transaction.atomic
+def dispatch_stock_transfer(*, transfer, idempotency_key, actor=None):
+    """Post a draft transfer out of its source warehouse exactly once."""
+    if not idempotency_key:
+        raise ValidationError("幂等键不能为空")
+    expected_organization = transfer.organization
+    transfer = StockTransfer.objects.select_for_update().select_related(
+        "organization", "source_warehouse", "destination_warehouse"
+    ).get(pk=transfer.pk, organization=expected_organization)
+    _assert_organization(
+        transfer.organization,
+        source_warehouse=transfer.source_warehouse,
+        destination_warehouse=transfer.destination_warehouse,
+    )
+    if transfer.status in {StockTransfer.Status.IN_TRANSIT, StockTransfer.Status.RECEIVED}:
+        if transfer.dispatch_idempotency_key == idempotency_key:
+            return transfer
+        raise ValidationError("调拨单已经使用其他幂等键发出")
+    if transfer.status != StockTransfer.Status.DRAFT:
+        raise ValidationError("只有草稿调拨单可以发出")
+    if transfer.source_warehouse_id == transfer.destination_warehouse_id:
+        raise ValidationError("来源仓和目标仓不能相同")
+    if not transfer.source_warehouse.active or not transfer.source_warehouse.can_ship:
+        raise ValidationError("来源仓未启用或不允许出库")
+    if not transfer.destination_warehouse.active or not transfer.destination_warehouse.can_receive:
+        raise ValidationError("目标仓未启用或不允许收货")
+    if StockTransfer.objects.filter(
+        organization=transfer.organization,
+        dispatch_idempotency_key=idempotency_key,
+    ).exclude(pk=transfer.pk).exists():
+        raise ValidationError("幂等键已被其他调拨单占用")
+
+    lines = list(
+        StockTransferLine.objects.select_for_update()
+        .filter(transfer=transfer)
+        .select_related("sku__product")
+        .order_by("pk")
+    )
+    if not lines:
+        raise ValidationError("调拨单没有明细")
+    for line in lines:
+        _assert_organization(
+            transfer.organization, sku=line.sku, product=line.sku.product
+        )
+        StockBalance.objects.get_or_create(
+            organization=transfer.organization,
+            warehouse=transfer.destination_warehouse,
+            sku=line.sku,
+            defaults={"on_hand": Decimal("0"), "reserved": Decimal("0")},
+        )
+        post_stock(
+            organization=transfer.organization,
+            warehouse=transfer.source_warehouse,
+            sku=line.sku,
+            event_type=StockLedger.Type.TRANSFER_OUT,
+            on_hand_delta=-line.quantity,
+            reference_type="stock_transfer_line",
+            reference_id=line.pk,
+            idempotency_key=f"transfer-out:{transfer.pk}:{line.pk}",
+            actor=actor,
+            reason=f"调拨至 {transfer.destination_warehouse.name}",
+        )
+    transfer.status = StockTransfer.Status.IN_TRANSIT
+    transfer.dispatch_idempotency_key = idempotency_key
+    transfer.dispatched_at = timezone.now()
+    transfer.dispatched_by = actor if getattr(actor, "is_authenticated", False) else None
+    transfer.save(update_fields=[
+        "status", "dispatch_idempotency_key", "dispatched_at", "dispatched_by", "updated_at",
+    ])
+    write_audit(
+        organization=transfer.organization,
+        actor=actor,
+        action="stock_transfer.dispatch",
+        instance=transfer,
+        after={"idempotency_key": idempotency_key, "line_count": len(lines)},
+    )
+    return transfer
+
+
+@transaction.atomic
+def receive_stock_transfer(*, transfer, idempotency_key, actor=None):
+    """Post an in-transit transfer into its destination warehouse exactly once."""
+    if not idempotency_key:
+        raise ValidationError("幂等键不能为空")
+    expected_organization = transfer.organization
+    transfer = StockTransfer.objects.select_for_update().select_related(
+        "organization", "source_warehouse", "destination_warehouse"
+    ).get(pk=transfer.pk, organization=expected_organization)
+    _assert_organization(
+        transfer.organization,
+        source_warehouse=transfer.source_warehouse,
+        destination_warehouse=transfer.destination_warehouse,
+    )
+    if transfer.status == StockTransfer.Status.RECEIVED:
+        if transfer.receive_idempotency_key == idempotency_key:
+            return transfer
+        raise ValidationError("调拨单已经使用其他幂等键收货")
+    if transfer.status != StockTransfer.Status.IN_TRANSIT:
+        raise ValidationError("只有调拨在途单可以收货")
+    if not transfer.destination_warehouse.active or not transfer.destination_warehouse.can_receive:
+        raise ValidationError("目标仓未启用或不允许收货")
+    if StockTransfer.objects.filter(
+        organization=transfer.organization,
+        receive_idempotency_key=idempotency_key,
+    ).exclude(pk=transfer.pk).exists():
+        raise ValidationError("幂等键已被其他调拨收货占用")
+
+    lines = list(
+        StockTransferLine.objects.select_for_update()
+        .filter(transfer=transfer)
+        .select_related("sku__product")
+        .order_by("pk")
+    )
+    if not lines:
+        raise ValidationError("调拨单没有明细")
+    for line in lines:
+        _assert_organization(
+            transfer.organization, sku=line.sku, product=line.sku.product
+        )
+        post_stock(
+            organization=transfer.organization,
+            warehouse=transfer.destination_warehouse,
+            sku=line.sku,
+            event_type=StockLedger.Type.TRANSFER_IN,
+            on_hand_delta=line.quantity,
+            reference_type="stock_transfer_line",
+            reference_id=line.pk,
+            idempotency_key=f"transfer-in:{transfer.pk}:{line.pk}",
+            actor=actor,
+            reason=f"从 {transfer.source_warehouse.name} 调拨收货",
+        )
+    transfer.status = StockTransfer.Status.RECEIVED
+    transfer.receive_idempotency_key = idempotency_key
+    transfer.received_at = timezone.now()
+    transfer.received_by = actor if getattr(actor, "is_authenticated", False) else None
+    transfer.save(update_fields=[
+        "status", "receive_idempotency_key", "received_at", "received_by", "updated_at",
+    ])
+    write_audit(
+        organization=transfer.organization,
+        actor=actor,
+        action="stock_transfer.receive",
+        instance=transfer,
+        after={"idempotency_key": idempotency_key, "line_count": len(lines)},
+    )
+    return transfer
+
+
+@transaction.atomic
+def cancel_stock_transfer(*, transfer, actor=None):
+    expected_organization = transfer.organization
+    transfer = StockTransfer.objects.select_for_update().select_related(
+        "source_warehouse", "destination_warehouse"
+    ).get(
+        pk=transfer.pk, organization=expected_organization
+    )
+    if transfer.status == StockTransfer.Status.CANCELLED:
+        return transfer
+    if transfer.status == StockTransfer.Status.RECEIVED:
+        raise ValidationError("已收货调拨单不能取消")
+    if transfer.status not in {
+        StockTransfer.Status.DRAFT,
+        StockTransfer.Status.IN_TRANSIT,
+    }:
+        raise ValidationError("当前调拨状态不能取消")
+    restored = transfer.status == StockTransfer.Status.IN_TRANSIT
+    if restored:
+        lines = list(
+            StockTransferLine.objects.select_for_update()
+            .filter(transfer=transfer)
+            .select_related("sku__product")
+            .order_by("pk")
+        )
+        if not lines:
+            raise ValidationError("调拨单没有明细")
+        for line in lines:
+            _assert_organization(
+                transfer.organization, sku=line.sku, product=line.sku.product
+            )
+            post_stock(
+                organization=transfer.organization,
+                warehouse=transfer.source_warehouse,
+                sku=line.sku,
+                event_type=StockLedger.Type.TRANSFER_CANCEL,
+                on_hand_delta=line.quantity,
+                reference_type="stock_transfer_line",
+                reference_id=line.pk,
+                idempotency_key=f"transfer-cancel:{transfer.pk}:{line.pk}",
+                actor=actor,
+                reason=f"撤回前往 {transfer.destination_warehouse.name} 的调拨",
+            )
+    transfer.status = StockTransfer.Status.CANCELLED
+    transfer.save(update_fields=["status", "updated_at"])
+    write_audit(
+        organization=transfer.organization,
+        actor=actor,
+        action="stock_transfer.cancel",
+        instance=transfer,
+        after={"restored_source_stock": restored},
+    )
+    return transfer
+
+
+@transaction.atomic
 def adjust_inventory(*, organization, warehouse, sku, delta, reason, idempotency_key, actor=None):
     if not idempotency_key:
         raise ValidationError("幂等键不能为空")
@@ -215,8 +424,12 @@ def submit_purchase(*, purchase_order, actor=None):
         supplier=purchase_order.supplier,
         warehouse=purchase_order.warehouse,
     )
-    if not purchase_order.supplier.active or not purchase_order.warehouse.active:
-        raise ValidationError("采购单的供应商和仓库必须处于启用状态")
+    if (
+        not purchase_order.supplier.active
+        or not purchase_order.warehouse.active
+        or not purchase_order.warehouse.can_receive
+    ):
+        raise ValidationError("采购单的供应商和收货仓库必须处于启用且可收货状态")
     if purchase_order.status == PurchaseOrder.Status.SUBMITTED:
         return purchase_order
     if purchase_order.status != PurchaseOrder.Status.DRAFT:
@@ -285,6 +498,8 @@ def receive_purchase(*, organization, purchase_order, number, lines, idempotency
     _assert_organization(
         organization, supplier=purchase_order.supplier, warehouse=purchase_order.warehouse
     )
+    if not purchase_order.warehouse.active or not purchase_order.warehouse.can_receive:
+        raise ValidationError("采购单的目标仓库未启用或不允许收货")
     # The PO lock serializes state changes; repeat the idempotency lookup only
     # after acquiring it so a concurrent successful receipt is observable.
     existing = Receipt.objects.filter(
@@ -384,8 +599,8 @@ def receive_purchase(*, organization, purchase_order, number, lines, idempotency
 def confirm_order(*, order, actor=None):
     order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(pk=order.pk)
     _assert_organization(order.organization, warehouse=order.warehouse)
-    if not order.warehouse.active:
-        raise ValidationError("订单仓库未启用")
+    if not order.warehouse.active or not order.warehouse.can_ship:
+        raise ValidationError("订单仓库未启用或不允许出库")
     if order.status == SalesOrder.Status.READY:
         return order
     if order.status != SalesOrder.Status.DRAFT:
@@ -635,6 +850,60 @@ def ship_order(*, order, number, idempotency_key, tracking_number="", actor=None
 
 
 @transaction.atomic
+def confirm_and_ship_order(
+    *, order, idempotency_key, number="", tracking_number="", actor=None
+):
+    """Confirm, reserve and ship a complete order in one database transaction."""
+    if not idempotency_key:
+        raise ValidationError("幂等键不能为空")
+    expected_organization = order.organization
+    order = SalesOrder.objects.select_for_update().select_related(
+        "organization", "warehouse"
+    ).get(pk=order.pk, organization=expected_organization)
+    existing = Shipment.objects.filter(
+        organization=order.organization, idempotency_key=idempotency_key
+    ).first()
+    if existing:
+        if existing.order_id != order.pk:
+            raise ValidationError("幂等键已被其他订单的出库操作占用")
+        if number and existing.number != number:
+            raise ValidationError("幂等键对应的出库单号不一致")
+        if tracking_number and existing.tracking_number != tracking_number:
+            raise ValidationError("幂等键对应的物流单号不一致")
+        return existing
+    if order.status == SalesOrder.Status.CANCELLED:
+        raise ValidationError("已取消订单不能确认出库")
+    if order.status == SalesOrder.Status.SHIPPED:
+        raise ValidationError("订单已由其他出库请求完成")
+
+    if order.status == SalesOrder.Status.DRAFT:
+        order = confirm_order(order=order, actor=actor)
+    if order.status == SalesOrder.Status.READY:
+        allocation_key = f"one-step-{sha256(idempotency_key.encode('utf-8')).hexdigest()}"
+        order = allocate_order(
+            order=order, idempotency_key=allocation_key, actor=actor
+        )
+    if order.status == SalesOrder.Status.ALLOCATED:
+        order = start_picking(order=order, actor=actor)
+    if order.status == SalesOrder.Status.PICKING:
+        order = verify_order(order=order, actor=actor)
+    if order.status != SalesOrder.Status.VERIFIED:
+        raise ValidationError("当前订单状态不能执行一键确认出库")
+
+    shipment_number = number.strip() if number else ""
+    if not shipment_number:
+        candidate = f"OUT-{order.number}"
+        shipment_number = candidate if len(candidate) <= 60 else f"OUT-{order.pk.hex[:20]}"
+    return ship_order(
+        order=order,
+        number=shipment_number,
+        idempotency_key=idempotency_key,
+        tracking_number=tracking_number,
+        actor=actor,
+    )
+
+
+@transaction.atomic
 def receive_return(*, return_order, quantities, idempotency_key, actor=None):
     expected_organization = return_order.organization
     return_order = ReturnOrder.objects.select_for_update().select_related(
@@ -779,3 +1048,45 @@ def reject_return(*, return_order, actor=None):
         instance=return_order,
     )
     return return_order
+
+
+@transaction.atomic
+def create_quick_sales_snapshot(*, product, sold_count, captured_at=None, actor=None):
+    """Create a snapshot by changing only cumulative sales and inheriting all other facts."""
+    expected_organization = product.organization
+    product = CompetitorProduct.objects.select_for_update().get(
+        pk=product.pk, organization=expected_organization
+    )
+    latest = (
+        CompetitorSnapshot.objects.select_for_update()
+        .filter(product=product)
+        .order_by("-captured_at", "-created_at")
+        .first()
+    )
+    if latest is None:
+        raise ValidationError("该竞品还没有历史快照，请先录入一条完整快照")
+    captured_at = captured_at or timezone.now()
+    if CompetitorSnapshot.objects.filter(product=product, captured_at=captured_at).exists():
+        raise ValidationError("该竞品在此时间已经有快照")
+    snapshot = CompetitorSnapshot.objects.create(
+        product=product,
+        captured_at=captured_at,
+        price=latest.price,
+        sold_count=sold_count,
+        rating=latest.rating,
+        review_count=latest.review_count,
+        availability=latest.availability,
+        raw=deepcopy(latest.raw),
+    )
+    write_audit(
+        organization=product.organization,
+        actor=actor,
+        action="competitor_snapshot.quick_sales",
+        instance=snapshot,
+        after={
+            "product": str(product.pk),
+            "sold_count": sold_count,
+            "inherited_from": str(latest.pk),
+        },
+    )
+    return snapshot

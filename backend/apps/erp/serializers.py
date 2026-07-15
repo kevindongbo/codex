@@ -1,14 +1,16 @@
 from decimal import Decimal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import serializers
 
 from .models import (
-    AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization,
+    AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
     Product, ProductImage, PurchaseOrder, PurchaseOrderLine, Receipt, ReceiptLine,
+    ReplenishmentPolicy,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
-    SKU, StockBalance, StockLedger, Supplier, Warehouse,
+    SKU, StockBalance, StockLedger, StockTransfer, StockTransferLine, Supplier, Warehouse,
 )
 from .permissions import request_organization
 
@@ -63,6 +65,26 @@ class ScopedSerializer(serializers.ModelSerializer):
 
 
 class WarehouseSerializer(ScopedSerializer):
+    def validate_timezone(self, value):
+        try:
+            ZoneInfo(value)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            raise serializers.ValidationError("请输入有效的 IANA 时区，例如 Asia/Kuala_Lumpur") from exc
+        return value
+
+    def validate_country(self, value):
+        return value.upper()
+
+    def validate_address(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("地址必须是键值对象")
+        return value
+
+    def validate_contact(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("联系人必须是键值对象")
+        return value
+
     class Meta(ScopedSerializer.Meta):
         model = Warehouse
         fields = "__all__"
@@ -98,6 +120,7 @@ class SKUSerializer(OrganizationValidationMixin, ScopedSerializer):
     class Meta(ScopedSerializer.Meta):
         model = SKU
         fields = "__all__"
+        extra_kwargs = {"barcode": {"required": False, "allow_blank": True}}
 
 
 class ProductSerializer(OrganizationValidationMixin, ScopedSerializer):
@@ -265,10 +288,20 @@ class StockBalanceSerializer(ScopedSerializer):
                 PurchaseOrder.Status.PARTIAL,
             ],
         )
-        return sum(
+        purchase_in_transit = sum(
             (line.quantity_ordered - line.quantity_received for line in lines),
             Decimal("0"),
         )
+        transfer_in_transit = sum(
+            StockTransferLine.objects.filter(
+                sku=balance.sku,
+                transfer__organization=balance.organization,
+                transfer__destination_warehouse=balance.warehouse,
+                transfer__status=StockTransfer.Status.IN_TRANSIT,
+            ).values_list("quantity", flat=True),
+            Decimal("0"),
+        )
+        return purchase_in_transit + transfer_in_transit
 
     class Meta(ScopedSerializer.Meta):
         model = StockBalance
@@ -280,6 +313,111 @@ class StockLedgerSerializer(ScopedSerializer):
     class Meta(ScopedSerializer.Meta):
         model = StockLedger
         fields = "__all__"
+
+
+class ReplenishmentPolicySerializer(OrganizationValidationMixin, ScopedSerializer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.scope_relation("warehouse", Warehouse)
+        self.scope_relation("sku", SKU)
+
+    def validate(self, attrs):
+        self.require_same_organization(
+            attrs.get("warehouse", getattr(self.instance, "warehouse", None)),
+            "warehouse",
+        )
+        self.require_same_organization(
+            attrs.get("sku", getattr(self.instance, "sku", None)), "sku"
+        )
+        return attrs
+
+    class Meta(ScopedSerializer.Meta):
+        model = ReplenishmentPolicy
+        fields = "__all__"
+
+
+class ReplenishmentRecommendationQuerySerializer(
+    OrganizationValidationMixin, serializers.Serializer
+):
+    warehouse = serializers.PrimaryKeyRelatedField(queryset=Warehouse.objects.all())
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.scope_relation("warehouse", Warehouse)
+
+    def validate_warehouse(self, value):
+        if not value.active:
+            raise serializers.ValidationError("仓库已停用")
+        return value
+
+
+class StockTransferLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StockTransferLine
+        fields = ["id", "sku", "quantity", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class StockTransferSerializer(OrganizationValidationMixin, ScopedSerializer):
+    lines = StockTransferLineSerializer(many=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        organization = self.get_organization()
+        if organization is not None:
+            warehouse_queryset = Warehouse.objects.filter(organization=organization)
+            self.fields["source_warehouse"].queryset = warehouse_queryset
+            self.fields["destination_warehouse"].queryset = warehouse_queryset
+            self.fields["lines"].child.fields["sku"].queryset = SKU.objects.filter(
+                organization=organization, active=True
+            )
+
+    def validate(self, attrs):
+        if "status" in getattr(self, "initial_data", {}):
+            raise serializers.ValidationError({"status": "请使用发出、收货或取消动作修改状态"})
+        source = attrs.get("source_warehouse", getattr(self.instance, "source_warehouse", None))
+        destination = attrs.get(
+            "destination_warehouse", getattr(self.instance, "destination_warehouse", None)
+        )
+        self.require_same_organization(source, "source_warehouse")
+        self.require_same_organization(destination, "destination_warehouse")
+        if source is not None and destination is not None and source.pk == destination.pk:
+            raise serializers.ValidationError("来源仓和目标仓不能相同")
+        lines = attrs.get("lines")
+        if self.instance is None and not lines:
+            raise serializers.ValidationError({"lines": "调拨单至少需要一条明细"})
+        if self.instance is not None:
+            if self.instance.status != StockTransfer.Status.DRAFT:
+                raise serializers.ValidationError("已发出或已取消的调拨单不可编辑")
+            if lines is not None:
+                raise serializers.ValidationError({"lines": "调拨明细创建后不可直接覆盖"})
+        seen = set()
+        for line in lines or []:
+            self.require_same_organization(line["sku"], "lines")
+            if line["sku"].pk in seen:
+                raise serializers.ValidationError({"lines": "同一 SKU 只能出现一次"})
+            seen.add(line["sku"].pk)
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        lines = validated_data.pop("lines")
+        transfer = StockTransfer.objects.create(**validated_data)
+        for line in lines:
+            StockTransferLine.objects.create(transfer=transfer, **line)
+        return transfer
+
+    class Meta(ScopedSerializer.Meta):
+        model = StockTransfer
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + [
+            "status", "dispatch_idempotency_key", "receive_idempotency_key",
+            "dispatched_at", "dispatched_by", "received_at", "received_by",
+        ]
+
+
+class TransferPostInputSerializer(serializers.Serializer):
+    idempotency_key = serializers.CharField(max_length=120)
 
 
 class AdjustmentInputSerializer(OrganizationValidationMixin, serializers.Serializer):
@@ -367,6 +505,12 @@ class SalesOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
 
 class AllocateInputSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(max_length=120)
+
+
+class ConfirmAndShipInputSerializer(serializers.Serializer):
+    idempotency_key = serializers.CharField(max_length=120)
+    number = serializers.CharField(max_length=60, required=False, allow_blank=True)
+    tracking_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
 
 
 class ShipInputSerializer(serializers.Serializer):
@@ -512,7 +656,18 @@ class ReturnReceiveInputSerializer(OrganizationValidationMixin, serializers.Seri
         return lines
 
 
-class CompetitorProductSerializer(ScopedSerializer):
+class CompetitorProductSerializer(OrganizationValidationMixin, ScopedSerializer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.scope_relation("linked_product", Product)
+
+    def validate(self, attrs):
+        self.require_same_organization(
+            attrs.get("linked_product", getattr(self.instance, "linked_product", None)),
+            "linked_product",
+        )
+        return attrs
+
     def validate_image_url(self, value):
         if value and not value.lower().startswith("https://"):
             raise serializers.ValidationError("竞品图片必须使用 HTTPS 地址")
@@ -538,7 +693,32 @@ class CompetitorSnapshotSerializer(OrganizationValidationMixin, serializers.Mode
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
+class QuickSalesSnapshotInputSerializer(OrganizationValidationMixin, serializers.Serializer):
+    product = serializers.PrimaryKeyRelatedField(queryset=CompetitorProduct.objects.all())
+    sold_count = serializers.IntegerField(min_value=0)
+    captured_at = serializers.DateTimeField(required=False)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        organization = self.get_organization()
+        if organization is not None:
+            self.fields["product"].queryset = CompetitorProduct.objects.filter(
+                organization=organization
+            )
+
+    def validate(self, attrs):
+        self.require_same_organization(attrs.get("product"), "product")
+        return attrs
+
+
 class AuditLogSerializer(ScopedSerializer):
     class Meta(ScopedSerializer.Meta):
         model = AuditLog
         fields = "__all__"
+
+
+class LocalImportSerializer(ScopedSerializer):
+    class Meta(ScopedSerializer.Meta):
+        model = LocalImport
+        fields = "__all__"
+        read_only_fields = [field.name for field in LocalImport._meta.fields]

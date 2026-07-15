@@ -5,14 +5,16 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from apps.erp.models import (
-    AuditLog, Membership, Organization, Product, PurchaseOrder, PurchaseOrderLine, Receipt,
-    ReturnLine, ReturnOrder, ReturnReceipt, SalesOrder, SalesOrderLine, Shipment,
-    SKU, StockBalance, StockLedger, StockReservation, Supplier, Warehouse,
+    AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, Product,
+    PurchaseOrder, PurchaseOrderLine, Receipt, ReturnLine, ReturnOrder, ReturnReceipt,
+    SalesOrder, SalesOrderLine, Shipment, SKU, StockBalance, StockLedger,
+    StockReservation, StockTransfer, StockTransferLine, Supplier, Warehouse,
 )
 from apps.erp.services import (
-    adjust_inventory, allocate_order, cancel_order, cancel_purchase, confirm_order,
-    receive_purchase, receive_return, ship_order, start_picking, submit_purchase,
-    verify_order,
+    adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
+    confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
+    dispatch_stock_transfer, receive_purchase, receive_return, receive_stock_transfer,
+    ship_order, start_picking, submit_purchase, verify_order,
 )
 
 
@@ -360,3 +362,185 @@ class InventoryServiceTests(TestCase):
             StockLedger.objects.filter(pk=ledger.pk).update(reason="批量篡改")
         with self.assertRaises(ValidationError):
             StockLedger.objects.filter(pk=ledger.pk).delete()
+
+    def test_stock_transfer_posts_each_warehouse_once_and_cannot_be_deleted(self):
+        destination = Warehouse.objects.create(
+            organization=self.organization, code="MY-01", name="马来仓",
+            warehouse_type=Warehouse.Type.OVERSEAS, country="MY",
+            timezone="Asia/Kuala_Lumpur",
+        )
+        adjust_inventory(
+            organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+            delta="10", reason="调拨期初", idempotency_key="transfer-opening", actor=self.user,
+        )
+        transfer = StockTransfer.objects.create(
+            organization=self.organization, number="TR-001",
+            source_warehouse=self.warehouse, destination_warehouse=destination,
+        )
+        StockTransferLine.objects.create(transfer=transfer, sku=self.sku, quantity="4")
+
+        first_dispatch = dispatch_stock_transfer(
+            transfer=transfer, idempotency_key="dispatch-001", actor=self.user
+        )
+        replay_dispatch = dispatch_stock_transfer(
+            transfer=transfer, idempotency_key="dispatch-001", actor=self.user
+        )
+        self.assertEqual(first_dispatch.pk, replay_dispatch.pk)
+        self.assertEqual(first_dispatch.status, StockTransfer.Status.IN_TRANSIT)
+        source_balance = StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku)
+        destination_balance = StockBalance.objects.get(warehouse=destination, sku=self.sku)
+        self.assertEqual(source_balance.on_hand, Decimal("6"))
+        self.assertEqual(destination_balance.on_hand, Decimal("0"))
+        self.assertEqual(
+            StockLedger.objects.filter(event_type=StockLedger.Type.TRANSFER_OUT).count(), 1
+        )
+        with self.assertRaises(ValidationError):
+            dispatch_stock_transfer(
+                transfer=transfer, idempotency_key="dispatch-other", actor=self.user
+            )
+        with self.assertRaises(ValidationError):
+            transfer.delete()
+        with self.assertRaises(ValidationError):
+            StockTransfer.objects.filter(pk=transfer.pk).delete()
+        posted_line = StockTransferLine.objects.get(transfer=transfer)
+        posted_line.quantity = Decimal("5")
+        with self.assertRaises(ValidationError):
+            posted_line.save()
+        with self.assertRaises(ValidationError):
+            StockTransferLine.objects.filter(transfer=transfer).delete()
+
+        first_receipt = receive_stock_transfer(
+            transfer=transfer, idempotency_key="receive-001", actor=self.user
+        )
+        replay_receipt = receive_stock_transfer(
+            transfer=transfer, idempotency_key="receive-001", actor=self.user
+        )
+        self.assertEqual(first_receipt.pk, replay_receipt.pk)
+        destination_balance.refresh_from_db()
+        self.assertEqual(destination_balance.on_hand, Decimal("4"))
+        self.assertEqual(
+            StockLedger.objects.filter(event_type=StockLedger.Type.TRANSFER_IN).count(), 1
+        )
+        with self.assertRaises(ValidationError):
+            cancel_stock_transfer(transfer=transfer, actor=self.user)
+
+        cancellable = StockTransfer.objects.create(
+            organization=self.organization, number="TR-CANCEL",
+            source_warehouse=self.warehouse, destination_warehouse=destination,
+        )
+        StockTransferLine.objects.create(
+            transfer=cancellable, sku=self.sku, quantity="2"
+        )
+        dispatch_stock_transfer(
+            transfer=cancellable, idempotency_key="dispatch-cancel", actor=self.user
+        )
+        cancel_stock_transfer(transfer=cancellable, actor=self.user)
+        cancel_stock_transfer(transfer=cancellable, actor=self.user)
+        cancellable.refresh_from_db()
+        source_balance.refresh_from_db()
+        self.assertEqual(cancellable.status, StockTransfer.Status.CANCELLED)
+        self.assertEqual(source_balance.on_hand, Decimal("6"))
+        self.assertEqual(
+            StockLedger.objects.filter(event_type=StockLedger.Type.TRANSFER_CANCEL).count(), 1
+        )
+
+    def test_stock_transfer_overdispatch_rolls_back_every_line(self):
+        destination = Warehouse.objects.create(
+            organization=self.organization, code="FWD-01", name="货代仓",
+            warehouse_type=Warehouse.Type.FORWARDER,
+        )
+        other_sku = SKU.objects.create(
+            organization=self.organization, product=self.product, code="SKU-002", cost="8"
+        )
+        adjust_inventory(
+            organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+            delta="2", reason="期初", idempotency_key="rollback-one", actor=self.user,
+        )
+        adjust_inventory(
+            organization=self.organization, warehouse=self.warehouse, sku=other_sku,
+            delta="1", reason="期初", idempotency_key="rollback-two", actor=self.user,
+        )
+        transfer = StockTransfer.objects.create(
+            organization=self.organization, number="TR-ROLLBACK",
+            source_warehouse=self.warehouse, destination_warehouse=destination,
+        )
+        StockTransferLine.objects.create(transfer=transfer, sku=self.sku, quantity="2")
+        StockTransferLine.objects.create(transfer=transfer, sku=other_sku, quantity="3")
+
+        with self.assertRaises(ValidationError):
+            dispatch_stock_transfer(
+                transfer=transfer, idempotency_key="dispatch-rollback", actor=self.user
+            )
+
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.status, StockTransfer.Status.DRAFT)
+        self.assertEqual(
+            StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku).on_hand,
+            Decimal("2"),
+        )
+        self.assertEqual(
+            StockBalance.objects.get(warehouse=self.warehouse, sku=other_sku).on_hand,
+            Decimal("1"),
+        )
+        self.assertFalse(
+            StockLedger.objects.filter(event_type=StockLedger.Type.TRANSFER_OUT).exists()
+        )
+
+    def test_confirm_and_ship_is_one_atomic_idempotent_operation(self):
+        adjust_inventory(
+            organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+            delta="5", reason="一键出库期初", idempotency_key="one-step-opening", actor=self.user,
+        )
+        order = SalesOrder.objects.create(
+            organization=self.organization, number="SO-ONE-STEP", warehouse=self.warehouse
+        )
+        SalesOrderLine.objects.create(order=order, sku=self.sku, quantity="3")
+        first = confirm_and_ship_order(
+            order=order, idempotency_key="one-step-001", actor=self.user
+        )
+        replay = confirm_and_ship_order(
+            order=order, idempotency_key="one-step-001", actor=self.user
+        )
+        self.assertEqual(first.pk, replay.pk)
+        order.refresh_from_db()
+        balance = StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku)
+        self.assertEqual(order.status, SalesOrder.Status.SHIPPED)
+        self.assertEqual(balance.on_hand, Decimal("2"))
+        self.assertEqual(balance.reserved, Decimal("0"))
+        self.assertEqual(Shipment.objects.filter(order=order).count(), 1)
+
+        shortage = SalesOrder.objects.create(
+            organization=self.organization, number="SO-SHORTAGE", warehouse=self.warehouse
+        )
+        SalesOrderLine.objects.create(order=shortage, sku=self.sku, quantity="3")
+        with self.assertRaises(ValidationError):
+            confirm_and_ship_order(
+                order=shortage, idempotency_key="one-step-shortage", actor=self.user
+            )
+        shortage.refresh_from_db()
+        balance.refresh_from_db()
+        self.assertEqual(shortage.status, SalesOrder.Status.DRAFT)
+        self.assertEqual(balance.on_hand, Decimal("2"))
+        self.assertEqual(balance.reserved, Decimal("0"))
+        self.assertFalse(Shipment.objects.filter(order=shortage).exists())
+
+    def test_quick_sales_snapshot_inherits_previous_values(self):
+        competitor = CompetitorProduct.objects.create(
+            organization=self.organization, name="竞品", url="https://example.com/item"
+        )
+        with self.assertRaises(ValidationError):
+            create_quick_sales_snapshot(product=competitor, sold_count=10, actor=self.user)
+        original = CompetitorSnapshot.objects.create(
+            product=competitor, captured_at="2026-07-14T08:00:00Z", price=Decimal("19.90"),
+            sold_count=10, rating=Decimal("4.80"), review_count=8, availability="in_stock",
+            raw={"low_reviews": 1, "nested": {"shop_rating": 4.7}},
+        )
+        quick = create_quick_sales_snapshot(
+            product=competitor, sold_count=13, actor=self.user
+        )
+        self.assertEqual(quick.price, original.price)
+        self.assertEqual(quick.rating, original.rating)
+        self.assertEqual(quick.review_count, original.review_count)
+        self.assertEqual(quick.availability, original.availability)
+        self.assertEqual(quick.raw, original.raw)
+        self.assertEqual(quick.sold_count, 13)
