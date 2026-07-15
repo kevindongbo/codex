@@ -6,7 +6,7 @@ import worker from "../dist/server/index.js";
 const fetchPath = (path, method = "GET") =>
   worker.fetch(new Request(`https://example.test${path}`, { method }));
 
-test("serves the Dongbo cross-border ERP shell", async () => {
+test("serves the Dongbo cross-border Chinese operations shell", async () => {
   const response = await fetchPath("/");
   const html = await response.text();
 
@@ -20,7 +20,10 @@ test("serves the Dongbo cross-border ERP shell", async () => {
   assert.match(html, /data-module="products"/);
   assert.match(html, /data-module="warehouse"/);
   assert.match(html, /data-module="competitors"/);
-  assert.match(html, /property="og:title" content="东铂跨境 · 跨境电商 ERP"/);
+  assert.match(html, /property="og:title" content="东铂跨境 · 跨境电商运营管理系统"/);
+  assert.match(html, /账号与权限/);
+  assert.match(html, /主账号可统一管理所有内部成员/);
+  assert.doesNotMatch(html, /DONGBO COMMERCE|PRODUCT MASTER|FULFILLMENT CENTER|REPLENISHMENT POLICY|DATA & TEAM/);
   assert.match(html, /assets\/og-dongbo-crossborder\.png/);
   assert.match(html, /data-warehouse-tab="purchase"/);
   assert.match(html, /data-warehouse-tab="inventory"/);
@@ -38,7 +41,8 @@ test("contains product, warehouse, order and monitoring workflows", async () => 
     "historyRows", "trendChart", "changeList", "moduleSidebar", "sidebarToggle",
     "sidebarScrim", "saveProductDraft", "inventoryListPanel", "movementPanel",
     "runtimeStateButton", "connectionBanner", "sessionModal", "teamLoginForm",
-    "teamOnboardingForm", "teamOrganization", "teamWarehouse", "returnCondition",
+    "ownerVerificationForm", "teamWarehouse", "accountManagerPanel", "internalAccountForm",
+    "ownerPasswordChangeForm", "returnCondition",
     "downloadLocalBackup", "localBackupFile", "chooseLocalBackup", "migrationPreview",
     "commitLocalMigration",
     "warehouseSwitcher", "manageWarehouses", "warehouseModal", "warehouseForm",

@@ -31,7 +31,10 @@ router.register("local-imports", views.LocalImportViewSet, basename="local-impor
 
 urlpatterns = [
     path("health/", views.health, name="health"),
+    path("sync/version/", views.sync_version, name="sync-version"),
     path("auth/me/", views.me, name="me"),
+    path("internal-accounts/", views.internal_accounts, name="internal-accounts"),
+    path("internal-accounts/<uuid:membership_id>/", views.internal_account_detail, name="internal-account-detail"),
     path(
         "replenishment/recommendations/",
         views.replenishment_recommendations,

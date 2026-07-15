@@ -104,8 +104,13 @@ let draftTransferLines = [];
 let toastTimer = null;
 let teamBusy = false;
 let teamLastSyncedAt = '';
+let teamRealtimeTimer = null;
 let pendingMigrationSource = null;
 let pendingMigrationPreview = null;
+let ownerLoginChallengeId = '';
+let ownerPasswordChallengeId = '';
+let ownerPermissionCatalog = {};
+let internalAccounts = [];
 
 const $ = function (selector) { return document.querySelector(selector); };
 const $$ = function (selector) { return Array.from(document.querySelectorAll(selector)); };
@@ -934,10 +939,9 @@ function renderRuntimeState() {
   renderModeControls();
   button.classList.remove('loading', 'offline');
   banner.classList.remove('danger');
-  const needsOnboarding = Boolean(TEAM_MODE && teamGateway && teamGateway.user && !teamGateway.memberships.length);
   $('#localSessionPanel').hidden = TEAM_MODE;
-  $('#teamLoginForm').hidden = !TEAM_MODE || teamAuthenticated() || needsOnboarding;
-  $('#teamOnboardingForm').hidden = !needsOnboarding;
+  $('#teamLoginForm').hidden = !TEAM_MODE || teamAuthenticated() || Boolean(ownerLoginChallengeId);
+  $('#ownerVerificationForm').hidden = !ownerLoginChallengeId || teamAuthenticated();
   $('#teamSessionPanel').hidden = !TEAM_MODE || !teamAuthenticated();
   renderMigrationPreview(pendingMigrationPreview);
   if (!TEAM_MODE) {
@@ -950,11 +954,11 @@ function renderRuntimeState() {
   }
   if (teamBusy) button.classList.add('loading');
   if (!teamAuthenticated()) {
-    setText('#runtimeStateText', teamBusy ? '正在连接' : (needsOnboarding ? '团队版 · 待建组织' : '团队版 · 待登录'));
-    setText('#sidebarRuntimeTitle', needsOnboarding ? '请创建第一个组织' : '团队数据库未登录');
-    setText('#sidebarRuntimeDetail', needsOnboarding ? '系统会同时创建默认仓' : '登录后读取组织共享数据');
-    setText('#connectionBannerTitle', needsOnboarding ? '账号尚未加入组织' : '团队模式尚未登录');
-    setText('#connectionBannerDetail', needsOnboarding ? '请打开“数据与团队”创建第一个组织和默认仓。' : '当前没有读取或写入本机业务数据，请登录团队账号。');
+    setText('#runtimeStateText', teamBusy ? '正在连接' : '内部系统 · 待登录');
+    setText('#sidebarRuntimeTitle', '内部系统未登录');
+    setText('#sidebarRuntimeDetail', '请使用主账号或已启用的子账号登录');
+    setText('#connectionBannerTitle', '内部系统尚未登录');
+    setText('#connectionBannerDetail', ownerLoginChallengeId ? '请输入发送到主账号邮箱的验证码。' : '子账号由主账号创建后可直接登录，无需创建组织。');
     $('#retryConnection').hidden = true;
     banner.hidden = false;
     document.body.classList.add('team-readonly');
@@ -962,22 +966,19 @@ function renderRuntimeState() {
   }
   const online = teamGateway.online !== false;
   button.classList.toggle('offline', !online);
-  const membership = teamGateway.memberships.find(function (item) { return String(item.organization.id) === teamGateway.organizationId; });
+  const membership = teamGateway.memberships[0] || null;
   const warehouse = teamGateway.warehouses.find(function (item) { return String(item.id) === teamGateway.warehouseId; });
   setText('#runtimeStateText', teamBusy ? '正在同步' : (online ? '团队已同步' : '离线只读'));
-  setText('#sidebarRuntimeTitle', membership ? membership.organization.name : '团队数据库');
-  setText('#sidebarRuntimeDetail', (warehouse ? warehouse.name : '未选仓库') + ' · ' + teamRoleLabel(teamGateway.role));
-  setText('#teamIdentity', (teamGateway.user.username || teamGateway.user.email || '团队账号'));
-  setText('#teamRoleText', (membership ? membership.organization.name : '当前组织') + ' · ' + teamRoleLabel(teamGateway.role));
+  setText('#sidebarRuntimeTitle', membership ? membership.organization.name : '内部系统');
+  setText('#sidebarRuntimeDetail', (warehouse ? warehouse.name : '未选仓库') + ' · ' + (teamGateway.user.is_owner ? '主账号' : '内部成员'));
+  setText('#teamIdentity', (teamGateway.user.username || teamGateway.user.email || '内部账号'));
+  setText('#teamRoleText', (membership ? membership.organization.name : '内部系统') + ' · ' + (teamGateway.user.is_owner ? '主账号（完整权限）' : '内部成员'));
   setText('#teamSyncDetail', teamLastSyncedAt ? '最近同步：' + formatDate(teamLastSyncedAt, true) : '等待首次同步');
-  $('#teamOrganization').innerHTML = teamGateway.memberships.map(function (item) {
-    return '<option value="' + escapeHtml(String(item.organization.id)) + '">' + escapeHtml(item.organization.name) + '</option>';
-  }).join('');
-  $('#teamOrganization').value = teamGateway.organizationId;
   $('#teamWarehouse').innerHTML = teamGateway.warehouses.filter(function (item) { return item.active; }).map(function (item) {
     return '<option value="' + escapeHtml(String(item.id)) + '">' + escapeHtml(item.code + ' · ' + item.name) + '</option>';
   }).join('');
   $('#teamWarehouse').value = teamGateway.warehouseId;
+  $('#ownerAccountActions').hidden = !teamGateway.user.is_owner;
   if (!online) {
     setText('#connectionBannerTitle', '团队服务器连接中断');
     setText('#connectionBannerDetail', '已保留上次同步的数据用于查看；所有写入已暂停，不会转存到本机。');
@@ -998,6 +999,53 @@ function handleTeamError(error) {
   showToast(message);
   renderRuntimeState();
   return false;
+}
+
+function resetInternalAccountForm() {
+  $('#internalAccountId').value = '';
+  $('#internalAccountUsername').value = '';
+  $('#internalAccountPassword').value = '';
+  $('#internalAccountPassword').required = true;
+  $('#internalAccountPasswordRequired').hidden = false;
+  $('#saveInternalAccount').textContent = '新增子账号';
+  $$('#internalAccountPermissions input').forEach(function (input) { input.checked = input.value === 'view'; });
+}
+
+function renderInternalAccountManager() {
+  const permissions = Object.keys(ownerPermissionCatalog);
+  $('#internalAccountPermissions').innerHTML = permissions.map(function (key) {
+    return '<label><input type="checkbox" value="' + escapeHtml(key) + '"' + (key === 'view' ? ' checked' : '') + ' />' + escapeHtml(ownerPermissionCatalog[key]) + '</label>';
+  }).join('');
+  $('#internalAccountRows').innerHTML = internalAccounts.length ? internalAccounts.map(function (account) {
+    const status = account.active ? '已启用' : '已停用';
+    const access = (account.permissions || []).map(function (key) { return ownerPermissionCatalog[key] || key; }).join('、') || '仅查看';
+    return '<div class="account-row"><div><strong>' + escapeHtml(account.username) + '</strong><small>' + escapeHtml(status + ' · ' + access) + '</small></div><div class="inline-actions">' +
+      '<button class="button tiny secondary" type="button" data-account-action="edit" data-account-id="' + escapeHtml(account.id) + '">编辑</button>' +
+      '<button class="button tiny ' + (account.active ? 'danger-outline' : 'secondary') + '" type="button" data-account-action="toggle" data-account-id="' + escapeHtml(account.id) + '">' + (account.active ? '停用' : '启用') + '</button></div></div>';
+  }).join('') : '<p class="session-help">还没有子账号。新增后成员可直接登录，无需创建组织。</p>';
+}
+
+async function openInternalAccountManager() {
+  if (!teamGateway || !teamGateway.user || !teamGateway.user.is_owner) return;
+  const payload = await teamGateway.listInternalAccounts();
+  ownerPermissionCatalog = payload.permission_catalog || {};
+  internalAccounts = (payload.accounts || []).filter(function (account) { return !account.is_owner; });
+  $('#accountManagerPanel').hidden = false;
+  $('#ownerPasswordPanel').hidden = true;
+  renderInternalAccountManager();
+  resetInternalAccountForm();
+}
+
+function editInternalAccount(id) {
+  const account = internalAccounts.find(function (item) { return item.id === id; });
+  if (!account) return;
+  $('#internalAccountId').value = account.id;
+  $('#internalAccountUsername').value = account.username;
+  $('#internalAccountPassword').value = '';
+  $('#internalAccountPassword').required = false;
+  $('#internalAccountPasswordRequired').hidden = true;
+  $('#saveInternalAccount').textContent = '保存账号设置';
+  $$('#internalAccountPermissions input').forEach(function (input) { input.checked = (account.permissions || []).includes(input.value); });
 }
 
 async function refreshTeamState(successMessage) {
@@ -1088,6 +1136,32 @@ async function initializeTeamMode() {
     teamBusy = false;
     renderRuntimeState();
   }
+}
+
+async function pollTeamUpdates() {
+  if (!TEAM_MODE || !teamGateway || !teamAuthenticated() || teamBusy || document.hidden) return;
+  try {
+    const loaded = await teamGateway.pollForUpdates();
+    if (!loaded) return;
+    const currentUi = clone(state.ui);
+    state = normalizeV5(loaded);
+    state.ui = currentUi;
+    teamLastSyncedAt = new Date().toISOString();
+    render();
+    renderRuntimeState();
+    showToast('已同步其他成员的最新修改。');
+  } catch (error) {
+    if (error && error.status !== 401) return;
+    handleTeamError(error);
+  }
+}
+
+function startRealtimeSync() {
+  if (!TEAM_MODE || teamRealtimeTimer) return;
+  teamRealtimeTimer = setInterval(pollTeamUpdates, 3000);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) pollTeamUpdates();
+  });
 }
 
 function pulseStorage() {
@@ -1656,7 +1730,9 @@ function dateAfterDays(days, allowPast) {
   const date = new Date();
   date.setHours(12, 0, 0, 0);
   date.setDate(date.getDate() + (allowPast ? Math.ceil(days) : Math.max(0, Math.ceil(days))));
-  return date.toISOString().slice(0, 10);
+  // These dates are displayed as local operational dates.  Converting noon
+  // China time to UTC can otherwise shift an overdue date forward by one day.
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 }
 function localReplenishmentRecommendation(product) {
   const warehouseId = currentWarehouseId();
@@ -2559,8 +2635,7 @@ async function saveProductFromForm(forceDraft) {
   });
   const missing = productMissingFields(product, kind === 'own' ? $('#productCost').value : 0);
   product.needsReview = missing.length > 0;
-  if (!product.name) return showToast('草稿也需要填写商品名称，便于后续识别。');
-  if (!draft && missing.length) return showToast('请先补齐：' + missing.join('、') + '。');
+  if (missing.length) product.status = 'draft';
   if (kind === 'own' && product.sku && state.products.some(function (item) { return item.id !== editId && item.kind === 'own' && normalizeSku(item.sku) === normalizeSku(product.sku); })) {
     return showToast('SKU 已存在，请使用唯一的本店 SKU。');
   }
@@ -2575,7 +2650,7 @@ async function saveProductFromForm(forceDraft) {
   catch (error) { return showToast(error.message); }
   const successMessage = draft
     ? (missing.length ? '商品草稿已保存；补齐 ' + missing.join('、') + ' 后即可用于仓库业务。' : '商品草稿已保存。')
-    : (current ? '商品已更新。' : '商品已添加。');
+    : (missing.length ? '商品信息不完整，已自动保存为草稿。' : (current ? '商品已更新。' : '商品已添加。'));
   if (TEAM_MODE) {
     const savedTeam = await executeTeamCommand(function () {
       return teamGateway.saveProduct(product, initialSnapshot);
@@ -2600,10 +2675,9 @@ function handleProductSubmit(event) {
 
 async function handlePurchaseSubmit(event) {
   event.preventDefault();
-  if (!draftPurchaseLines.length) return showToast('请至少加入一条采购明细。');
   const number = $('#purchaseNumber').value.trim();
-  if (state.purchaseOrders.some(function (item) { return item.number.toLowerCase() === number.toLowerCase(); })) return showToast('采购单号不能重复。');
-  const status = $('#purchaseStatus').value;
+  if (number && state.purchaseOrders.some(function (item) { return item.number.toLowerCase() === number.toLowerCase(); })) return showToast('采购单号不能重复。');
+  const status = draftPurchaseLines.length ? $('#purchaseStatus').value : 'draft';
   const order = {
     id: uid('po'), number: number, supplier: $('#purchaseSupplier').value.trim(),
     warehouseId: currentWarehouseId(), status: status,
@@ -2678,11 +2752,10 @@ async function handleReturnSubmit(event) {
 }
 async function handleOrderSubmit(event) {
   event.preventDefault();
-  if (!draftOrderLines.length) return showToast('请至少加入一条订单明细。');
   const warehouse = selectedWarehouse();
   if (!warehouse || warehouse.canShip === false || warehouse.can_ship === false) return showToast('当前仓库未开放出库，不能创建或处理订单。');
   const number = $('#orderNumber').value.trim();
-  const existingOrder = state.salesOrders.find(function (item) { return item.number.toLowerCase() === number.toLowerCase(); });
+  const existingOrder = number && state.salesOrders.find(function (item) { return item.number.toLowerCase() === number.toLowerCase(); });
   if (existingOrder) {
     if (TEAM_MODE && !['shipped', 'cancelled'].includes(existingOrder.status)) {
       closeModal('orderModal');
@@ -2693,7 +2766,7 @@ async function handleOrderSubmit(event) {
   const order = {
     id: uid('order'), number: number, platform: $('#orderPlatform').value,
     warehouseId: currentWarehouseId(),
-    store: $('#orderStore').value.trim(), orderedAt: new Date($('#orderAt').value).toISOString(),
+    store: $('#orderStore').value.trim(), orderedAt: $('#orderAt').value ? new Date($('#orderAt').value).toISOString() : null,
     trackingNumber: $('#orderTracking').value.trim(), note: $('#orderNote').value.trim(),
     status: 'shortage', lines: draftOrderLines.map(function (line) {
       const product = productById(line.productId);
@@ -2706,18 +2779,18 @@ async function handleOrderSubmit(event) {
     const savedTeam = await executeTeamCommand(async function () { result = await teamGateway.createOrder(order); }, '', 'order');
     if (savedTeam) {
       closeModal('orderModal');
-      showToast(result && result.shipped ? '订单已确认并一次完成出库。' : ('订单已保留，出库未完成：' + (result && result.error ? result.error : '请检查库存或订单状态后重试。')));
+      showToast(result && result.shipped ? '订单已确认并一次完成出库。' : (result && result.draft ? '订单信息不完整，已保存为草稿。' : ('订单已保留，出库未完成：' + (result && result.error ? result.error : '请检查库存或订单状态后重试。'))));
     }
     return;
   }
   let shipped = false;
   const saved = commit(function (next) {
     next.salesOrders.push(order);
-    shipped = confirmAndShipOrder(next, order.id);
+    shipped = order.lines.length ? confirmAndShipOrder(next, order.id) : false;
   }, '');
   if (saved) {
     closeModal('orderModal');
-    showToast(shipped ? '订单已确认并一次完成出库。' : '订单已保留，但库存不足，未扣减任何库存。');
+    showToast(shipped ? '订单已确认并一次完成出库。' : (order.lines.length ? '订单已保留，但库存不足，未扣减任何库存。' : '订单信息不完整，已保存为草稿。'));
   }
 }
 async function handleSnapshotSubmit(event) {
@@ -3090,12 +3163,19 @@ function bindEvents() {
       clearMigrationPreview();
       const currentUi = clone(state.ui);
       const loaded = await teamGateway.login($('#teamUsername').value.trim(), $('#teamPassword').value);
+      if (loaded && loaded.email_verification_required) {
+        ownerLoginChallengeId = loaded.challenge_id;
+        $('#teamPassword').value = '';
+        renderRuntimeState();
+        showToast('验证码已发送到主账号邮箱。');
+        return;
+      }
       state = loaded ? normalizeV5(loaded) : emptyState();
       state.ui = currentUi;
       teamLastSyncedAt = loaded ? new Date().toISOString() : '';
       $('#teamPassword').value = '';
       render();
-      showToast(loaded ? '登录成功，团队数据已同步。' : '登录成功，请创建第一个组织。');
+      showToast('登录成功，内部数据已同步。');
     } catch (error) {
       handleTeamError(error);
     } finally {
@@ -3104,49 +3184,29 @@ function bindEvents() {
       renderRuntimeState();
     }
   });
-  $('#teamOnboardingForm').addEventListener('submit', async function (event) {
+  $('#ownerVerificationForm').addEventListener('submit', async function (event) {
     event.preventDefault();
-    if (!TEAM_MODE || teamBusy) return;
+    if (!TEAM_MODE || teamBusy || !ownerLoginChallengeId) return;
     teamBusy = true;
-    $('#createOrganizationButton').disabled = true;
+    $('#verifyOwnerLoginButton').disabled = true;
     renderRuntimeState();
     try {
       const currentUi = clone(state.ui);
-      state = normalizeV5(await teamGateway.createOrganization($('#onboardingOrganizationName').value, $('#onboardingOrganizationSlug').value));
+      const loaded = await teamGateway.verifyOwnerLogin(ownerLoginChallengeId, $('#ownerLoginCode').value.trim());
+      ownerLoginChallengeId = '';
+      $('#ownerLoginCode').value = '';
+      state = normalizeV5(loaded);
       state.ui = currentUi;
       teamLastSyncedAt = new Date().toISOString();
       render();
-      showToast('组织和默认仓已创建，团队 ERP 可以开始使用。');
+      showToast('主账号验证成功，数据已同步。');
     } catch (error) { handleTeamError(error); }
-    finally {
-      teamBusy = false;
-      $('#createOrganizationButton').disabled = false;
-      renderRuntimeState();
-    }
+    finally { teamBusy = false; $('#verifyOwnerLoginButton').disabled = false; renderRuntimeState(); }
   });
-  $('#onboardingLogout').addEventListener('click', function () {
-    if (!TEAM_MODE) return;
-    clearMigrationPreview();
-    teamGateway.clearSession();
-    state = emptyState();
-    restoreUiPreferences();
-    render();
+  $('#cancelOwnerVerification').addEventListener('click', function () {
+    ownerLoginChallengeId = '';
+    $('#ownerLoginCode').value = '';
     renderRuntimeState();
-  });
-  $('#teamOrganization').addEventListener('change', async function () {
-    if (!TEAM_MODE || teamBusy) return;
-    clearMigrationPreview();
-    const currentUi = clone(state.ui);
-    teamBusy = true;
-    renderRuntimeState();
-    try {
-      state = normalizeV5(await teamGateway.selectOrganization(this.value));
-      state.ui = currentUi;
-      teamLastSyncedAt = new Date().toISOString();
-      render();
-      showToast('已切换组织并重新同步。');
-    } catch (error) { handleTeamError(error); }
-    finally { teamBusy = false; renderRuntimeState(); }
   });
   $('#teamWarehouse').addEventListener('change', async function () {
     if (!TEAM_MODE || teamBusy) return;
@@ -3173,6 +3233,62 @@ function bindEvents() {
     render();
     renderRuntimeState();
     showToast('已退出团队账号，本页没有切回本机业务数据。');
+  });
+  $('#openAccountManager').addEventListener('click', function () {
+    openInternalAccountManager().catch(handleTeamError);
+  });
+  $('#cancelInternalAccount').addEventListener('click', function () {
+    resetInternalAccountForm();
+  });
+  $('#internalAccountForm').addEventListener('submit', async function (event) {
+    event.preventDefault();
+    if (!teamGateway || !teamGateway.user || !teamGateway.user.is_owner) return;
+    const id = $('#internalAccountId').value;
+    const permissions = $$('#internalAccountPermissions input:checked').map(function (input) { return input.value; });
+    const payload = { username: $('#internalAccountUsername').value.trim(), permissions: permissions };
+    const password = $('#internalAccountPassword').value;
+    if (password) payload.password = password;
+    try {
+      if (id) await teamGateway.updateInternalAccount(id, payload); else await teamGateway.createInternalAccount(payload);
+      await openInternalAccountManager();
+      showToast(id ? '子账号设置已保存。' : '子账号已创建，可以直接登录。');
+    } catch (error) { handleTeamError(error); }
+  });
+  $('#internalAccountRows').addEventListener('click', async function (event) {
+    const button = event.target.closest('[data-account-action]');
+    if (!button) return;
+    const id = button.dataset.accountId;
+    if (button.dataset.accountAction === 'edit') return editInternalAccount(id);
+    if (button.dataset.accountAction === 'toggle') {
+      const account = internalAccounts.find(function (item) { return item.id === id; });
+      if (!account) return;
+      try {
+        await teamGateway.updateInternalAccount(id, { active: !account.active });
+        await openInternalAccountManager();
+        showToast(account.active ? '子账号已停用。' : '子账号已重新启用。');
+      } catch (error) { handleTeamError(error); }
+    }
+  });
+  $('#openOwnerPasswordChange').addEventListener('click', async function () {
+    try {
+      const challenge = await teamGateway.requestOwnerPasswordChange();
+      ownerPasswordChallengeId = challenge.challenge_id;
+      $('#accountManagerPanel').hidden = true;
+      $('#ownerPasswordPanel').hidden = false;
+      showToast('验证码已发送到主账号邮箱。');
+    } catch (error) { handleTeamError(error); }
+  });
+  $('#cancelOwnerPasswordChange').addEventListener('click', function () { ownerPasswordChallengeId = ''; $('#ownerPasswordPanel').hidden = true; });
+  $('#ownerPasswordChangeForm').addEventListener('submit', async function (event) {
+    event.preventDefault();
+    try {
+      await teamGateway.confirmOwnerPasswordChange(ownerPasswordChallengeId, $('#ownerPasswordCode').value.trim(), $('#ownerPasswordNew').value);
+      ownerPasswordChallengeId = '';
+      $('#ownerPasswordPanel').hidden = true;
+      $('#ownerPasswordCode').value = '';
+      $('#ownerPasswordNew').value = '';
+      showToast('主账号密码已修改。');
+    } catch (error) { handleTeamError(error); }
   });
   $('#globalSearch').addEventListener('input', function (event) {
     searchTerm = event.target.value.trim().toLowerCase();
@@ -3380,3 +3496,4 @@ applyHashRoute();
 bindEvents();
 render();
 initializeTeamMode();
+startRealtimeSync();

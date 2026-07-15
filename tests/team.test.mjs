@@ -182,15 +182,16 @@ test('editing an inactive warehouse never reactivates it implicitly', async () =
   assert.equal(Object.hasOwn(body, 'active'), false);
 });
 
-test('team roles expose the same coarse capabilities as backend endpoints', async () => {
+test('team permissions expose the selected granular capabilities', async () => {
   const Team = await loadTeam();
   const gateway = new Team.TeamGateway({ apiBase: '/api' });
-  gateway.role = 'buyer';
+  gateway.user = { is_owner: false };
+  gateway.permissions = ['purchase', 'warehouse'];
   assert.equal(gateway.can('purchase'), true);
   assert.equal(gateway.can('receipt'), true);
   assert.equal(gateway.can('order'), false);
-  assert.equal(gateway.can('warehouse_admin'), false);
-  gateway.role = 'warehouse';
+  assert.equal(gateway.can('warehouse_admin'), true);
+  gateway.permissions = ['order', 'warehouse'];
   assert.equal(gateway.can('order'), true);
   assert.equal(gateway.can('transfer'), true);
   assert.equal(gateway.can('replenishment'), false);
@@ -282,7 +283,7 @@ test('draft transfers and replenishment overrides have explicit recovery endpoin
   assert.equal(calls[1].options.method, 'DELETE');
 });
 
-test('login can stop at first-organization onboarding without touching local data', async () => {
+test('an account outside the internal organization cannot enter onboarding', async () => {
   const replies = [
     response(200, { access: 'a', refresh: 'r' }),
     response(200, { user: { id: 1, username: 'owner' }, memberships: [] }),
@@ -290,10 +291,7 @@ test('login can stop at first-organization onboarding without touching local dat
   const Team = await loadTeam(async () => replies.shift());
   const gateway = new Team.TeamGateway({ apiBase: '/api' });
 
-  const state = await gateway.login('owner', 'secret');
-
-  assert.equal(state, null);
-  assert.equal(gateway.user.username, 'owner');
+  await assert.rejects(gateway.login('owner', 'secret'), /尚未被主账号启用/);
   assert.equal(gateway.organizationId, '');
   assert.equal(gateway.refreshToken, 'r');
 });

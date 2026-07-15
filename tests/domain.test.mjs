@@ -4,8 +4,8 @@ import test from "node:test";
 import vm from "node:vm";
 
 async function loadDomain() {
-  const source = await readFile(new URL("../app.js", import.meta.url), "utf8");
-  const boot = "applyHashRoute();\nbindEvents();\nrender();\ninitializeTeamMode();";
+  const source = (await readFile(new URL("../app.js", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+  const boot = "applyHashRoute();\nbindEvents();\nrender();\ninitializeTeamMode();\nstartRealtimeSync();";
   assert.ok(source.includes(boot), "app boot sequence changed unexpectedly");
   const exposed = source.replace(
     boot,
@@ -335,7 +335,9 @@ test("replenishment combines weighted outbound velocity, lead time, inbound stoc
   assert.equal(recommendation.urgency, "urgent");
   assert.equal(recommendation.confidence, "medium");
   assert.ok(recommendation.latestOrderDate);
-  assert.ok(recommendation.latestOrderDate < new Date().toISOString().slice(0, 10), "overdue order dates must not be clamped to today");
+  const localNow = new Date();
+  const localToday = [localNow.getFullYear(), String(localNow.getMonth() + 1).padStart(2, "0"), String(localNow.getDate()).padStart(2, "0")].join("-");
+  assert.ok(recommendation.latestOrderDate < localToday, "overdue order dates must not be clamped to today");
 });
 
 test("zero demand and zero safety stock is data-insufficient instead of an urgent zero-quantity reorder", async () => {

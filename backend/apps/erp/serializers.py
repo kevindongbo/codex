@@ -1,3 +1,4 @@
+import uuid
 from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -12,7 +13,7 @@ from .models import (
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockTransfer, StockTransferLine, Supplier, Warehouse,
 )
-from .permissions import request_organization
+from .permissions import PERMISSION_CATALOG, request_organization
 
 
 def _context_organization(serializer):
@@ -22,6 +23,26 @@ def _context_organization(serializer):
         return organization
     request = serializer.context.get("request")
     return request_organization(request) if request is not None else None
+
+
+def _draft_warehouse(organization):
+    """Return a usable warehouse for an incomplete order without colliding on DEFAULT."""
+    warehouse = Warehouse.objects.filter(organization=organization, active=True).order_by("created_at", "id").first()
+    if warehouse is not None:
+        return warehouse
+
+    warehouse = Warehouse.objects.filter(organization=organization, code="DEFAULT").first()
+    if warehouse is not None:
+        if not warehouse.active:
+            warehouse.active = True
+            warehouse.save(update_fields=["active", "updated_at"])
+        return warehouse
+
+    return Warehouse.objects.create(
+        organization=organization,
+        code="DEFAULT",
+        name="默认仓",
+    )
 
 
 class OrganizationValidationMixin:
@@ -59,12 +80,40 @@ class MembershipSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "organization", "created_at", "updated_at"]
 
 
+class InternalAccountSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(write_only=True, required=False, min_length=8)
+    permissions = serializers.ListField(
+        child=serializers.ChoiceField(choices=tuple(PERMISSION_CATALOG)),
+        required=False,
+        allow_empty=True,
+    )
+    active = serializers.BooleanField(required=False)
+
+    def validate_username(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("账号名不能为空")
+        return value
+
+    def validate_permissions(self, value):
+        return sorted(set(value))
+
+
 class ScopedSerializer(serializers.ModelSerializer):
     class Meta:
         read_only_fields = ["id", "organization", "created_at", "updated_at"]
 
 
 class WarehouseSerializer(ScopedSerializer):
+    def validate(self, attrs):
+        if self.instance is None:
+            if not str(attrs.get("code", "")).strip():
+                attrs["code"] = f"WH-{uuid.uuid4().hex[:8].upper()}"
+            if not str(attrs.get("name", "")).strip():
+                attrs["name"] = "待完善仓库"
+        return attrs
+
     def validate_timezone(self, value):
         try:
             ZoneInfo(value)
@@ -88,6 +137,10 @@ class WarehouseSerializer(ScopedSerializer):
     class Meta(ScopedSerializer.Meta):
         model = Warehouse
         fields = "__all__"
+        extra_kwargs = {
+            "code": {"required": False, "allow_blank": True},
+            "name": {"required": False, "allow_blank": True},
+        }
 
 
 class ProductImageSerializer(OrganizationValidationMixin, serializers.ModelSerializer):
@@ -115,12 +168,17 @@ class SKUSerializer(OrganizationValidationMixin, ScopedSerializer):
 
     def validate(self, attrs):
         self.require_same_organization(attrs.get("product", getattr(self.instance, "product", None)), "product")
+        if self.instance is None and not str(attrs.get("code", "")).strip():
+            attrs["code"] = f"SKU-{uuid.uuid4().hex[:8].upper()}"
         return attrs
 
     class Meta(ScopedSerializer.Meta):
         model = SKU
         fields = "__all__"
-        extra_kwargs = {"barcode": {"required": False, "allow_blank": True}}
+        extra_kwargs = {
+            "barcode": {"required": False, "allow_blank": True},
+            "code": {"required": False, "allow_blank": True},
+        }
 
 
 class ProductSerializer(OrganizationValidationMixin, ScopedSerializer):
@@ -138,18 +196,33 @@ class ProductSerializer(OrganizationValidationMixin, ScopedSerializer):
             attrs.get("default_supplier", getattr(self.instance, "default_supplier", None)),
             "default_supplier",
         )
+        if self.instance is None and not str(attrs.get("name", "")).strip():
+            attrs["name"] = "待完善商品"
         return attrs
 
     class Meta(ScopedSerializer.Meta):
         model = Product
         fields = "__all__"
         read_only_fields = ScopedSerializer.Meta.read_only_fields + ["status"]
+        extra_kwargs = {"name": {"required": False, "allow_blank": True}}
 
 
 class SupplierSerializer(ScopedSerializer):
+    def validate(self, attrs):
+        if self.instance is None:
+            if not str(attrs.get("code", "")).strip():
+                attrs["code"] = f"SUP-{uuid.uuid4().hex[:8].upper()}"
+            if not str(attrs.get("name", "")).strip():
+                attrs["name"] = "待完善供应商"
+        return attrs
+
     class Meta(ScopedSerializer.Meta):
         model = Supplier
         fields = "__all__"
+        extra_kwargs = {
+            "code": {"required": False, "allow_blank": True},
+            "name": {"required": False, "allow_blank": True},
+        }
 
 
 class PurchaseOrderLineSerializer(serializers.ModelSerializer):
@@ -170,7 +243,7 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
 
 
 class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
-    lines = PurchaseOrderLineSerializer(many=True)
+    lines = PurchaseOrderLineSerializer(many=True, required=False)
     in_transit_quantity = serializers.SerializerMethodField()
 
     def __init__(self, *args, **kwargs):
@@ -204,8 +277,6 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
             frozen = {"supplier", "warehouse", "currency", "number"}.intersection(attrs)
             if frozen:
                 raise serializers.ValidationError("采购单提交后，供应商、仓库、币种和单号不可修改")
-        if self.instance is None and not lines:
-            raise serializers.ValidationError({"lines": "采购单至少需要一条明细"})
         seen = set()
         for line in lines or []:
             self.require_same_organization(line["sku"], "lines")
@@ -220,10 +291,26 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
         model = PurchaseOrder
         fields = "__all__"
         read_only_fields = ScopedSerializer.Meta.read_only_fields + ["status"]
+        extra_kwargs = {
+            "number": {"required": False, "allow_blank": True},
+            "supplier": {"required": False, "allow_null": True},
+            "warehouse": {"required": False, "allow_null": True},
+        }
 
     @transaction.atomic
     def create(self, validated_data):
-        lines = validated_data.pop("lines")
+        lines = validated_data.pop("lines", [])
+        organization = validated_data["organization"]
+        if not validated_data.get("supplier"):
+            validated_data["supplier"] = Supplier.objects.create(
+                organization=organization,
+                code=f"SUP-{uuid.uuid4().hex[:8].upper()}",
+                name="待完善供应商",
+            )
+        if not validated_data.get("warehouse"):
+            validated_data["warehouse"] = _draft_warehouse(organization)
+        if not str(validated_data.get("number", "")).strip():
+            validated_data["number"] = f"PO-DRAFT-{uuid.uuid4().hex[:10].upper()}"
         purchase_order = PurchaseOrder.objects.create(**validated_data)
         for line in lines:
             PurchaseOrderLine.objects.create(purchase_order=purchase_order, **line)
@@ -448,7 +535,7 @@ class SalesOrderLineSerializer(serializers.ModelSerializer):
 
 
 class SalesOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
-    lines = SalesOrderLineSerializer(many=True)
+    lines = SalesOrderLineSerializer(many=True, required=False)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -472,8 +559,6 @@ class SalesOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
             frozen = {"warehouse", "number", "external_ref"}.intersection(attrs)
             if frozen:
                 raise serializers.ValidationError("订单确认后，仓库、单号和外部单号不可修改")
-        if self.instance is None and not lines:
-            raise serializers.ValidationError({"lines": "订单至少需要一条明细"})
         seen = set()
         for line in lines or []:
             self.require_same_organization(line["sku"], "lines")
@@ -489,6 +574,8 @@ class SalesOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
         fields = "__all__"
         read_only_fields = ScopedSerializer.Meta.read_only_fields + ["status"]
         extra_kwargs = {
+            "number": {"required": False, "allow_blank": True},
+            "warehouse": {"required": False, "allow_null": True},
             "external_ref": {"required": False, "allow_blank": True},
             "customer": {"required": False},
             "notes": {"required": False, "allow_blank": True},
@@ -496,7 +583,12 @@ class SalesOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
-        lines = validated_data.pop("lines")
+        lines = validated_data.pop("lines", [])
+        organization = validated_data["organization"]
+        if not validated_data.get("warehouse"):
+            validated_data["warehouse"] = _draft_warehouse(organization)
+        if not str(validated_data.get("number", "")).strip():
+            validated_data["number"] = f"SO-DRAFT-{uuid.uuid4().hex[:10].upper()}"
         order = SalesOrder.objects.create(**validated_data)
         for line in lines:
             SalesOrderLine.objects.create(order=order, **line)
@@ -666,6 +758,8 @@ class CompetitorProductSerializer(OrganizationValidationMixin, ScopedSerializer)
             attrs.get("linked_product", getattr(self.instance, "linked_product", None)),
             "linked_product",
         )
+        if self.instance is None and not str(attrs.get("name", "")).strip():
+            attrs["name"] = "待完善竞品"
         return attrs
 
     def validate_image_url(self, value):
@@ -676,6 +770,10 @@ class CompetitorProductSerializer(OrganizationValidationMixin, ScopedSerializer)
     class Meta(ScopedSerializer.Meta):
         model = CompetitorProduct
         fields = "__all__"
+        extra_kwargs = {
+            "name": {"required": False, "allow_blank": True},
+            "url": {"required": False, "allow_blank": True},
+        }
 
 
 class CompetitorSnapshotSerializer(OrganizationValidationMixin, serializers.ModelSerializer):

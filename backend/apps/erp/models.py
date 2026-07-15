@@ -31,9 +31,13 @@ AppendOnlyManager = models.Manager.from_queryset(AppendOnlyQuerySet)
 
 
 class Organization(TimeStampedModel):
-    name = models.CharField(max_length=120)
-    slug = models.SlugField(max_length=80, unique=True)
-    active = models.BooleanField(default=True)
+    name = models.CharField("组织名称", max_length=120)
+    slug = models.SlugField("组织标识", max_length=80, unique=True)
+    active = models.BooleanField("启用", default=True)
+
+    class Meta:
+        verbose_name = "组织"
+        verbose_name_plural = "组织"
 
     def __str__(self):
         return self.name
@@ -47,13 +51,51 @@ class Membership(TimeStampedModel):
         WAREHOUSE = "warehouse", "仓库"
         VIEWER = "viewer", "只读"
 
-    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="memberships")
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="erp_memberships")
-    role = models.CharField(max_length=20, choices=Role.choices, default=Role.VIEWER)
-    active = models.BooleanField(default=True)
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="memberships", verbose_name="所属组织")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="erp_memberships", verbose_name="用户")
+    role = models.CharField("角色", max_length=20, choices=Role.choices, default=Role.VIEWER)
+    permissions = models.JSONField("权限清单", default=list, blank=True)
+    active = models.BooleanField("启用", default=True)
 
     class Meta:
+        verbose_name = "成员关系"
+        verbose_name_plural = "成员关系"
         constraints = [models.UniqueConstraint(fields=["organization", "user"], name="uniq_org_user")]
+
+
+class OwnerEmailChallenge(TimeStampedModel):
+    class Purpose(models.TextChoices):
+        LOGIN = "login", "登录验证"
+        PASSWORD_CHANGE = "password_change", "修改密码"
+        PASSWORD_RESET = "password_reset", "找回密码"
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="owner_email_challenges")
+    purpose = models.CharField(max_length=32, choices=Purpose.choices)
+    code_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "主账号邮箱验证码"
+        verbose_name_plural = "主账号邮箱验证码"
+
+
+class OrganizationSyncState(models.Model):
+    """A lightweight revision counter used by browser clients for near-real-time refresh."""
+
+    organization = models.OneToOneField(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="sync_state",
+        verbose_name="所属组织",
+    )
+    revision = models.PositiveBigIntegerField("数据版本", default=1)
+    updated_at = models.DateTimeField("更新时间", auto_now=True)
+
+    class Meta:
+        verbose_name = "数据同步状态"
+        verbose_name_plural = "数据同步状态"
 
 
 class OrganizationScopedModel(TimeStampedModel):
@@ -71,18 +113,20 @@ class Warehouse(OrganizationScopedModel):
         DOMESTIC = "domestic", "国内仓"
         OTHER = "other", "其他"
 
-    code = models.CharField(max_length=40)
-    name = models.CharField(max_length=120)
-    warehouse_type = models.CharField(max_length=20, choices=Type.choices, default=Type.OTHER)
-    country = models.CharField(max_length=2, default="CN")
-    address = models.JSONField(default=dict, blank=True)
-    timezone = models.CharField(max_length=64, default="Asia/Shanghai")
-    contact = models.JSONField(default=dict, blank=True)
-    can_receive = models.BooleanField(default=True)
-    can_ship = models.BooleanField(default=True)
-    active = models.BooleanField(default=True)
+    code = models.CharField("仓库编码", max_length=40)
+    name = models.CharField("仓库名称", max_length=120)
+    warehouse_type = models.CharField("仓库类型", max_length=20, choices=Type.choices, default=Type.OTHER)
+    country = models.CharField("国家/地区代码", max_length=2, default="CN")
+    address = models.JSONField("地址", default=dict, blank=True)
+    timezone = models.CharField("时区", max_length=64, default="Asia/Shanghai")
+    contact = models.JSONField("联系方式", default=dict, blank=True)
+    can_receive = models.BooleanField("允许收货", default=True)
+    can_ship = models.BooleanField("允许发货", default=True)
+    active = models.BooleanField("启用", default=True)
 
     class Meta:
+        verbose_name = "仓库"
+        verbose_name_plural = "仓库"
         constraints = [models.UniqueConstraint(fields=["organization", "code"], name="uniq_org_warehouse_code")]
 
     def __str__(self):
@@ -95,34 +139,40 @@ class Product(OrganizationScopedModel):
         ACTIVE = "active", "启用"
         INACTIVE = "inactive", "停用"
 
-    name = models.CharField(max_length=200)
-    description = models.TextField(blank=True)
-    seller = models.CharField(max_length=160, blank=True)
-    market = models.CharField(max_length=8, blank=True)
-    sales_currency = models.CharField(max_length=3, default="CNY")
-    monitoring_enabled = models.BooleanField(default=False)
-    source_url = models.URLField(blank=True)
-    purchase_url = models.URLField(blank=True)
+    name = models.CharField("商品名称", max_length=200)
+    description = models.TextField("商品描述", blank=True)
+    seller = models.CharField("店铺/卖家", max_length=160, blank=True)
+    market = models.CharField("销售市场", max_length=8, blank=True)
+    sales_currency = models.CharField("销售币种", max_length=3, default="CNY")
+    monitoring_enabled = models.BooleanField("启用监控", default=False)
+    source_url = models.URLField("来源链接", blank=True)
+    purchase_url = models.URLField("采购链接", blank=True)
     default_supplier = models.ForeignKey(
-        "Supplier", null=True, blank=True, on_delete=models.SET_NULL, related_name="default_products"
+        "Supplier", null=True, blank=True, on_delete=models.SET_NULL, related_name="default_products", verbose_name="默认供应商"
     )
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    status = models.CharField("状态", max_length=16, choices=Status.choices, default=Status.DRAFT)
+
+    class Meta:
+        verbose_name = "商品"
+        verbose_name_plural = "商品"
 
     def __str__(self):
         return self.name
 
 
 class SKU(OrganizationScopedModel):
-    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="skus")
-    code = models.CharField(max_length=80)
-    barcode = models.CharField(max_length=80, blank=True)
-    cost = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0"))
-    currency = models.CharField(max_length=3, default="CNY")
-    safety_stock = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
-    attributes = models.JSONField(default=dict, blank=True)
-    active = models.BooleanField(default=True)
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="skus", verbose_name="商品")
+    code = models.CharField("库存单位编码（SKU）", max_length=80)
+    barcode = models.CharField("条形码", max_length=80, blank=True)
+    cost = models.DecimalField("成本", max_digits=14, decimal_places=4, default=Decimal("0"))
+    currency = models.CharField("成本币种", max_length=3, default="CNY")
+    safety_stock = models.DecimalField("安全库存", max_digits=14, decimal_places=3, default=Decimal("0"))
+    attributes = models.JSONField("规格属性", default=dict, blank=True)
+    active = models.BooleanField("启用", default=True)
 
     class Meta:
+        verbose_name = "库存单位（SKU）"
+        verbose_name_plural = "库存单位（SKU）"
         constraints = [
             models.UniqueConstraint(fields=["organization", "code"], name="uniq_org_sku_code"),
             models.UniqueConstraint(fields=["organization", "barcode"], condition=~Q(barcode=""), name="uniq_org_sku_barcode"),
@@ -146,12 +196,14 @@ class ProductImage(TimeStampedModel):
 
 
 class Supplier(OrganizationScopedModel):
-    code = models.CharField(max_length=40)
-    name = models.CharField(max_length=160)
-    contact = models.JSONField(default=dict, blank=True)
-    active = models.BooleanField(default=True)
+    code = models.CharField("供应商编码", max_length=40)
+    name = models.CharField("供应商名称", max_length=160)
+    contact = models.JSONField("联系方式", default=dict, blank=True)
+    active = models.BooleanField("启用", default=True)
 
     class Meta:
+        verbose_name = "供应商"
+        verbose_name_plural = "供应商"
         constraints = [models.UniqueConstraint(fields=["organization", "code"], name="uniq_org_supplier_code")]
 
 
@@ -255,23 +307,25 @@ class StockBalance(OrganizationScopedModel):
 
 class ReplenishmentPolicy(OrganizationScopedModel):
     warehouse = models.ForeignKey(
-        Warehouse, on_delete=models.PROTECT, related_name="replenishment_policies"
+        Warehouse, on_delete=models.PROTECT, related_name="replenishment_policies", verbose_name="仓库"
     )
     sku = models.ForeignKey(
-        SKU, on_delete=models.PROTECT, related_name="replenishment_policies"
+        SKU, on_delete=models.PROTECT, related_name="replenishment_policies", verbose_name="库存单位（SKU）"
     )
-    lead_time_override = models.PositiveIntegerField(null=True, blank=True)
-    review_cycle_days = models.PositiveIntegerField(default=7)
-    target_days = models.PositiveIntegerField(default=30)
+    lead_time_override = models.PositiveIntegerField("补货提前期（天）", null=True, blank=True)
+    review_cycle_days = models.PositiveIntegerField("复核周期（天）", default=7)
+    target_days = models.PositiveIntegerField("目标覆盖天数", default=30)
     min_order_qty = models.DecimalField(
-        max_digits=14, decimal_places=3, default=Decimal("1")
+        "最小订购量", max_digits=14, decimal_places=3, default=Decimal("1")
     )
-    pack_size = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("1"))
+    pack_size = models.DecimalField("整箱数量", max_digits=14, decimal_places=3, default=Decimal("1"))
     safety_stock_override = models.DecimalField(
-        max_digits=14, decimal_places=3, null=True, blank=True
+        "安全库存覆盖值", max_digits=14, decimal_places=3, null=True, blank=True
     )
 
     class Meta:
+        verbose_name = "补货策略"
+        verbose_name_plural = "补货策略"
         constraints = [
             models.UniqueConstraint(
                 fields=["organization", "warehouse", "sku"],
@@ -360,37 +414,34 @@ class StockTransfer(OrganizationScopedModel):
         RECEIVED = "received", "已收货"
         CANCELLED = "cancelled", "已取消"
 
-    number = models.CharField(max_length=60)
+    number = models.CharField("调拨单号", max_length=60)
     source_warehouse = models.ForeignKey(
-        Warehouse, on_delete=models.PROTECT, related_name="outbound_transfers"
+        Warehouse, on_delete=models.PROTECT, related_name="outbound_transfers", verbose_name="调出仓库"
     )
     destination_warehouse = models.ForeignKey(
-        Warehouse, on_delete=models.PROTECT, related_name="inbound_transfers"
+        Warehouse, on_delete=models.PROTECT, related_name="inbound_transfers", verbose_name="调入仓库"
     )
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
-    notes = models.TextField(blank=True)
-    dispatch_idempotency_key = models.CharField(max_length=120, blank=True)
-    receive_idempotency_key = models.CharField(max_length=120, blank=True)
-    dispatched_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField("状态", max_length=16, choices=Status.choices, default=Status.DRAFT)
+    notes = models.TextField("备注", blank=True)
+    dispatch_idempotency_key = models.CharField("发出幂等键", max_length=120, blank=True)
+    receive_idempotency_key = models.CharField("收货幂等键", max_length=120, blank=True)
+    dispatched_at = models.DateTimeField("发出时间", null=True, blank=True)
     dispatched_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="dispatched_stock_transfers",
+        verbose_name="发出人",
     )
-    received_at = models.DateTimeField(null=True, blank=True)
-    received_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="received_stock_transfers",
-    )
+    received_at = models.DateTimeField("收货时间", null=True, blank=True)
+    received_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="received_stock_transfers", verbose_name="收货人")
 
     objects = StockTransferQuerySet.as_manager()
 
     class Meta:
+        verbose_name = "库存调拨单"
+        verbose_name_plural = "库存调拨"
         constraints = [
             models.UniqueConstraint(
                 fields=["organization", "number"], name="uniq_org_transfer_number"
@@ -435,13 +486,15 @@ class StockTransferLineQuerySet(models.QuerySet):
 
 
 class StockTransferLine(TimeStampedModel):
-    transfer = models.ForeignKey(StockTransfer, on_delete=models.CASCADE, related_name="lines")
-    sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="transfer_lines")
-    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    transfer = models.ForeignKey(StockTransfer, on_delete=models.CASCADE, related_name="lines", verbose_name="调拨单")
+    sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="transfer_lines", verbose_name="库存单位（SKU）")
+    quantity = models.DecimalField("数量", max_digits=14, decimal_places=3)
 
     objects = StockTransferLineQuerySet.as_manager()
 
     class Meta:
+        verbose_name = "调拨明细"
+        verbose_name_plural = "调拨明细"
         constraints = [
             models.UniqueConstraint(fields=["transfer", "sku"], name="uniq_transfer_sku"),
             models.CheckConstraint(condition=Q(quantity__gt=0), name="transfer_qty_positive"),
@@ -637,7 +690,7 @@ class CompetitorProduct(OrganizationScopedModel):
         DIRECT = "direct", "直接竞品"
         INDIRECT = "indirect", "间接竞品"
 
-    name = models.CharField(max_length=200)
+    name = models.CharField(max_length=200, blank=True)
     linked_product = models.OneToOneField(
         Product,
         null=True,
@@ -648,7 +701,7 @@ class CompetitorProduct(OrganizationScopedModel):
     kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.DIRECT)
     platform = models.CharField(max_length=40, default="other")
     market = models.CharField(max_length=8, blank=True)
-    url = models.URLField(max_length=1000)
+    url = models.URLField(max_length=1000, blank=True)
     image_url = models.URLField(max_length=1000, blank=True)
     seller = models.CharField(max_length=160, blank=True)
     currency = models.CharField(max_length=3, default="CNY")
@@ -715,26 +768,29 @@ class LocalImport(OrganizationScopedModel):
     class Status(models.TextChoices):
         COMPLETED = "completed", "已完成"
 
-    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="local_imports")
-    idempotency_key = models.CharField(max_length=160)
-    source_version = models.PositiveIntegerField(default=0)
-    source_hash = models.CharField(max_length=64)
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.COMPLETED)
-    summary = models.JSONField(default=dict)
-    mapping = models.JSONField(default=dict)
-    warnings = models.JSONField(default=list)
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="local_imports", verbose_name="仓库")
+    idempotency_key = models.CharField("幂等键", max_length=160)
+    source_version = models.PositiveIntegerField("来源版本", default=0)
+    source_hash = models.CharField("来源校验值", max_length=64)
+    status = models.CharField("状态", max_length=16, choices=Status.choices, default=Status.COMPLETED)
+    summary = models.JSONField("导入摘要", default=dict)
+    mapping = models.JSONField("字段映射", default=dict)
+    warnings = models.JSONField("警告信息", default=list)
     imported_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="erp_local_imports",
+        verbose_name="导入人",
     )
-    imported_at = models.DateTimeField(auto_now_add=True)
+    imported_at = models.DateTimeField("导入时间", auto_now_add=True)
 
     objects = AppendOnlyManager()
 
     class Meta:
+        verbose_name = "本地导入记录"
+        verbose_name_plural = "本地导入记录"
         ordering = ["-imported_at", "-created_at"]
         constraints = [
             models.UniqueConstraint(

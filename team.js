@@ -3,18 +3,18 @@
 
   const SESSION_KEY = 'dongbo.team.session.v1';
   const LOCAL_WAREHOUSE_ID = 'warehouse-default';
-  const CAPABILITY_ROLES = {
-    catalog: ['admin', 'manager'],
-    warehouse_admin: ['admin', 'manager'],
-    purchase: ['admin', 'manager', 'buyer'],
-    receipt: ['admin', 'manager', 'buyer', 'warehouse'],
-    inventory: ['admin', 'manager', 'warehouse'],
-    transfer: ['admin', 'manager', 'warehouse'],
-    order: ['admin', 'manager', 'warehouse'],
-    return: ['admin', 'manager', 'warehouse'],
-    competitor: ['admin', 'manager'],
-    replenishment: ['admin', 'manager', 'buyer'],
-    migration: ['admin', 'manager']
+  const CAPABILITY_KEYS = {
+    catalog: 'catalog',
+    warehouse_admin: 'warehouse',
+    purchase: 'purchase',
+    receipt: 'warehouse',
+    inventory: 'warehouse',
+    transfer: 'warehouse',
+    order: 'order',
+    return: 'order',
+    competitor: 'catalog',
+    replenishment: 'replenishment',
+    migration: 'data'
   };
 
   class ApiError extends Error {
@@ -77,6 +77,9 @@
       this.organizationId = '';
       this.warehouseId = '';
       this.role = '';
+      this.permissions = [];
+      this.emailVerificationEnabled = false;
+      this.syncRevision = 0;
       this.warehouses = [];
       this.cache = {};
       this.pendingIdempotency = new Map();
@@ -113,6 +116,9 @@
       this.organizationId = '';
       this.warehouseId = '';
       this.role = '';
+      this.permissions = [];
+      this.emailVerificationEnabled = false;
+      this.syncRevision = 0;
       this.warehouses = [];
       this.cache = {};
       this.pendingIdempotency.clear();
@@ -167,11 +173,24 @@
         method: 'POST', auth: false, organization: false,
         body: { username: username, password: password }
       });
+      if (payload && payload.email_verification_required) return payload;
       this.accessToken = payload.access;
       this.refreshToken = payload.refresh;
       await this.bootstrapIdentity();
       this.persistSessionSelection();
-      return this.organizationId ? this.loadState() : null;
+      return this.loadState();
+    }
+
+    async verifyOwnerLogin(challengeId, code) {
+      const payload = await this.request('/auth/owner/login/verify/', {
+        method: 'POST', auth: false, organization: false,
+        body: { challenge_id: challengeId, code: code }
+      });
+      this.accessToken = payload.access;
+      this.refreshToken = payload.refresh;
+      await this.bootstrapIdentity();
+      this.persistSessionSelection();
+      return this.loadState();
     }
 
     async refreshAccessToken() {
@@ -201,20 +220,22 @@
       if (!this.refreshToken) return null;
       await this.refreshAccessToken();
       await this.bootstrapIdentity();
-      return this.organizationId ? this.loadState() : null;
+      return this.loadState();
     }
 
     async bootstrapIdentity() {
       const payload = await this.request('/auth/me/', { organization: false });
       this.user = payload.user;
       this.memberships = payload.memberships || [];
+      this.permissions = payload.permissions || [];
+      this.emailVerificationEnabled = Boolean(payload.email_verification_enabled);
       if (!this.memberships.length) {
         this.organizationId = '';
         this.warehouseId = '';
         this.role = '';
         this.warehouses = [];
         this.persistSessionSelection();
-        return;
+        throw new ApiError('该账号尚未被主账号启用，请联系管理员。', 403, payload);
       }
       if (!this.memberships.some((item) => String(item.organization.id) === this.organizationId)) {
         this.organizationId = String(this.memberships[0].organization.id);
@@ -222,16 +243,6 @@
       this.role = (this.memberships.find((item) => String(item.organization.id) === this.organizationId) || {}).role || '';
       await this.loadWarehouses();
       this.persistSessionSelection();
-    }
-
-    async createOrganization(name, slug) {
-      await this.request('/organizations/', {
-        method: 'POST', organization: false,
-        body: { name: String(name || '').trim(), slug: String(slug || '').trim(), active: true }
-      });
-      await this.bootstrapIdentity();
-      if (!this.organizationId) throw new ApiError('组织创建成功，但账号成员关系尚未就绪。', 409, null);
-      return this.loadState();
     }
 
     async loadWarehouses() {
@@ -247,17 +258,6 @@
       const active = this.warehouses.filter(function (item) { return item.active; });
       if (!active.length) throw new ApiError('当前组织没有可用仓库，请先在管理后台创建仓库。', 409, null);
       if (!active.some((item) => String(item.id) === this.warehouseId)) this.warehouseId = String(active[0].id);
-    }
-
-    async selectOrganization(organizationId) {
-      const membership = this.memberships.find(function (item) { return String(item.organization.id) === String(organizationId); });
-      if (!membership) throw new ApiError('无权访问该组织。', 403, null);
-      this.organizationId = String(organizationId);
-      this.role = membership.role;
-      this.warehouseId = '';
-      await this.loadWarehouses();
-      this.persistSessionSelection();
-      return this.loadState();
     }
 
     async selectWarehouse(warehouseId) {
@@ -283,13 +283,54 @@
       return items;
     }
 
+    async loadSyncVersion() {
+      const payload = await this.request('/sync/version/');
+      return Number(payload && payload.revision) || 0;
+    }
+
+    async pollForUpdates() {
+      if (!this.accessToken || this.online === false) return null;
+      const revision = await this.loadSyncVersion();
+      if (this.syncRevision && revision !== this.syncRevision) return this.loadState();
+      this.syncRevision = revision;
+      return null;
+    }
+
     canWrite() {
-      return ['admin', 'manager', 'buyer', 'warehouse'].includes(this.role);
+      return Boolean(this.user && (this.user.is_owner || this.permissions.some(function (item) { return item !== 'view'; })));
     }
 
     can(capability) {
-      const roles = CAPABILITY_ROLES[capability];
-      return Array.isArray(roles) ? roles.includes(this.role) : this.canWrite();
+      if (this.user && this.user.is_owner) return true;
+      const key = CAPABILITY_KEYS[capability] || capability;
+      return this.permissions.includes(key);
+    }
+
+    async listInternalAccounts() {
+      return this.request('/internal-accounts/');
+    }
+
+    async createInternalAccount(payload) {
+      return this.request('/internal-accounts/', { method: 'POST', body: payload });
+    }
+
+    async updateInternalAccount(id, payload) {
+      return this.request('/internal-accounts/' + encodeURIComponent(id) + '/', { method: 'PATCH', body: payload });
+    }
+
+    async disableInternalAccount(id) {
+      return this.request('/internal-accounts/' + encodeURIComponent(id) + '/', { method: 'DELETE' });
+    }
+
+    async requestOwnerPasswordChange() {
+      return this.request('/auth/owner/password/change/request/', { method: 'POST', organization: false, body: {} });
+    }
+
+    async confirmOwnerPasswordChange(challengeId, code, password) {
+      return this.request('/auth/owner/password/change/confirm/', {
+        method: 'POST', organization: false,
+        body: { challenge_id: challengeId, code: code, password: password }
+      });
     }
 
     idempotencyKey(scope, signature) {
@@ -309,7 +350,7 @@
         '/stock-transfers/', '/replenishment-policies/',
         '/replenishment/recommendations/?warehouse=' + encodeURIComponent(this.warehouseId)
       ];
-      const values = await Promise.all(paths.map((path) => this.listAll(path)));
+      const values = await Promise.all(paths.map((path) => this.listAll(path)).concat([this.loadSyncVersion()]));
       const raw = {
         products: values[0], suppliers: values[1], purchaseOrders: values[2],
         balances: values[3], ledger: values[4], orders: values[5], shipments: values[6],
@@ -317,6 +358,7 @@
         replenishmentPolicies: values[11], replenishmentRecommendations: values[12]
       };
       this.cache = raw;
+      this.syncRevision = values[13] || this.syncRevision;
       return this.adaptState(raw);
     }
 
@@ -670,9 +712,8 @@
 
     async createPurchase(order) {
       const supplier = await this.ensureSupplier(order.supplier);
-      if (!supplier) throw new ApiError('请填写供应商。', 400, null);
       const payload = {
-        number: order.number, supplier: supplier.id, warehouse: this.warehouseId,
+        number: order.number, supplier: supplier ? supplier.id : null, warehouse: this.warehouseId || null,
         currency: (order.lines[0] && order.lines[0].currency) || 'CNY', extra_cost: order.extraCost || 0,
         ordered_at: iso(order.orderedAt), expected_at: iso(order.expectedAt), notes: order.note || '',
         lines: order.lines.map(function (line) {
@@ -680,7 +721,7 @@
         })
       };
       const saved = await this.request('/purchase-orders/', { method: 'POST', body: payload });
-      if (order.status !== 'draft') return this.request('/purchase-orders/' + saved.id + '/submit/', { method: 'POST', body: {} });
+      if (order.status !== 'draft' && order.lines.length) return this.request('/purchase-orders/' + saved.id + '/submit/', { method: 'POST', body: {} });
       return saved;
     }
 
@@ -794,6 +835,7 @@
         })
       };
       const saved = await this.request('/orders/', { method: 'POST', body: payload });
+      if (!order.lines.length) return { order: saved, shipped: false, draft: true };
       try {
         await this.confirmAndShipOrder({ id: saved.id, trackingNumber: order.trackingNumber || '' });
         return { order: saved, shipped: true };

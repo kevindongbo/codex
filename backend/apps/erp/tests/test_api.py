@@ -1,10 +1,14 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
+from django.contrib import admin
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from apps.erp.apps import ErpConfig
 from apps.erp.models import (
     AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
     Product, ProductImage, PurchaseOrder, ReplenishmentPolicy, ReturnOrder, SalesOrder,
@@ -16,7 +20,9 @@ from apps.erp.models import (
 class ApiTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="api-user", password="test-pass-123")
-        self.organization = Organization.objects.create(name="东铂", slug="api-dongbo")
+        self.organization = Organization.objects.create(
+            name="东铂", slug=settings.INTERNAL_ORGANIZATION_SLUG
+        )
         Membership.objects.create(
             organization=self.organization, user=self.user, role=Membership.Role.ADMIN
         )
@@ -26,6 +32,23 @@ class ApiTests(TestCase):
         response = self.client.get("/api/health/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok", "database": "ok"})
+
+    def test_admin_hides_groups_and_internal_account_management(self):
+        self.assertNotIn(Group, admin.site._registry)
+        self.assertNotIn(get_user_model(), admin.site._registry)
+        self.assertNotIn(Organization, admin.site._registry)
+        self.assertNotIn(Membership, admin.site._registry)
+
+    def test_internal_management_pages_use_chinese_labels(self):
+        self.assertEqual(settings.LANGUAGE_CODE, "zh-hans")
+        self.assertEqual(ErpConfig.verbose_name, "东铂跨境运营管理系统")
+        self.assertEqual(admin.site.site_header, "东铂跨境运营管理后台")
+        self.assertEqual(admin.site.site_title, "东铂跨境运营管理系统")
+        self.assertEqual(admin.site.index_title, "系统管理")
+        self.assertEqual(Warehouse._meta.verbose_name, "仓库")
+        self.assertEqual(Product._meta.verbose_name, "商品")
+        self.assertEqual(SKU._meta.verbose_name, "库存单位（SKU）")
+        self.assertEqual(Supplier._meta.verbose_name, "供应商")
 
     def test_jwt_login(self):
         response = self.client.post(
@@ -40,6 +63,18 @@ class ApiTests(TestCase):
         self.assertEqual(me.status_code, 200)
         self.assertEqual(me.data["user"]["username"], "api-user")
         self.assertEqual(me.data["memberships"][0]["organization"]["name"], "东铂")
+
+        self.client.credentials()
+        rejected = self.client.post(
+            "/api/auth/token/", {"username": "api-user", "password": "wrong-password"}, format="json"
+        )
+        self.assertEqual(rejected.status_code, 401)
+        self.assertEqual(rejected.data["detail"], "账号名或密码错误，或账号已被停用")
+
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer not-a-real-token")
+        expired = self.client.get("/api/auth/me/")
+        self.assertEqual(expired.status_code, 401)
+        self.assertEqual(expired.data["detail"], "登录凭证无效或已过期，请重新登录")
 
     def test_organization_scope_and_role_header(self):
         self.client.force_authenticate(self.user)
@@ -63,7 +98,7 @@ class ApiTests(TestCase):
         denied = self.client.get("/api/warehouses/", HTTP_X_ORGANIZATION_ID=str(other.pk))
         self.assertEqual(denied.status_code, 403)
 
-    def test_creating_organization_bootstraps_default_warehouse(self):
+    def test_internal_system_disables_creating_additional_organizations(self):
         self.client.force_authenticate(self.user)
         response = self.client.post(
             "/api/organizations/",
@@ -71,18 +106,8 @@ class ApiTests(TestCase):
             format="json",
         )
 
-        self.assertEqual(response.status_code, 201, response.data)
-        created = Organization.objects.get(pk=response.data["id"])
-        self.assertTrue(
-            Warehouse.objects.filter(
-                organization=created, code="DEFAULT", name="默认仓", active=True
-            ).exists()
-        )
-        self.assertTrue(
-            Membership.objects.filter(
-                organization=created, user=self.user, role=Membership.Role.ADMIN
-            ).exists()
-        )
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(Organization.objects.count(), 1)
 
     def test_team_frontend_fields_and_linked_monitoring_profile_round_trip(self):
         self.client.force_authenticate(self.user)
@@ -134,36 +159,144 @@ class ApiTests(TestCase):
         self.organization.refresh_from_db()
         self.assertTrue(self.organization.active)
 
-    def test_last_admin_is_protected_and_membership_changes_are_audited(self):
-        self.client.force_authenticate(self.user)
-        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
-        admin_membership = Membership.objects.get(
-            organization=self.organization, user=self.user
+    def test_owner_manages_internal_accounts_and_child_logs_in_directly(self):
+        owner = get_user_model().objects.create_superuser(
+            username="owner", email="owner@example.com", password="Owner-pass-123!"
         )
-        demote = self.client.patch(
-            f"/api/memberships/{admin_membership.pk}/",
-            {"role": Membership.Role.VIEWER}, format="json", **headers,
-        )
-        remove = self.client.delete(
-            f"/api/memberships/{admin_membership.pk}/", **headers
-        )
-        self.assertEqual(demote.status_code, 400)
-        self.assertEqual(remove.status_code, 400)
-
-        second_user = get_user_model().objects.create_user(
-            username="second-admin", password="test-pass-123"
-        )
+        self.client.force_authenticate(owner)
         created = self.client.post(
-            "/api/memberships/",
-            {"user_id": second_user.pk, "role": Membership.Role.ADMIN, "active": True},
-            format="json", **headers,
+            "/api/internal-accounts/",
+            {
+                "username": "warehouse-user",
+                "password": "Child-pass-123!",
+                "permissions": ["view", "warehouse"],
+            },
+            format="json",
         )
         self.assertEqual(created.status_code, 201, created.data)
-        self.assertTrue(
-            AuditLog.objects.filter(
-                organization=self.organization, action="membership.create"
-            ).exists()
+        self.assertEqual(created.data["permissions"], ["view", "warehouse"])
+        self.assertTrue(AuditLog.objects.filter(
+            organization=self.organization, action="account.create"
+        ).exists())
+
+        self.client.force_authenticate(user=None)
+        token = self.client.post(
+            "/api/auth/token/",
+            {"username": "warehouse-user", "password": "Child-pass-123!"},
+            format="json",
         )
+        self.assertEqual(token.status_code, 200, token.data)
+        self.assertIn("access", token.data)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.data['access']}")
+        me = self.client.get("/api/auth/me/")
+        self.assertEqual(me.status_code, 200, me.data)
+        self.assertEqual(len(me.data["memberships"]), 1)
+        self.assertEqual(me.data["memberships"][0]["organization"]["id"], str(self.organization.pk))
+        self.assertEqual(me.data["permissions"], ["view", "warehouse"])
+        self.assertEqual(self.client.get("/api/internal-accounts/").status_code, 403)
+
+        self.client.force_authenticate(owner)
+        disabled = self.client.delete(f"/api/internal-accounts/{created.data['id']}/")
+        self.assertEqual(disabled.status_code, 204)
+        self.client.force_authenticate(user=None)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.data['access']}")
+        # SimpleJWT rejects tokens issued to an inactive account during
+        # authentication, so the old token is invalidated with 401 before
+        # the endpoint's permission check runs.
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 401)
+        self.client.credentials()
+        self.assertEqual(
+            self.client.post(
+                "/api/auth/token/",
+                {"username": "warehouse-user", "password": "Child-pass-123!"},
+                format="json",
+            ).status_code,
+            401,
+        )
+
+    @override_settings(
+        OWNER_EMAIL_VERIFICATION_REQUIRED=True,
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    )
+    @patch("apps.erp.owner_security.send_mail")
+    def test_only_owner_uses_email_verification_and_can_change_password(self, send_mail):
+        owner = get_user_model().objects.create_superuser(
+            username="mail-owner", email="owner@example.com", password="Original-pass-123!"
+        )
+        login = self.client.post(
+            "/api/auth/token/",
+            {"username": "mail-owner", "password": "Original-pass-123!"},
+            format="json",
+        )
+        self.assertEqual(login.status_code, 200, login.data)
+        self.assertTrue(login.data["email_verification_required"])
+        login_code = send_mail.call_args.args[1].split("：", 1)[1].split("\n", 1)[0]
+        verified = self.client.post(
+            "/api/auth/owner/login/verify/",
+            {"challenge_id": login.data["challenge_id"], "code": login_code},
+            format="json",
+        )
+        self.assertEqual(verified.status_code, 200, verified.data)
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {verified.data['access']}")
+        requested = self.client.post("/api/auth/owner/password/change/request/", format="json")
+        self.assertEqual(requested.status_code, 200, requested.data)
+        change_code = send_mail.call_args.args[1].split("：", 1)[1].split("\n", 1)[0]
+        changed = self.client.post(
+            "/api/auth/owner/password/change/confirm/",
+            {
+                "challenge_id": requested.data["challenge_id"],
+                "code": change_code,
+                "password": "Changed-pass-456!",
+            },
+            format="json",
+        )
+        self.assertEqual(changed.status_code, 200, changed.data)
+        owner.refresh_from_db()
+        self.assertTrue(owner.check_password("Changed-pass-456!"))
+
+        self.client.force_authenticate(self.user)
+        self.assertEqual(
+            self.client.post("/api/auth/owner/password/change/request/", format="json").status_code,
+            403,
+        )
+
+    def test_drafts_accept_incomplete_information_but_cannot_be_submitted(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        product = self.client.post("/api/products/", {}, format="json", **headers)
+        warehouse = self.client.post("/api/warehouses/", {}, format="json", **headers)
+        supplier = self.client.post("/api/suppliers/", {}, format="json", **headers)
+        purchase = self.client.post("/api/purchase-orders/", {}, format="json", **headers)
+        order = self.client.post("/api/orders/", {}, format="json", **headers)
+
+        self.assertEqual(product.status_code, 201, product.data)
+        self.assertEqual(product.data["name"], "待完善商品")
+        self.assertEqual(warehouse.status_code, 201, warehouse.data)
+        self.assertEqual(warehouse.data["name"], "待完善仓库")
+        self.assertEqual(supplier.status_code, 201, supplier.data)
+        self.assertEqual(supplier.data["name"], "待完善供应商")
+        self.assertEqual(purchase.status_code, 201, purchase.data)
+        self.assertEqual(purchase.data["status"], PurchaseOrder.Status.DRAFT)
+        self.assertEqual(order.status_code, 201, order.data)
+        self.assertEqual(order.data["status"], SalesOrder.Status.DRAFT)
+        self.assertEqual(
+            self.client.post(f"/api/purchase-orders/{purchase.data['id']}/submit/", **headers).status_code,
+            400,
+        )
+
+    def test_sync_revision_increases_after_a_data_change(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        before = self.client.get("/api/sync/version/", **headers)
+        self.assertEqual(before.status_code, 200, before.data)
+        with self.captureOnCommitCallbacks(execute=True):
+            created = self.client.post(
+                "/api/products/", {"name": "同步测试商品"}, format="json", **headers
+            )
+        self.assertEqual(created.status_code, 201, created.data)
+        after = self.client.get("/api/sync/version/", **headers)
+        self.assertGreater(after.data["revision"], before.data["revision"])
 
     def test_related_objects_cannot_cross_organization_on_create_or_patch(self):
         self.client.force_authenticate(self.user)

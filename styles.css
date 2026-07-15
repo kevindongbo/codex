@@ -371,6 +371,14 @@ body.team-readonly [data-team-write] { opacity: .5; pointer-events: none; }
 .advanced-fields summary { padding: 11px 13px; color: #5d7084; cursor: pointer; font-size: 10px; font-weight: 750; }
 .advanced-fields[open] summary { border-bottom: 1px solid var(--line); color: var(--navy); background: white; }
 .advanced-fields .form-grid { padding: 13px; }
+.permission-checklist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
+.permission-checklist label { display: flex; align-items: center; gap: 8px; min-height: 40px; margin: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fafcfd; color: var(--navy); font-size: 11px; font-weight: 700; }
+.permission-checklist input { width: auto; height: auto; margin: 0; }
+.account-list { display: grid; gap: 8px; margin-top: 18px; }
+.account-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+.account-row strong, .account-row small { display: block; }
+.account-row small { margin-top: 3px; color: var(--muted); font-size: 10px; }
+.account-row .inline-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -434,6 +442,9 @@ body.team-readonly [data-team-write] { opacity: .5; pointer-events: none; }
   .filter-group { flex-wrap: nowrap; overflow-x: auto; }
   .filter-chip { flex: none; }
   .form-grid.two, .form-grid.three { grid-template-columns: 1fr; }
+  .permission-checklist { grid-template-columns: 1fr; }
+  .account-row { align-items: flex-start; flex-direction: column; }
+  .account-row .inline-actions { justify-content: flex-start; }
   .product-image-editor { grid-template-columns: 88px 1fr; gap: 10px; }
   .product-image-preview { width: 88px; }
   .line-entry.four, .line-entry.three { grid-template-columns: 1fr; }

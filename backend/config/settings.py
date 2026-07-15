@@ -83,6 +83,17 @@ LANGUAGE_CODE = "zh-hans"
 TIME_ZONE = os.getenv("DJANGO_TIME_ZONE", "Asia/Shanghai")
 USE_I18N = True
 USE_TZ = True
+INTERNAL_ORGANIZATION_NAME = os.getenv("INTERNAL_ORGANIZATION_NAME", "东铂跨境")
+INTERNAL_ORGANIZATION_SLUG = os.getenv("INTERNAL_ORGANIZATION_SLUG", "dongbo-internal")
+OWNER_EMAIL_VERIFICATION_REQUIRED = env_bool("OWNER_EMAIL_VERIFICATION_REQUIRED")
+OWNER_EMAIL_CODE_TTL_SECONDS = int(os.getenv("OWNER_EMAIL_CODE_TTL_SECONDS", "600"))
+EMAIL_BACKEND = os.getenv("DJANGO_EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@localhost")
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
@@ -108,7 +119,7 @@ X_FRAME_OPTIONS = "DENY"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "apps.erp.authentication.InternalJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),

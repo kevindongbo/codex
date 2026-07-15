@@ -1,24 +1,36 @@
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, connection, transaction
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.exceptions import APIException, NotFound, PermissionDenied, ValidationError
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization,
+    AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge,
     LocalImport, Product, ProductImage, PurchaseOrder, Receipt, ReplenishmentPolicy,
     ReturnOrder, ReturnReceipt, SalesOrder, Shipment,
     SKU, StockBalance, StockLedger, StockTransfer, Supplier, Warehouse,
 )
-from .permissions import OrganizationRolePermission, request_organization
+from .owner_security import consume_challenge, create_challenge, email_verification_enabled
+from .permissions import (
+    PERMISSION_CATALOG,
+    OrganizationRolePermission,
+    is_owner,
+    membership_permissions,
+    request_organization,
+)
 from .serializers import (
     AdjustmentInputSerializer, AllocateInputSerializer, AuditLogSerializer,
-    CompetitorProductSerializer, CompetitorSnapshotSerializer, MembershipSerializer,
+    CompetitorProductSerializer, CompetitorSnapshotSerializer, InternalAccountSerializer, MembershipSerializer,
     ConfirmAndShipInputSerializer, LocalImportSerializer, OrganizationSerializer,
     ProductImageSerializer, ProductSerializer, QuickSalesSnapshotInputSerializer,
     PurchaseOrderSerializer, ReceiptSerializer, ReceiveInputSerializer,
@@ -39,6 +51,8 @@ from .replenishment import (
     ReplenishmentPolicy as ForecastPolicy,
     build_replenishment_forecast,
 )
+from .single_tenant import active_internal_membership, ensure_internal_organization, internal_organization
+from .sync import bump_sync_revision
 
 
 class DataConflict(APIException):
@@ -74,16 +88,32 @@ def health(request):
 
 
 @api_view(["GET"])
+def sync_version(request):
+    """Return a cheap revision token; browsers only load full state when it changes."""
+    organization = request_organization(request)
+    state, _ = OrganizationSyncState.objects.get_or_create(organization=organization, defaults={"revision": 1})
+    return Response({"revision": state.revision, "updated_at": state.updated_at})
+
+
+@api_view(["GET"])
 def me(request):
-    memberships = Membership.objects.filter(
-        user=request.user, active=True, organization__active=True
-    ).select_related("organization")
+    organization = ensure_internal_organization(request.user) if is_owner(request.user) else internal_organization()
+    membership = active_internal_membership(request.user)
+    if membership is None and is_owner(request.user):
+        membership = active_internal_membership(request.user)
+    memberships = [membership] if membership is not None and organization is not None else []
+    permissions = sorted(PERMISSION_CATALOG) if is_owner(request.user) else sorted(
+        membership_permissions(membership) if membership is not None else []
+    )
     return Response({
         "user": {
             "id": request.user.pk,
             "username": request.user.get_username(),
             "email": request.user.email,
+            "is_owner": is_owner(request.user),
         },
+        "permissions": permissions,
+        "email_verification_enabled": email_verification_enabled() if is_owner(request.user) else False,
         "memberships": [
             {
                 "id": str(membership.pk),
@@ -97,6 +127,223 @@ def me(request):
             for membership in memberships
         ],
     })
+
+
+def _require_owner(request):
+    if not is_owner(request.user):
+        raise PermissionDenied("只有主账号可以管理内部账号")
+    return ensure_internal_organization(request.user)
+
+
+def _account_payload(membership):
+    user = membership.user
+    return {
+        "id": str(membership.pk),
+        "user_id": user.pk,
+        "username": user.get_username(),
+        "active": bool(membership.active and user.is_active),
+        "permissions": sorted(membership_permissions(membership)),
+        "is_owner": bool(user.is_superuser),
+        "last_login": user.last_login,
+        "created_at": membership.created_at,
+    }
+
+
+@api_view(["GET", "POST"])
+def internal_accounts(request):
+    organization = _require_owner(request)
+    if request.method == "GET":
+        memberships = Membership.objects.filter(organization=organization).select_related("user").order_by(
+            "user__is_superuser", "user__username", "id"
+        )
+        return Response({
+            "permission_catalog": PERMISSION_CATALOG,
+            "accounts": [_account_payload(membership) for membership in memberships],
+        })
+
+    serializer = InternalAccountSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    if not data.get("password"):
+        raise ValidationError({"password": "请设置子账号的初始密码"})
+    user_model = get_user_model()
+    if user_model.objects.filter(username=data["username"]).exists():
+        raise ValidationError({"username": "该账号名已被使用"})
+    try:
+        validate_password(data["password"])
+    except DjangoValidationError as exc:
+        raise ValidationError({"password": list(exc.messages)}) from exc
+    with transaction.atomic():
+        user = user_model.objects.create_user(
+            username=data["username"],
+            password=data["password"],
+            is_active=data.get("active", True),
+        )
+        permissions = data.get("permissions", ["view"])
+        membership = Membership.objects.create(
+            organization=organization,
+            user=user,
+            role=Membership.Role.VIEWER,
+            permissions=permissions or ["view"],
+            active=data.get("active", True),
+        )
+        write_audit(
+            organization=organization,
+            actor=request.user,
+            action="account.create",
+            instance=membership,
+            after={"username": user.username, "permissions": membership.permissions, "active": membership.active},
+        )
+    bump_sync_revision(organization_id=organization.pk)
+    return Response(_account_payload(membership), status=status.HTTP_201_CREATED)
+
+
+@api_view(["PATCH", "DELETE"])
+def internal_account_detail(request, membership_id):
+    organization = _require_owner(request)
+    try:
+        membership = Membership.objects.select_related("user").get(pk=membership_id, organization=organization)
+    except (Membership.DoesNotExist, ValueError) as exc:
+        raise NotFound("子账号不存在") from exc
+    if membership.user.is_superuser:
+        raise PermissionDenied("主账号不能在此处修改，请使用主账号安全设置")
+    if request.method == "DELETE":
+        membership.active = False
+        membership.user.is_active = False
+        membership.active = False
+        membership.save(update_fields=["active", "updated_at"])
+        membership.user.save(update_fields=["is_active"])
+        write_audit(
+            organization=organization,
+            actor=request.user,
+            action="account.disable",
+            instance=membership,
+            after={"username": membership.user.username, "active": False},
+        )
+        bump_sync_revision(organization_id=organization.pk)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    serializer = InternalAccountSerializer(data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    if "username" in data and data["username"] != membership.user.username:
+        if get_user_model().objects.exclude(pk=membership.user_id).filter(username=data["username"]).exists():
+            raise ValidationError({"username": "该账号名已被使用"})
+        membership.user.username = data["username"]
+    if "password" in data:
+        try:
+            validate_password(data["password"], membership.user)
+        except DjangoValidationError as exc:
+            raise ValidationError({"password": list(exc.messages)}) from exc
+        membership.user.set_password(data["password"])
+    if "active" in data:
+        membership.active = data["active"]
+        membership.user.is_active = data["active"]
+    if "permissions" in data:
+        membership.permissions = data["permissions"] or ["view"]
+    with transaction.atomic():
+        membership.user.save()
+        membership.save()
+        write_audit(
+            organization=organization,
+            actor=request.user,
+            action="account.update",
+            instance=membership,
+            after={"username": membership.user.username, "permissions": membership.permissions, "active": membership.active},
+        )
+        bump_sync_revision(organization_id=organization.pk)
+    return Response(_account_payload(membership))
+
+
+class InternalTokenObtainPairSerializer(TokenObtainPairSerializer):
+    default_error_messages = {
+        "no_active_account": "账号名或密码错误，或账号已被停用",
+    }
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        if is_owner(self.user) and email_verification_enabled():
+            challenge = create_challenge(user=self.user, purpose=OwnerEmailChallenge.Purpose.LOGIN)
+            return {
+                "email_verification_required": True,
+                "challenge_id": str(challenge.pk),
+                "username": self.user.get_username(),
+            }
+        return data
+
+
+class InternalTokenObtainPairView(TokenObtainPairView):
+    serializer_class = InternalTokenObtainPairSerializer
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def verify_owner_login(request):
+    user = consume_challenge(
+        challenge_id=request.data.get("challenge_id"),
+        code=request.data.get("code"),
+        purpose=OwnerEmailChallenge.Purpose.LOGIN,
+    )
+    refresh = RefreshToken.for_user(user)
+    return Response({"refresh": str(refresh), "access": str(refresh.access_token)})
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def request_owner_password_reset(request):
+    identifier = str(request.data.get("identifier", "")).strip()
+    user_model = get_user_model()
+    owner = user_model.objects.filter(is_superuser=True, is_active=True).filter(
+        username=identifier
+    ).first() or user_model.objects.filter(is_superuser=True, is_active=True, email__iexact=identifier).first()
+    if owner is not None:
+        create_challenge(user=owner, purpose=OwnerEmailChallenge.Purpose.PASSWORD_RESET)
+    return Response({"detail": "如账号存在，验证码已发送至主账号邮箱"})
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def confirm_owner_password_reset(request):
+    user = consume_challenge(
+        challenge_id=request.data.get("challenge_id"),
+        code=request.data.get("code"),
+        purpose=OwnerEmailChallenge.Purpose.PASSWORD_RESET,
+    )
+    password = str(request.data.get("password", ""))
+    try:
+        validate_password(password, user)
+    except DjangoValidationError as exc:
+        raise ValidationError({"password": list(exc.messages)}) from exc
+    user.set_password(password)
+    user.save(update_fields=["password"])
+    return Response({"detail": "主账号密码已更新"})
+
+
+@api_view(["POST"])
+def request_owner_password_change(request):
+    _require_owner(request)
+    challenge = create_challenge(user=request.user, purpose=OwnerEmailChallenge.Purpose.PASSWORD_CHANGE)
+    return Response({"challenge_id": str(challenge.pk), "detail": "验证码已发送至主账号邮箱"})
+
+
+@api_view(["POST"])
+def confirm_owner_password_change(request):
+    _require_owner(request)
+    user = consume_challenge(
+        challenge_id=request.data.get("challenge_id"),
+        code=request.data.get("code"),
+        purpose=OwnerEmailChallenge.Purpose.PASSWORD_CHANGE,
+    )
+    if user.pk != request.user.pk:
+        raise PermissionDenied("验证码不属于当前主账号")
+    password = str(request.data.get("password", ""))
+    try:
+        validate_password(password, user)
+    except DjangoValidationError as exc:
+        raise ValidationError({"password": list(exc.messages)}) from exc
+    user.set_password(password)
+    user.save(update_fields=["password"])
+    return Response({"detail": "主账号密码已更新"})
 
 
 @api_view(["GET"])
@@ -159,27 +406,12 @@ def replenishment_recommendations(request):
 class OrganizationViewSet(viewsets.ModelViewSet):
     serializer_class = OrganizationSerializer
     permission_classes = [OrganizationRolePermission]
-    organization_bootstrap = True
+    owner_only = True
+    http_method_names = ["get", "head", "options"]
 
     def get_queryset(self):
-        if self.request.user.is_superuser:
-            return Organization.objects.order_by("name", "id")
-        return Organization.objects.filter(
-            memberships__user=self.request.user, memberships__active=True
-        ).distinct().order_by("name", "id")
-
-    @transaction.atomic
-    def perform_create(self, serializer):
-        organization = _save_serializer(serializer)
-        Membership.objects.create(
-            organization=organization, user=self.request.user, role=Membership.Role.ADMIN
-        )
-        Warehouse.objects.create(
-            organization=organization,
-            code="DEFAULT",
-            name="默认仓",
-            country="CN",
-        )
+        organization = ensure_internal_organization(self.request.user)
+        return Organization.objects.filter(pk=organization.pk)
 
 
 class OrganizationScopedViewSet(viewsets.ModelViewSet):
@@ -202,7 +434,8 @@ class OrganizationScopedViewSet(viewsets.ModelViewSet):
 class MembershipViewSet(OrganizationScopedViewSet):
     queryset = Membership.objects.select_related("user", "organization").order_by("user__username", "id")
     serializer_class = MembershipSerializer
-    write_roles = {Membership.Role.ADMIN}
+    owner_only = True
+    http_method_names = ["get", "head", "options"]
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -261,11 +494,13 @@ class MembershipViewSet(OrganizationScopedViewSet):
 class WarehouseViewSet(OrganizationScopedViewSet):
     queryset = Warehouse.objects.order_by("code", "id")
     serializer_class = WarehouseSerializer
+    capability = "warehouse"
 
 
 class ProductViewSet(OrganizationScopedViewSet):
     queryset = Product.objects.select_related("default_supplier").prefetch_related("images", "skus").order_by("name", "id")
     serializer_class = ProductSerializer
+    capability = "catalog"
 
     @action(detail=True, methods=["post"])
     @transaction.atomic
@@ -315,6 +550,7 @@ class ProductViewSet(OrganizationScopedViewSet):
 class SKUViewSet(OrganizationScopedViewSet):
     queryset = SKU.objects.select_related("product").order_by("code", "id")
     serializer_class = SKUSerializer
+    capability = "catalog"
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -340,6 +576,7 @@ class SKUViewSet(OrganizationScopedViewSet):
 class ProductImageViewSet(viewsets.ModelViewSet):
     serializer_class = ProductImageSerializer
     permission_classes = [OrganizationRolePermission]
+    capability = "catalog"
 
     def get_queryset(self):
         organization = request_organization(self.request)
@@ -359,13 +596,13 @@ class ProductImageViewSet(viewsets.ModelViewSet):
 class SupplierViewSet(OrganizationScopedViewSet):
     queryset = Supplier.objects.order_by("code", "id")
     serializer_class = SupplierSerializer
-    write_roles = {Membership.Role.ADMIN, Membership.Role.MANAGER, Membership.Role.BUYER}
+    capability = "purchase"
 
 
 class PurchaseOrderViewSet(OrganizationScopedViewSet):
     queryset = PurchaseOrder.objects.select_related("supplier", "warehouse").prefetch_related("lines").order_by("-created_at", "id")
     serializer_class = PurchaseOrderSerializer
-    write_roles = {Membership.Role.ADMIN, Membership.Role.MANAGER, Membership.Role.BUYER}
+    capability = "purchase"
 
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
@@ -391,7 +628,7 @@ class ReceiptViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Cr
     queryset = Receipt.objects.select_related("purchase_order", "warehouse").prefetch_related("lines").order_by("-created_at", "id")
     serializer_class = ReceiptSerializer
     permission_classes = [OrganizationRolePermission]
-    write_roles = {Membership.Role.ADMIN, Membership.Role.MANAGER, Membership.Role.BUYER, Membership.Role.WAREHOUSE}
+    capability = "warehouse"
     organization = None
 
     def get_organization(self):
@@ -417,7 +654,7 @@ class StockBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, view
     queryset = StockBalance.objects.select_related("warehouse", "sku").order_by("warehouse_id", "sku_id")
     serializer_class = StockBalanceSerializer
     permission_classes = [OrganizationRolePermission]
-    write_roles = {Membership.Role.ADMIN, Membership.Role.MANAGER, Membership.Role.WAREHOUSE}
+    capability = "warehouse"
     organization = None
 
     def get_organization(self):
@@ -442,6 +679,7 @@ class StockLedgerViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, views
     queryset = StockLedger.objects.select_related("warehouse", "sku", "actor")
     serializer_class = StockLedgerSerializer
     permission_classes = [OrganizationRolePermission]
+    capability = "warehouse"
     organization = None
 
     def get_queryset(self):
@@ -453,7 +691,7 @@ class ReplenishmentPolicyViewSet(OrganizationScopedViewSet):
         "warehouse__code", "sku__code", "id"
     )
     serializer_class = ReplenishmentPolicySerializer
-    write_roles = {Membership.Role.ADMIN, Membership.Role.MANAGER, Membership.Role.BUYER}
+    capability = "replenishment"
 
 
 class StockTransferViewSet(OrganizationScopedViewSet):
@@ -461,7 +699,7 @@ class StockTransferViewSet(OrganizationScopedViewSet):
         "source_warehouse", "destination_warehouse", "dispatched_by", "received_by"
     ).prefetch_related("lines").order_by("-created_at", "id")
     serializer_class = StockTransferSerializer
-    write_roles = {Membership.Role.ADMIN, Membership.Role.MANAGER, Membership.Role.WAREHOUSE}
+    capability = "warehouse"
 
     @action(detail=True, methods=["post"], url_path="dispatch")
     def dispatch_transfer(self, request, pk=None):
@@ -503,7 +741,7 @@ class StockTransferViewSet(OrganizationScopedViewSet):
 class SalesOrderViewSet(OrganizationScopedViewSet):
     queryset = SalesOrder.objects.select_related("warehouse").prefetch_related("lines").order_by("-created_at", "id")
     serializer_class = SalesOrderSerializer
-    write_roles = {Membership.Role.ADMIN, Membership.Role.MANAGER, Membership.Role.WAREHOUSE}
+    capability = "order"
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
@@ -564,6 +802,7 @@ class ShipmentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets
     queryset = Shipment.objects.select_related("order", "warehouse").prefetch_related("lines").order_by("-shipped_at", "id")
     serializer_class = ShipmentSerializer
     permission_classes = [OrganizationRolePermission]
+    capability = "order"
     organization = None
 
     def get_queryset(self):
@@ -573,7 +812,7 @@ class ShipmentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets
 class ReturnOrderViewSet(OrganizationScopedViewSet):
     queryset = ReturnOrder.objects.prefetch_related("lines", "receipts__lines").order_by("-created_at", "id")
     serializer_class = ReturnOrderSerializer
-    write_roles = {Membership.Role.ADMIN, Membership.Role.MANAGER, Membership.Role.WAREHOUSE}
+    capability = "order"
 
     @action(detail=False, methods=["post"], url_path="receive-from-order")
     @transaction.atomic
@@ -656,11 +895,13 @@ class ReturnOrderViewSet(OrganizationScopedViewSet):
 class CompetitorProductViewSet(OrganizationScopedViewSet):
     queryset = CompetitorProduct.objects.order_by("name", "id")
     serializer_class = CompetitorProductSerializer
+    capability = "catalog"
 
 
 class CompetitorSnapshotViewSet(viewsets.ModelViewSet):
     serializer_class = CompetitorSnapshotSerializer
     permission_classes = [OrganizationRolePermission]
+    capability = "catalog"
 
     def get_queryset(self):
         return CompetitorSnapshot.objects.filter(product__organization=request_organization(self.request))
@@ -692,6 +933,7 @@ class AuditLogViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets
     queryset = AuditLog.objects.select_related("actor")
     serializer_class = AuditLogSerializer
     permission_classes = [OrganizationRolePermission]
+    capability = "audit"
     organization = None
 
     def get_queryset(self):
@@ -702,7 +944,7 @@ class LocalImportViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, views
     queryset = LocalImport.objects.select_related("warehouse", "imported_by")
     serializer_class = LocalImportSerializer
     permission_classes = [OrganizationRolePermission]
-    write_roles = {Membership.Role.ADMIN, Membership.Role.MANAGER}
+    capability = "data"
     organization = None
 
     def get_organization(self):
