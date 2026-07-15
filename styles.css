@@ -37,12 +37,12 @@ h1, h2, h3, p { margin-top: 0; }
 
 .app-header { min-height: var(--header-height); padding: 0; border-bottom: 1px solid rgba(22,50,79,.1); background: rgba(255,255,255,.96); box-shadow: 0 4px 18px rgba(22,50,79,.045); backdrop-filter: blur(14px); display: grid; grid-template-columns: var(--sidebar-width) minmax(350px, max-content) minmax(0, 1fr); align-items: center; gap: 0; position: sticky; top: 0; z-index: 20; }
 .brand { height: var(--header-height); padding: 0 22px; border-right: 0; color: white; background: linear-gradient(135deg, var(--navy-strong), var(--navy)); text-decoration: none; display: flex; align-items: center; gap: 11px; white-space: nowrap; }
-.brand-mark { width: 27px; height: 29px; display: flex; align-items: end; gap: 3px; }
+.brand-mark { width: 44px; height: 36px; display: flex; align-items: end; gap: 3px; }
 .brand-mark i { width: 7px; border-radius: 4px 4px 1px 1px; background: #39b8b8; transform: skewY(-12deg); }
 .brand-mark i:nth-child(1) { height: 14px; }
 .brand-mark i:nth-child(2) { height: 25px; background: var(--amber); }
 .brand-mark i:nth-child(3) { height: 19px; }
-.brand-mark-logo { overflow: hidden; border: 1px solid rgba(255,255,255,.58); border-radius: 7px; background: #fff url("assets/dongbo-erp-logo.png") center 36% / 245% auto no-repeat; box-shadow: 0 2px 7px rgba(0,0,0,.16); }
+.brand-mark-logo { overflow: hidden; border: 1px solid rgba(255,255,255,.58); border-radius: 8px; background: #fff url("assets/dongbo-erp-mark.png") center / 142% auto no-repeat; box-shadow: 0 2px 7px rgba(0,0,0,.16); }
 .brand-copy strong, .brand-copy small { display: block; }
 .brand-copy strong { font-size: 18px; letter-spacing: -.7px; }
 .brand-copy small { margin-top: -2px; color: rgba(255,255,255,.58); font: 700 8px ui-monospace, monospace; letter-spacing: 1px; }
