@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="东铂跨境">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1d5d73"/>
+      <stop offset="1" stop-color="#12364a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="18" y1="18" x2="47" y2="45" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f4cf62"/>
+      <stop offset="1" stop-color="#e6a83f"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#bg)"/>
+  <path d="M18 24.5 32 17l14 7.5v15L32 47l-14-7.5v-15Z" fill="none" stroke="url(#accent)" stroke-linejoin="round" stroke-width="4"/>
+  <path d="M18 24.5 32 32l14-7.5M32 32v15" fill="none" stroke="url(#accent)" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"/>
+  <path d="M45.5 13.5h5v5M50.5 13.5l-8 8" fill="none" stroke="#d9f4ea" stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+</svg>
