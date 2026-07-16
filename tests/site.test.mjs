@@ -32,6 +32,14 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
   assert.match(html, /data-warehouse-tab="orders"/);
 });
 
+test("versions browser assets so production never mixes new markup with cached scripts", async () => {
+  const html = await (await fetchPath("/index.html")).text();
+  assert.match(html, /styles\.css\?v=20260716-image-upload-2/);
+  assert.match(html, /team\.js\?v=20260716-image-upload-2/);
+  assert.match(html, /app\.js\?v=20260716-image-upload-2/);
+  assert.match(html, /accept="\.jpg,\.jpeg,\.png,\.webp,image\/jpeg,image\/png,image\/webp"/);
+});
+
 test("contains product, warehouse, order and monitoring workflows", async () => {
   const html = await (await fetchPath("/index.html")).text();
   const requiredIds = [
