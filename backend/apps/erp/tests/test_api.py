@@ -436,6 +436,148 @@ class ApiTests(TestCase):
         product.refresh_from_db()
         self.assertEqual(product.status, Product.Status.ACTIVE)
 
+    def test_product_delete_removes_unreferenced_skus_and_zero_configuration(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(
+            organization=self.organization, code="DELETE-WH", name="删除测试仓"
+        )
+        product = Product.objects.create(
+            organization=self.organization, name="可删除商品", status=Product.Status.ACTIVE
+        )
+        first_sku = SKU.objects.create(
+            organization=self.organization, product=product, code="DELETE-SKU-A", cost="5"
+        )
+        second_sku = SKU.objects.create(
+            organization=self.organization, product=product, code="DELETE-SKU-B", cost="6"
+        )
+        ProductImage.objects.create(
+            product=product, url="https://example.com/delete.jpg", position=0
+        )
+        StockBalance.objects.create(
+            organization=self.organization, warehouse=warehouse, sku=first_sku
+        )
+        ReplenishmentPolicy.objects.create(
+            organization=self.organization, warehouse=warehouse, sku=second_sku
+        )
+        product_id = product.pk
+        sku_ids = [first_sku.pk, second_sku.pk]
+
+        response = self.client.delete(f"/api/products/{product_id}/", **headers)
+
+        self.assertEqual(response.status_code, 204, response.data)
+        self.assertFalse(Product.objects.filter(pk=product_id).exists())
+        self.assertFalse(SKU.objects.filter(pk__in=sku_ids).exists())
+        self.assertFalse(StockBalance.objects.filter(sku_id__in=sku_ids).exists())
+        self.assertFalse(ReplenishmentPolicy.objects.filter(sku_id__in=sku_ids).exists())
+        self.assertTrue(
+            AuditLog.objects.filter(
+                organization=self.organization,
+                action="product.delete",
+                object_id=str(product_id),
+            ).exists()
+        )
+
+    def test_product_delete_rejects_inventory_and_business_history_atomically(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(
+            organization=self.organization, code="PROTECT-WH", name="保护测试仓"
+        )
+        supplier = Supplier.objects.create(
+            organization=self.organization, code="PROTECT-SUP", name="保护测试供应商"
+        )
+        product = Product.objects.create(
+            organization=self.organization, name="受保护商品", status=Product.Status.ACTIVE
+        )
+        sku = SKU.objects.create(
+            organization=self.organization, product=product, code="PROTECT-SKU", cost="8"
+        )
+        balance = StockBalance.objects.create(
+            organization=self.organization, warehouse=warehouse, sku=sku, on_hand="2"
+        )
+
+        inventory_blocked = self.client.delete(f"/api/products/{product.pk}/", **headers)
+        self.assertEqual(inventory_blocked.status_code, 400, inventory_blocked.data)
+        self.assertTrue(Product.objects.filter(pk=product.pk).exists())
+
+        balance.on_hand = 0
+        balance.save(update_fields=["on_hand", "updated_at"])
+        policy = ReplenishmentPolicy.objects.create(
+            organization=self.organization, warehouse=warehouse, sku=sku
+        )
+        purchase = self.client.post(
+            "/api/purchase-orders/",
+            {
+                "number": "PO-PROTECT", "supplier": str(supplier.pk),
+                "warehouse": str(warehouse.pk), "currency": "CNY",
+                "lines": [{"sku": str(sku.pk), "quantity_ordered": "2", "unit_cost": "8"}],
+            },
+            format="json", **headers,
+        )
+        self.assertEqual(purchase.status_code, 201, purchase.data)
+
+        history_blocked = self.client.delete(f"/api/products/{product.pk}/", **headers)
+
+        self.assertEqual(history_blocked.status_code, 400, history_blocked.data)
+        self.assertTrue(Product.objects.filter(pk=product.pk).exists())
+        self.assertTrue(SKU.objects.filter(pk=sku.pk).exists())
+        self.assertTrue(StockBalance.objects.filter(pk=balance.pk).exists())
+        self.assertTrue(ReplenishmentPolicy.objects.filter(pk=policy.pk).exists())
+
+    def test_only_draft_purchase_orders_can_be_deleted(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(
+            organization=self.organization, code="PO-DELETE-WH", name="采购删除测试仓"
+        )
+        supplier = Supplier.objects.create(
+            organization=self.organization, code="PO-DELETE-SUP", name="采购删除供应商"
+        )
+        product = Product.objects.create(
+            organization=self.organization, name="采购删除商品", status=Product.Status.ACTIVE
+        )
+        sku = SKU.objects.create(
+            organization=self.organization, product=product, code="PO-DELETE-SKU", cost="9"
+        )
+
+        def create_purchase(number):
+            return self.client.post(
+                "/api/purchase-orders/",
+                {
+                    "number": number, "supplier": str(supplier.pk),
+                    "warehouse": str(warehouse.pk), "currency": "CNY",
+                    "lines": [{"sku": str(sku.pk), "quantity_ordered": "3", "unit_cost": "9"}],
+                },
+                format="json", **headers,
+            )
+
+        draft = create_purchase("PO-DELETE-DRAFT")
+        self.assertEqual(draft.status_code, 201, draft.data)
+        deleted = self.client.delete(
+            f"/api/purchase-orders/{draft.data['id']}/", **headers
+        )
+        self.assertEqual(deleted.status_code, 204, deleted.data)
+        self.assertFalse(PurchaseOrder.objects.filter(pk=draft.data["id"]).exists())
+        self.assertTrue(SKU.objects.filter(pk=sku.pk).exists())
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="purchase_order.delete", object_id=str(draft.data["id"])
+            ).exists()
+        )
+
+        submitted = create_purchase("PO-DELETE-SUBMITTED")
+        self.assertEqual(submitted.status_code, 201, submitted.data)
+        submit = self.client.post(
+            f"/api/purchase-orders/{submitted.data['id']}/submit/", **headers
+        )
+        self.assertEqual(submit.status_code, 200, submit.data)
+        refused = self.client.delete(
+            f"/api/purchase-orders/{submitted.data['id']}/", **headers
+        )
+        self.assertEqual(refused.status_code, 400, refused.data)
+        self.assertTrue(PurchaseOrder.objects.filter(pk=submitted.data["id"]).exists())
+
     def test_purchase_and_order_actions_enforce_state_and_release_stock(self):
         self.client.force_authenticate(self.user)
         headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}

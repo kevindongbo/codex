@@ -149,6 +149,21 @@ test('saving one product writes every requested SKU and retires removed SKUs saf
   assert.match(calls[4].options.body.url, /^data:image\/webp;base64,/);
 });
 
+test('team gateway hard-deletes an eligible product and a draft purchase', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  const calls = [];
+  gateway.request = async (path, options = {}) => { calls.push({ path, options }); return null; };
+
+  await gateway.deleteProduct({ kind: 'own', apiProductId: 'product-1' });
+  await gateway.deletePurchase({ id: 'purchase-1' });
+
+  assert.deepEqual(calls.map((call) => call.path), [
+    '/products/product-1/', '/purchase-orders/purchase-1/',
+  ]);
+  assert.deepEqual(calls.map((call) => call.options.method), ['DELETE', 'DELETE']);
+});
+
 test('unknown network outcome reuses the same inventory idempotency key', async () => {
   const bodies = [];
   let attempt = 0;

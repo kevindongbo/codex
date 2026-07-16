@@ -750,6 +750,10 @@
       return this.request('/purchase-orders/' + order.id + '/cancel/', { method: 'POST', body: {} });
     }
 
+    async deletePurchase(order) {
+      return this.request('/purchase-orders/' + order.id + '/', { method: 'DELETE' });
+    }
+
     async receivePurchase(order, line, quantity) {
       const key = this.idempotencyKey('receipt', [order.id, line.id, quantity].join(':'));
       try {

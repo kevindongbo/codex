@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, connection, transaction
+from django.db.models.deletion import ProtectedError
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -502,6 +503,46 @@ class ProductViewSet(OrganizationScopedViewSet):
     serializer_class = ProductSerializer
     capability = "catalog"
 
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        skus = list(instance.skus.select_for_update())
+        sku_ids = [sku.pk for sku in skus]
+        if sku_ids:
+            balances = StockBalance.objects.select_for_update().filter(sku_id__in=sku_ids)
+            if balances.exclude(on_hand=0, reserved=0).exists():
+                raise ValidationError(
+                    "商品仍有在库或锁定库存，不能删除。请先处理库存；需要保留历史时请使用停用。"
+                )
+
+            # Zero balances and replenishment rules are derived/configuration data.
+            # Remove them before deleting otherwise-unreferenced SKU masters.
+            ReplenishmentPolicy.objects.filter(sku_id__in=sku_ids).delete()
+            balances.delete()
+            try:
+                SKU.objects.filter(pk__in=sku_ids).delete()
+            except ProtectedError as exc:
+                raise ValidationError(
+                    "商品已有采购、库存流水、调拨、销售或退货记录，不能彻底删除；请改为停用，或先删除关联草稿单。"
+                ) from exc
+
+        write_audit(
+            organization=instance.organization,
+            actor=self.request.user,
+            action="product.delete",
+            instance=instance,
+            before={
+                "name": instance.name,
+                "status": instance.status,
+                "sku_codes": [sku.code for sku in skus],
+            },
+        )
+        try:
+            instance.delete()
+        except ProtectedError as exc:
+            raise ValidationError(
+                "商品仍被其他业务数据引用，不能彻底删除；请改为停用。"
+            ) from exc
+
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def activate(self, request, pk=None):
@@ -618,9 +659,21 @@ class PurchaseOrderViewSet(OrganizationScopedViewSet):
         )
         return Response(self.get_serializer(purchase_order).data)
 
+    @transaction.atomic
     def perform_destroy(self, instance):
         if instance.status != PurchaseOrder.Status.DRAFT:
             raise ValidationError("只有草稿采购单可以删除；其他状态请使用取消动作")
+        write_audit(
+            organization=instance.organization,
+            actor=self.request.user,
+            action="purchase_order.delete",
+            instance=instance,
+            before={
+                "number": instance.number,
+                "status": instance.status,
+                "line_count": instance.lines.count(),
+            },
+        )
         instance.delete()
 
 

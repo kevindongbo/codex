@@ -1522,6 +1522,7 @@ function renderPurchases() {
     let actions = '';
     const warehouse = TEAM_MODE ? selectedWarehouse() : warehouseById(order.warehouseId || currentWarehouseId());
     if (teamCapabilityAllowed('purchase') && order.status === 'draft') actions += rowButton('submit-purchase', order.id, '确认下单', 'primary');
+    if (teamCapabilityAllowed('purchase') && order.status === 'draft') actions += rowButton('delete-purchase', order.id, '删除', 'danger');
     if (teamCapabilityAllowed('purchase') && order.status === 'ordered') actions += rowButton('transit-purchase', order.id, '标记在途', 'primary');
     if (isPurchaseOpen(order) && teamCapabilityAllowed('receipt') && warehouse && warehouse.canReceive !== false && warehouse.can_receive !== false) actions += rowButton('receive-purchase', order.id, '确认收货', 'primary');
     if (isPurchaseOpen(order) && teamCapabilityAllowed('purchase')) actions += rowButton('cancel-purchase', order.id, '取消余量', 'danger');
@@ -3013,9 +3014,9 @@ async function handleAction(action, id) {
     const product = productById(id);
     if (!product) return;
     if (TEAM_MODE && product.kind === 'own') {
-      if (product.status === 'inactive') return showToast('团队版保留本店 SKU 主档和审计关系，不执行硬删除。');
-      return askConfirm('团队版会保留本店 SKU 主档。是否将“' + product.name + '”停用？', function () {
-        return executeTeamCommand(function () { return teamGateway.setProductActive(product, false); }, '商品已停用，历史数据已保留。', 'catalog');
+      const skuCopy = product.skuCount > 1 ? '及其 ' + product.skuCount + ' 个 SKU' : '及其 SKU';
+      return askConfirm('确认彻底删除“' + product.name + '”' + skuCopy + '？仅当没有库存和业务记录时才能删除，此操作不可撤销。', function () {
+        return executeTeamCommand(function () { return teamGateway.deleteProduct(product); }, '商品及其 SKU 已删除。', 'catalog');
       });
     }
     if (hasBusinessReferences(id) || productSnapshots(id).length) {
@@ -3043,6 +3044,16 @@ async function handleAction(action, id) {
     if (!order || order.status !== 'draft') throw new Error('采购单不是草稿状态。');
     order.status = 'ordered'; order.updatedAt = new Date().toISOString();
     }, '采购单已确认，开始计入在途。');
+  }
+  if (action === 'delete-purchase') {
+    const teamOrder = state.purchaseOrders.find(function (item) { return item.id === id; });
+    if (!teamOrder || teamOrder.status !== 'draft') return showToast('只有草稿采购单可以删除；已下单的采购请使用取消余量。');
+    return askConfirm('确认彻底删除采购草稿“' + teamOrder.number + '”？此操作不可撤销。', function () {
+      if (TEAM_MODE) return executeTeamCommand(function () { return teamGateway.deletePurchase(teamOrder); }, '采购草稿已删除。', 'purchase');
+      return commit(function (next) {
+        next.purchaseOrders = next.purchaseOrders.filter(function (item) { return item.id !== id; });
+      }, '采购草稿已删除。');
+    });
   }
   if (action === 'transit-purchase') {
     if (TEAM_MODE) return showToast('团队版采购单确认后已直接计入在途。');
