@@ -5,6 +5,7 @@ from django.contrib.auth.models import Group
 from django.contrib import admin
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
@@ -97,6 +98,23 @@ class ApiTests(TestCase):
         other = Organization.objects.create(name="其他公司", slug="other")
         denied = self.client.get("/api/warehouses/", HTTP_X_ORGANIZATION_ID=str(other.pk))
         self.assertEqual(denied.status_code, 403)
+
+    @patch("apps.erp.views.default_storage.save", return_value="product-images/" + "1" * 32 + ".png")
+    def test_catalog_user_can_upload_a_local_product_image(self, save):
+        self.client.force_authenticate(self.user)
+        image = SimpleUploadedFile(
+            "product.png",
+            b"\x89PNG\r\n\x1a\n" + b"test-image-data",
+            content_type="image/png",
+        )
+        response = self.client.post(
+            "/api/uploads/product-images/",
+            {"image": image},
+            HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["url"], "http://testserver/api/uploads/product-images/" + "1" * 32 + ".png/")
+        save.assert_called_once()
 
     def test_internal_system_disables_creating_additional_organizations(self):
         self.client.force_authenticate(self.user)

@@ -1,10 +1,16 @@
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
+import re
+import uuid
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.db import IntegrityError, connection, transaction
+from django.http import FileResponse, Http404
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -85,6 +91,66 @@ def health(request):
         cursor.execute("SELECT 1")
         cursor.fetchone()
     return Response({"status": "ok", "database": "ok"})
+
+
+_PRODUCT_IMAGE_SIGNATURES = {
+    "jpeg": (b"\xff\xd8\xff", "jpg", "image/jpeg"),
+    "png": (b"\x89PNG\r\n\x1a\n", "png", "image/png"),
+    "webp": (b"RIFF", "webp", "image/webp"),
+}
+_PRODUCT_IMAGE_NAME = re.compile(r"^[a-f0-9]{32}\.(?:jpg|png|webp)$")
+
+
+def _product_image_format(upload):
+    header = upload.read(16)
+    upload.seek(0)
+    if header.startswith(_PRODUCT_IMAGE_SIGNATURES["jpeg"][0]):
+        return "jpeg"
+    if header.startswith(_PRODUCT_IMAGE_SIGNATURES["png"][0]):
+        return "png"
+    if header.startswith(_PRODUCT_IMAGE_SIGNATURES["webp"][0]) and header[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+@api_view(["POST"])
+def upload_product_image(request):
+    """Store a browser-selected product image and return a shareable URL."""
+    organization = request_organization(request)
+    membership = active_internal_membership(request.user)
+    if not is_owner(request.user) and (membership is None or "catalog" not in membership_permissions(membership)):
+        raise PermissionDenied("没有商品管理权限")
+    upload = request.FILES.get("image")
+    if upload is None:
+        raise ValidationError({"image": "请选择要上传的图片"})
+    if upload.size > 8 * 1024 * 1024:
+        raise ValidationError({"image": "图片不能超过 8MB"})
+    image_format = _product_image_format(upload)
+    if image_format is None:
+        raise ValidationError({"image": "只支持 JPG、PNG 或 WebP 图片"})
+    extension = _PRODUCT_IMAGE_SIGNATURES[image_format][1]
+    name = default_storage.save(
+        f"product-images/{uuid.uuid4().hex}.{extension}",
+        ContentFile(upload.read()),
+    )
+    return Response({
+        "url": request.build_absolute_uri(f"/api/uploads/product-images/{name.rsplit('/', 1)[-1]}/"),
+        "organization": str(organization.pk),
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def serve_product_image(request, filename):
+    if not _PRODUCT_IMAGE_NAME.fullmatch(filename):
+        raise Http404
+    name = f"product-images/{filename}"
+    if not default_storage.exists(name):
+        raise Http404
+    content_type = "image/jpeg" if filename.endswith(".jpg") else ("image/png" if filename.endswith(".png") else "image/webp")
+    response = FileResponse(default_storage.open(name, "rb"), content_type=content_type)
+    response["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
 
 
 @api_view(["GET"])

@@ -11,3 +11,4 @@ backups/
 .env.*
 !.env.example
 .wrangler/
+memory/

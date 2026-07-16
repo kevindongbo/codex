@@ -3,29 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#163b4f" />
-  <link rel="icon" type="image/png" href="assets/dongbo-erp-mark.png" />
-  <link rel="apple-touch-icon" href="assets/dongbo-erp-mark.png" />
   <meta name="description" content="东铂跨境：商品、采购、仓储、订单与竞品监控一体化运营工作台。" />
   <meta property="og:type" content="website" />
   <meta property="og:locale" content="zh_CN" />
   <meta property="og:site_name" content="东铂跨境" />
   <meta property="og:title" content="东铂跨境 · 跨境电商运营管理系统" />
   <meta property="og:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
-  <meta property="og:url" content="https://dongbokeji.com/" />
-  <meta property="og:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
+  <meta property="og:url" content="https://kevindongbo.github.io/codex/" />
+  <meta property="og:image" content="https://kevindongbo.github.io/codex/assets/og-dongbo-crossborder.png" />
   <meta property="og:image:alt" content="东铂跨境运营工作台" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="东铂跨境 · 跨境电商运营管理系统" />
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
-  <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
+  <meta name="twitter:image" content="https://kevindongbo.github.io/codex/assets/og-dongbo-crossborder.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="app-header">
     <a class="brand" href="#products" aria-label="东铂跨境首页">
-      <span class="brand-mark brand-mark-logo" role="img" aria-label="东铂跨境 ERP 标志"></span>
+      <span class="brand-mark"><i></i><i></i><i></i></span>
       <span class="brand-copy"><strong>东铂跨境</strong><small>跨境运营系统</small></span>
     </a>
 
@@ -365,14 +362,16 @@
         <div class="form-grid two">
           <label>商品名称 <span>可稍后完善</span><input id="productName" placeholder="例如：蝴蝶图案帆布托特包" /></label>
           <label>商品类型 <span>*</span><select id="productKind" required><option value="own">本店商品</option><option value="direct">直接竞品</option><option value="indirect">间接竞品</option></select></label>
-          <label class="own-field">SKU <span>*</span><input id="productSku" placeholder="例如：DB-TOTE-001" /></label>
           <label>店铺名称<input id="sellerName" placeholder="例如：Dongbo MY" /></label>
           <label>市场<select id="productMarket"><option value="MY">马来西亚 MY</option><option value="US">美国 US</option><option value="GB">英国 GB</option><option value="SG">新加坡 SG</option><option value="TH">泰国 TH</option><option value="VN">越南 VN</option><option value="PH">菲律宾 PH</option><option value="ID">印度尼西亚 ID</option><option value="OTHER">其他</option></select></label>
           <label>币种<select id="productCurrency"><option value="CNY">CNY · ¥</option><option value="MYR">MYR · RM</option><option value="USD">USD · $</option><option value="GBP">GBP · £</option><option value="SGD">SGD · S$</option><option value="THB">THB · ฿</option><option value="VND">VND · ₫</option><option value="PHP">PHP · ₱</option><option value="IDR">IDR · Rp</option></select></label>
-          <label class="own-field">标准采购成本 <span>*</span><input id="productCost" type="number" min="0.01" step="0.01" placeholder="例如：18.50" /></label>
-          <label class="own-field">安全库存<input id="productSafetyStock" type="number" min="0" step="1" placeholder="例如：20" /></label>
           <label class="own-field">供应商<input id="productSupplier" placeholder="例如：义乌供应商 A" /></label>
           <label>商品状态<select id="productStatus"><option value="active">启用</option><option value="draft">草稿</option><option value="inactive">停用</option></select></label>
+          <div class="sku-editor full own-field">
+            <div class="form-section-title"><strong>SKU 规格 <span>*</span></strong><span>一个商品可维护多个 SKU；每条 SKU 独立设置成本和安全库存。</span></div>
+            <div id="productSkuLines" class="sku-line-list"></div>
+            <button class="button tiny secondary" id="addProductSku" type="button">＋ 添加 SKU</button>
+          </div>
           <label class="full">商品链接 <span>*</span><input id="productUrl" type="url" required placeholder="https://www.tiktok.com/view/product/..." /></label>
           <label class="full own-field">采购链接<input id="productPurchaseUrl" type="url" placeholder="https://detail.1688.com/..." /></label>
           <label class="checkbox-field full own-field"><input id="productCompare" type="checkbox" /><span><strong>同时参与竞品对比</strong><small>开启后，本店商品也会出现在竞品监控中。</small></span></label>
@@ -384,7 +383,7 @@
                 <label>图片网址<input id="productImageUrl" type="url" placeholder="https://example.com/product.jpg" /></label>
                 <input id="productImageFile" type="file" accept="image/jpeg,image/png,image/webp" hidden />
                 <div class="image-button-row"><button class="button tiny secondary" id="chooseProductImage" type="button">从电脑选择</button><button class="button tiny ghost" id="removeProductImage" type="button" disabled>移除图片</button></div>
-                <p class="image-help">每个商品必须有图片。本地上传会自动压缩并保存在当前浏览器。</p>
+                <p class="image-help">每个商品必须有图片。可填写图片网址，或从电脑上传 JPG、PNG、WebP（最大 8MB）。</p>
               </div>
             </div>
           </div>

@@ -31,6 +31,8 @@ router.register("local-imports", views.LocalImportViewSet, basename="local-impor
 
 urlpatterns = [
     path("health/", views.health, name="health"),
+    path("uploads/product-images/", views.upload_product_image, name="product-image-upload"),
+    path("uploads/product-images/<str:filename>/", views.serve_product_image, name="product-image-file"),
     path("sync/version/", views.sync_version, name="sync-version"),
     path("auth/me/", views.me, name="me"),
     path("internal-accounts/", views.internal_accounts, name="internal-accounts"),

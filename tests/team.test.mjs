@@ -109,6 +109,40 @@ test('team adapter exposes every SKU and keeps linked monitoring snapshots on th
   );
 });
 
+test('saving one product with multiple SKUs creates every SKU under the same product', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.cache = { products: [], suppliers: [] };
+  const calls = [];
+  gateway.request = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === '/products/') return { id: 'product-1', skus: [], images: [], status: 'draft' };
+    if (path === '/skus/') {
+      const body = options.body;
+      return { id: 'sku-' + calls.filter((call) => call.path === '/skus/').length, code: body.code, cost: body.cost, safety_stock: body.safety_stock };
+    }
+    throw new Error('Unexpected request: ' + path);
+  };
+
+  await gateway.saveProduct({
+    kind: 'own', name: '多规格托特包', market: 'MY', salesCurrency: 'MYR', costCurrency: 'MYR',
+    productUrl: '', purchaseUrl: '', image: '', defaultSupplier: '', status: 'draft', monitoringEnabled: false,
+    skus: [
+      { code: 'TOTE-RED-S', cost: '10.50', safetyStock: 5, currency: 'MYR' },
+      { code: 'TOTE-BLUE-M', cost: '12.00', safetyStock: 8, currency: 'MYR' },
+    ],
+  });
+
+  assert.deepEqual(calls.map((call) => call.path), ['/products/', '/skus/', '/skus/']);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(calls.filter((call) => call.path === '/skus/').map((call) => call.options.body))),
+    [
+      { product: 'product-1', code: 'TOTE-RED-S', barcode: '', cost: '10.50', currency: 'MYR', safety_stock: 5, active: true, attributes: {} },
+      { product: 'product-1', code: 'TOTE-BLUE-M', barcode: '', cost: '12.00', currency: 'MYR', safety_stock: 8, active: true, attributes: {} },
+    ],
+  );
+});
+
 test('unknown network outcome reuses the same inventory idempotency key', async () => {
   const bodies = [];
   let attempt = 0;

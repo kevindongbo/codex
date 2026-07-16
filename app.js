@@ -98,6 +98,7 @@ let chartMetric = 'sales';
 let searchTerm = '';
 let pendingConfirm = null;
 let pendingProductImage = '';
+let draftProductSkus = [];
 let draftPurchaseLines = [];
 let draftOrderLines = [];
 let draftTransferLines = [];
@@ -182,12 +183,32 @@ function monitoredProducts(source) {
 }
 function normalizeSku(value) { return String(value || '').trim().toUpperCase(); }
 
+function normalizeProductSku(sku) {
+  return {
+    id: String(sku && (sku.id || sku.skuId) || ''),
+    code: String(sku && (sku.code || sku.sku) || '').trim(),
+    cost: sku && sku.cost != null ? sku.cost : (sku && sku.standardCost != null ? sku.standardCost : ''),
+    safetyStock: sku && sku.safetyStock != null ? sku.safetyStock : (sku && sku.safety_stock != null ? sku.safety_stock : 0),
+    currency: String(sku && sku.currency || ''),
+    active: !sku || sku.active !== false
+  };
+}
+
+function skuLinesForProduct(product) {
+  if (!product || product.kind !== 'own') return [];
+  const raw = TEAM_MODE && teamGateway ? teamGateway.findRawProduct(product) : null;
+  if (raw && Array.isArray(raw.skus)) return raw.skus.map(normalizeProductSku);
+  if (Array.isArray(product.skus) && product.skus.length) return product.skus.map(normalizeProductSku);
+  return product.sku ? [normalizeProductSku(product)] : [];
+}
+
 function normalizeProduct(product) {
   const kind = ['own', 'direct', 'indirect'].includes(product.kind) ? product.kind : 'direct';
   const salesCurrency = product.salesCurrency || product.currency || (kind === 'own' ? 'CNY' : 'MYR');
   const image = safeImageUrl(product.image || '');
   const sku = String(product.sku || '').trim();
   const standardCost = nonNegative(product.standardCost == null ? product.cost : product.standardCost);
+  const skus = Array.isArray(product.skus) ? product.skus.map(normalizeProductSku) : [];
   return {
     id: product.id || uid('product'),
     apiProductId: product.apiProductId || '',
@@ -195,7 +216,7 @@ function normalizeProduct(product) {
     skuId: product.skuId || '',
     imageId: product.imageId || '',
     defaultSupplierId: product.defaultSupplierId || '',
-    skuCount: integer(product.skuCount || (product.sku ? 1 : 0)),
+    skuCount: integer(product.skuCount || skus.length || (product.sku ? 1 : 0)),
     name: String(product.name || '').trim(),
     sku: sku,
     seller: String(product.seller || '').trim(),
@@ -205,6 +226,7 @@ function normalizeProduct(product) {
     costCurrency: product.costCurrency || salesCurrency,
     standardCost: standardCost,
     safetyStock: integer(product.safetyStock),
+    skus: skus,
     defaultSupplier: String(product.defaultSupplier || product.supplier || '').trim(),
     status: ['active', 'inactive', 'draft'].includes(product.status) ? product.status : 'active',
     productUrl: String(product.productUrl || product.url || '').trim(),
@@ -867,8 +889,8 @@ function renderModeControls() {
     $$(selector).forEach(function (node) { node.hidden = TEAM_MODE; });
   });
   if ($('#chooseProductImage')) {
-    $('#chooseProductImage').disabled = TEAM_MODE;
-    $('#chooseProductImage').title = TEAM_MODE ? '团队模式请填写可共享的 HTTPS 图片网址' : '';
+    $('#chooseProductImage').disabled = false;
+    $('#chooseProductImage').title = '';
   }
   const capabilityControls = {
     catalog: ['#openProductModal', '#tableAddProduct', '#emptyAddProduct', '#competitorAddProduct', '#competitorTableAdd', '#saveProductDraft', '#productForm button[type="submit"]'],
@@ -2111,6 +2133,23 @@ function updateProductImagePreview() {
   empty.hidden = Boolean(image);
   remove.disabled = !image;
 }
+function renderProductSkuLines() {
+  const container = $('#productSkuLines');
+  if (!container) return;
+  container.innerHTML = draftProductSkus.map(function (sku, index) {
+    const saved = Boolean(sku.id);
+    return '<div class="sku-line" data-sku-index="' + index + '">' +
+      '<label>SKU 编码 <span>*</span><input data-sku-field="code" value="' + escapeHtml(sku.code) + '" placeholder="例如：DB-TOTE-RED-S" /></label>' +
+      '<label>采购成本 <span>*</span><input data-sku-field="cost" type="number" min="0.01" step="0.01" value="' + escapeHtml(sku.cost) + '" placeholder="例如：18.50" /></label>' +
+      '<label>安全库存<input data-sku-field="safetyStock" type="number" min="0" step="1" value="' + escapeHtml(sku.safetyStock) + '" placeholder="例如：20" /></label>' +
+      (saved ? '<small class="sku-saved">已保存</small>' : '<button class="line-remove" type="button" data-remove-sku="' + index + '">移除</button>') +
+    '</div>';
+  }).join('') || '<div class="last-value">暂未添加 SKU。商品可先保存为草稿，或点击下方按钮添加。</div>';
+}
+function addProductSkuLine() {
+  draftProductSkus.push(normalizeProductSku({ currency: $('#productCurrency').value }));
+  renderProductSkuLines();
+}
 function toggleProductFields() {
   const own = $('#productKind').value === 'own';
   $$('.own-field').forEach(function (field) { field.hidden = !own; });
@@ -2124,12 +2163,11 @@ function openProductEditor(productId, presetKind) {
   if ($('#saveProductDraft')) $('#saveProductDraft').textContent = product ? '存为草稿' : '保存草稿';
   $('#productName').value = product ? product.name : '';
   $('#productKind').value = product ? product.kind : (presetKind || 'own');
-  $('#productSku').value = product ? product.sku : '';
+  draftProductSkus = skuLinesForProduct(product);
+  if (!product && $('#productKind').value === 'own') draftProductSkus = [normalizeProductSku({ currency: 'CNY' })];
   $('#sellerName').value = product ? product.seller : '';
   $('#productMarket').value = product ? product.market : 'MY';
   $('#productCurrency').value = product ? product.salesCurrency : ($('#productKind').value === 'own' ? 'CNY' : 'MYR');
-  $('#productCost').value = product && product.kind === 'own' ? product.standardCost : '';
-  $('#productSafetyStock').value = product && product.kind === 'own' ? product.safetyStock : 0;
   $('#productSupplier').value = product ? product.defaultSupplier : '';
   $('#productStatus').value = product ? product.status : 'active';
   $('#productUrl').value = product ? product.productUrl : '';
@@ -2141,6 +2179,7 @@ function openProductEditor(productId, presetKind) {
   $('#firstSnapshotAt').value = localDateTime(new Date());
   ['#firstPrice', '#firstSold', '#firstRating', '#firstReviews', '#firstLowReviews', '#firstShopRating'].forEach(function (selector) { $(selector).value = ''; });
   toggleProductFields();
+  renderProductSkuLines();
   updateProductImagePreview();
   openModal('productModal');
 }
@@ -2152,14 +2191,25 @@ function validUrl(value) {
     return false;
   }
 }
-function productMissingFields(product, rawCost) {
+function productMissingFields(product, skus) {
+  const legacySingleSku = !Array.isArray(skus);
+  const skuLines = Array.isArray(skus) ? skus : skuLinesForProduct(product);
   const missing = [];
   if (!product.name) missing.push('商品名称');
   if (!validUrl(product.productUrl)) missing.push('商品链接');
   if (!product.image || (TEAM_MODE && !/^https:\/\//i.test(product.image))) missing.push(TEAM_MODE ? 'HTTPS 商品图片' : '商品图片');
   if (product.kind === 'own') {
-    if (!product.sku) missing.push('SKU');
-    if (rawCost === '' || !Number.isFinite(Number(rawCost)) || Number(rawCost) <= 0) missing.push('大于 0 的商品成本');
+    if (legacySingleSku) {
+      if (!product.sku) missing.push('SKU');
+      if (skus === '' || !Number.isFinite(Number(skus)) || Number(skus) <= 0) missing.push('大于 0 的商品成本');
+      return missing;
+    }
+    if (!skuLines.length) missing.push('至少一个 SKU');
+    skuLines.forEach(function (sku, index) {
+      const label = skuLines.length === 1 ? 'SKU' : ('SKU #' + (index + 1));
+      if (!sku.code) missing.push(label + ' 编码');
+      if (sku.cost === '' || !Number.isFinite(Number(sku.cost)) || Number(sku.cost) <= 0) missing.push(label + ' 的大于 0 成本');
+    });
   }
   return missing;
 }
@@ -2603,6 +2653,8 @@ async function saveProductFromForm(forceDraft) {
   const editId = $('#editProductId').value;
   const current = editId ? productById(editId) : null;
   const kind = $('#productKind').value;
+  const skus = kind === 'own' ? draftProductSkus.map(normalizeProductSku) : [];
+  const primarySku = skus[0] || normalizeProductSku({});
   const requestedStatus = $('#productStatus').value;
   const draft = Boolean(forceDraft || requestedStatus === 'draft');
   const image = safeImageUrl(pendingProductImage || $('#productImageUrl').value);
@@ -2610,34 +2662,47 @@ async function saveProductFromForm(forceDraft) {
     id: editId || uid('product'),
     apiProductId: current ? current.apiProductId : '',
     apiCompetitorId: current ? current.apiCompetitorId : '',
-    skuId: current ? current.skuId : '',
+    skuId: current ? current.skuId : primarySku.id,
     imageId: current ? current.imageId : '',
     defaultSupplierId: current ? current.defaultSupplierId : '',
-    skuCount: current ? current.skuCount : 0,
+    skuCount: skus.length,
     name: $('#productName').value,
     kind: kind,
-    sku: kind === 'own' ? $('#productSku').value : '',
+    sku: kind === 'own' ? primarySku.code : '',
     seller: $('#sellerName').value,
     market: $('#productMarket').value,
     salesCurrency: $('#productCurrency').value,
     costCurrency: $('#productCurrency').value,
-    standardCost: kind === 'own' ? $('#productCost').value : 0,
-    safetyStock: kind === 'own' ? $('#productSafetyStock').value : 0,
+    standardCost: kind === 'own' ? primarySku.cost : 0,
+    safetyStock: kind === 'own' ? primarySku.safetyStock : 0,
     defaultSupplier: kind === 'own' ? $('#productSupplier').value : '',
     status: draft ? 'draft' : requestedStatus,
     productUrl: $('#productUrl').value,
     purchaseUrl: kind === 'own' ? $('#productPurchaseUrl').value : '',
     image: image,
     monitoringEnabled: kind !== 'own' || $('#productCompare').checked,
+    skus: skus,
     needsReview: false,
     createdAt: current ? current.createdAt : new Date().toISOString(),
     updatedAt: new Date().toISOString()
   });
-  const missing = productMissingFields(product, kind === 'own' ? $('#productCost').value : 0);
+  const missing = productMissingFields(product, skus);
   product.needsReview = missing.length > 0;
   if (missing.length) product.status = 'draft';
-  if (kind === 'own' && product.sku && state.products.some(function (item) { return item.id !== editId && item.kind === 'own' && normalizeSku(item.sku) === normalizeSku(product.sku); })) {
-    return showToast('SKU 已存在，请使用唯一的本店 SKU。');
+  if (kind === 'own') {
+    const seen = new Set();
+    const currentApiProductId = current && (current.apiProductId || current.id);
+    for (const sku of skus) {
+      const code = normalizeSku(sku.code);
+      if (!code) continue;
+      if (seen.has(code)) return showToast('同一商品中的 SKU 不能重复。');
+      seen.add(code);
+      const duplicate = state.products.some(function (item) {
+        const itemApiProductId = item.apiProductId || item.id;
+        return item.kind === 'own' && String(itemApiProductId) !== String(currentApiProductId || '') && normalizeSku(item.sku) === code;
+      });
+      if (duplicate) return showToast('SKU “' + sku.code + '” 已存在，请使用唯一编码。');
+    }
   }
   if (current && current.kind === 'own' && kind !== 'own' && hasBusinessReferences(current.id)) {
     return showToast('该商品已有库存或业务单据，只能停用，不能改为竞品。');
@@ -2907,7 +2972,7 @@ async function handleAction(action, id) {
     const active = action === 'activate-product';
     const current = productById(id);
     if (active && current) {
-      const missing = productMissingFields(current, current.standardCost);
+      const missing = productMissingFields(current, skuLinesForProduct(current));
       if (current.needsReview || missing.length) {
         showToast('启用前请先完善：' + (missing.length ? missing.join('、') : '商品资料') + '。');
         openProductEditor(id);
@@ -3303,16 +3368,22 @@ function bindEvents() {
   $('#productKind').addEventListener('change', toggleProductFields);
   $('#productImageUrl').addEventListener('input', function () { pendingProductImage = $('#productImageUrl').value; updateProductImagePreview(); });
   $('#chooseProductImage').addEventListener('click', function () {
-    if (TEAM_MODE) return showToast('团队模式请填写可共享的 HTTPS 图片网址。');
     $('#productImageFile').click();
   });
   $('#productImageFile').addEventListener('change', async function (event) {
-    if (TEAM_MODE) { event.target.value = ''; return showToast('团队模式暂不接收浏览器本地图片，请填写 HTTPS 图片网址。'); }
     try {
-      pendingProductImage = await compressProductImage(event.target.files[0]);
-      $('#productImageUrl').value = '';
+      const file = event.target.files[0];
+      if (TEAM_MODE) {
+        if (!teamGateway) throw new Error('团队图片服务尚未初始化。');
+        showToast('正在上传商品图片…');
+        pendingProductImage = await teamGateway.uploadProductImage(file);
+        $('#productImageUrl').value = pendingProductImage;
+      } else {
+        pendingProductImage = await compressProductImage(file);
+        $('#productImageUrl').value = '';
+      }
       updateProductImagePreview();
-      showToast('图片已压缩并保存到本机数据中。');
+      showToast(TEAM_MODE ? '商品图片已上传，可供团队成员查看。' : '图片已压缩并保存到本机数据中。');
     } catch (error) {
       showToast(error.message);
     } finally {
@@ -3320,6 +3391,20 @@ function bindEvents() {
     }
   });
   $('#removeProductImage').addEventListener('click', function () { pendingProductImage = ''; $('#productImageUrl').value = ''; updateProductImagePreview(); });
+  $('#addProductSku').addEventListener('click', addProductSkuLine);
+  $('#productSkuLines').addEventListener('input', function (event) {
+    const field = event.target.dataset.skuField;
+    const line = event.target.closest('[data-sku-index]');
+    if (!field || !line) return;
+    const sku = draftProductSkus[Number(line.dataset.skuIndex)];
+    if (sku) sku[field] = event.target.value;
+  });
+  $('#productSkuLines').addEventListener('click', function (event) {
+    const button = event.target.closest('[data-remove-sku]');
+    if (!button) return;
+    draftProductSkus.splice(Number(button.dataset.removeSku), 1);
+    renderProductSkuLines();
+  });
   $('#productForm').addEventListener('submit', handleProductSubmit);
   if ($('#saveProductDraft')) $('#saveProductDraft').addEventListener('click', function () { saveProductFromForm(true); });
   $('#openPurchaseModal').addEventListener('click', openPurchaseEditor);

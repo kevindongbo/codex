@@ -628,6 +628,18 @@
       return product.apiCompetitorId;
     }
 
+    async uploadProductImage(file) {
+      if (!file) throw new ApiError('请选择要上传的图片。', 400, null);
+      if (!/^image\/(jpeg|png|webp)$/i.test(file.type || '')) {
+        throw new ApiError('请选择 JPG、PNG 或 WebP 图片。', 400, null);
+      }
+      if (file.size > 8 * 1024 * 1024) throw new ApiError('原图不能超过 8MB。', 400, null);
+      const form = new root.FormData();
+      form.append('image', file, file.name || 'product-image');
+      const saved = await this.request('/uploads/product-images/', { method: 'POST', body: form });
+      return saved.url;
+    }
+
     async saveProduct(product, initialSnapshot) {
       if (product.kind !== 'own') {
         const payload = {
@@ -642,7 +654,7 @@
         if (initialSnapshot) await this.saveSnapshot(product, initialSnapshot);
         return saved;
       }
-      if (/^data:/i.test(product.image || '')) throw new ApiError('团队模式只接受可共享的 HTTPS 图片网址。', 400, null);
+      if (/^data:/i.test(product.image || '')) throw new ApiError('请等待商品图片上传完成后再保存。', 400, null);
       const supplier = await this.ensureSupplier(product.defaultSupplier);
       const payload = {
         name: product.name, description: '', seller: product.seller || '', market: product.market || '',
@@ -657,17 +669,29 @@
         raw = await this.request('/products/', { method: 'POST', body: payload });
         product.apiProductId = String(raw.id);
       }
-      const rawSku = (raw.skus || []).find(function (item) { return String(item.id) === String(product.skuId); }) || (raw.skus || [])[0];
-      if (product.sku) {
+      const skuLines = Array.isArray(product.skus) && product.skus.length
+        ? product.skus
+        : (product.sku ? [{ id: product.skuId, code: product.sku, cost: product.standardCost, safetyStock: product.safetyStock, currency: product.costCurrency }] : []);
+      const savedSkus = [];
+      for (const sku of skuLines) {
+        const rawSku = (raw.skus || []).find(function (item) { return String(item.id) === String(sku.id || sku.skuId || ''); });
         const skuPayload = {
-          product: raw.id, code: product.sku, barcode: '', cost: product.standardCost,
-          currency: product.costCurrency || product.salesCurrency || 'CNY', safety_stock: product.safetyStock,
-          active: true, attributes: {}
+          product: raw.id, code: sku.code, barcode: '', cost: sku.cost,
+          currency: sku.currency || product.costCurrency || product.salesCurrency || 'CNY', safety_stock: sku.safetyStock,
+          active: sku.active !== false, attributes: sku.attributes || {}
         };
         const savedSku = rawSku
           ? await this.request('/skus/' + rawSku.id + '/', { method: 'PATCH', body: skuPayload })
           : await this.request('/skus/', { method: 'POST', body: skuPayload });
-        product.skuId = String(savedSku.id);
+        savedSkus.push(savedSku);
+      }
+      if (savedSkus.length) {
+        const primarySku = savedSkus[0];
+        product.skuId = String(primarySku.id);
+        product.sku = primarySku.code;
+        product.standardCost = number(primarySku.cost);
+        product.safetyStock = number(primarySku.safety_stock);
+        product.skuCount = savedSkus.length;
       }
       const rawImage = (raw.images || []).find(function (item) { return String(item.id) === String(product.imageId); }) || (raw.images || [])[0];
       if (product.image) {
