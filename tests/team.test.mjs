@@ -102,11 +102,49 @@ test('team adapter exposes every SKU and keeps linked monitoring snapshots on th
   assert.equal(state.products.length, 2);
   assert.deepEqual(Array.from(state.products, (item) => item.sku).sort(), ['SKU-A', 'SKU-B']);
   assert.notEqual(state.products[0].id, state.products[1].id);
+  assert.deepEqual(Array.from(state.products, (item) => item.catalogProductId), ['product-1', 'product-1']);
+  assert.deepEqual(Array.from(state.products, (item) => item.skuCount), [2, 2]);
   assert.equal(state.snapshots[0].productId, state.products[0].id);
   assert.deepEqual(
     Array.from(state.inventoryBalances, (item) => item.productId).sort(),
     Array.from(state.products, (item) => item.id).sort(),
   );
+});
+
+test('saving one product writes every requested SKU and retires removed SKUs safely', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  const calls = [];
+  const raw = {
+    id: 'product-1', skus: [
+      { id: 'sku-old', code: 'OLD', active: true },
+      { id: 'sku-keep', code: 'KEEP', active: true },
+    ], images: [], status: 'draft',
+  };
+  gateway.cache = { products: [raw], suppliers: [] };
+  gateway.request = async (path, options = {}) => {
+    calls.push({ path, options });
+    if (path === '/products/product-1/') return raw;
+    if (path === '/skus/sku-keep/') return { id: 'sku-keep' };
+    if (path === '/skus/') return { id: 'sku-new' };
+    return {};
+  };
+  await gateway.saveProduct({
+    kind: 'own', apiProductId: 'product-1', name: '多 SKU 商品', seller: '', market: 'MY',
+    salesCurrency: 'MYR', costCurrency: 'MYR', standardCost: 1, safetyStock: 0,
+    defaultSupplier: '', productUrl: 'https://example.com/p', purchaseUrl: '', image: '',
+    monitoringEnabled: false, status: 'active',
+    skus: [
+      { id: 'sku-keep', code: 'KEEP', cost: 12, safetyStock: 3, attributes: { color: 'pink' } },
+      { code: 'NEW', cost: 15, safetyStock: 4, attributes: { size: 'L' } },
+    ],
+  });
+  assert.deepEqual(calls.map((call) => call.path), [
+    '/products/product-1/', '/skus/sku-keep/', '/skus/', '/skus/sku-old/', '/products/product-1/activate/',
+  ]);
+  assert.equal(calls[1].options.body.code, 'KEEP');
+  assert.equal(calls[2].options.body.code, 'NEW');
+  assert.equal(calls[3].options.body.active, false);
 });
 
 test('unknown network outcome reuses the same inventory idempotency key', async () => {

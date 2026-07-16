@@ -98,6 +98,7 @@ let chartMetric = 'sales';
 let searchTerm = '';
 let pendingConfirm = null;
 let pendingProductImage = '';
+let draftProductSkus = [];
 let draftPurchaseLines = [];
 let draftOrderLines = [];
 let draftTransferLines = [];
@@ -193,6 +194,8 @@ function normalizeProduct(product) {
     apiProductId: product.apiProductId || '',
     apiCompetitorId: product.apiCompetitorId || '',
     skuId: product.skuId || '',
+    catalogProductId: product.catalogProductId || product.apiProductId || product.id || '',
+    skuActive: product.skuActive !== false,
     imageId: product.imageId || '',
     defaultSupplierId: product.defaultSupplierId || '',
     skuCount: integer(product.skuCount || (product.sku ? 1 : 0)),
@@ -1214,7 +1217,7 @@ function productMedia(product) {
   return '<div class="product-cell"><div class="product-media"><span class="product-badge">' + escapeHtml(initials) + '</span>' +
     (image ? '<img src="' + escapeHtml(image) + '" alt="' + escapeHtml(product.name) + '" loading="lazy" onerror="this.hidden=true">' : '') +
     '</div><div class="product-copy"><strong title="' + escapeHtml(product.name) + '">' + escapeHtml(product.name || '未命名商品') +
-    '</strong><span title="' + escapeHtml(product.productUrl) + '">' + escapeHtml(product.seller || product.market || '—') + '</span></div></div>';
+    '</strong><span title="' + escapeHtml(product.productUrl) + '">' + escapeHtml(product.seller || product.market || '—') + (product.kind === 'own' && product.skuCount > 1 ? ' · ' + product.skuCount + ' 个 SKU' : '') + '</span></div></div>';
 }
 function statusPill(label, className) {
   return '<span class="status-pill ' + escapeHtml(className) + '">' + escapeHtml(label) + '</span>';
@@ -2115,6 +2118,57 @@ function toggleProductFields() {
   const own = $('#productKind').value === 'own';
   $$('.own-field').forEach(function (field) { field.hidden = !own; });
 }
+function skuDraft(item) {
+  return {
+    id: item && item.id ? String(item.id) : '',
+    code: String(item && (item.code || item.sku) || '').trim(),
+    cost: item && item.cost != null ? item.cost : (item && item.standardCost != null ? item.standardCost : ''),
+    safetyStock: item && item.safety_stock != null ? item.safety_stock : (item && item.safetyStock != null ? item.safetyStock : 0),
+    attributes: item && item.attributes ? item.attributes : {},
+    active: !item || item.active !== false
+  };
+}
+function editableSkuDrafts(product) {
+  if (!product || product.kind !== 'own') return [];
+  if (TEAM_MODE && teamGateway) {
+    const raw = teamGateway.findRawProduct(product);
+    if (raw && Array.isArray(raw.skus)) return raw.skus.map(skuDraft);
+  }
+  const catalogId = product.catalogProductId || product.id;
+  const siblings = state.products.filter(function (item) {
+    return item.kind === 'own' && (item.catalogProductId || item.id) === catalogId;
+  });
+  return (siblings.length ? siblings : [product]).map(skuDraft);
+}
+function renderProductSkuEditor() {
+  const list = $('#productSkuList');
+  if (!list) return;
+  if ($('#productKind').value !== 'own') { list.innerHTML = ''; return; }
+  list.innerHTML = draftProductSkus.length ? draftProductSkus.map(function (sku, index) {
+    return '<div class="sku-editor-row" data-product-sku-row data-sku-index="' + index + '">' +
+      '<label>SKU 编码 <span>*</span><input data-sku-field="code" value="' + escapeHtml(sku.code) + '" placeholder="例如：DB-TOTE-PINK-M" /></label>' +
+      '<label>采购成本 <span>*</span><input data-sku-field="cost" type="number" min="0.01" step="0.01" value="' + escapeHtml(sku.cost) + '" /></label>' +
+      '<label>安全库存<input data-sku-field="safetyStock" type="number" min="0" step="1" value="' + escapeHtml(sku.safetyStock) + '" /></label>' +
+      '<label>规格（可选）<input data-sku-field="attributes" value="' + escapeHtml(Object.entries(sku.attributes || {}).map(function (entry) { return entry[0] + ':' + entry[1]; }).join('，')) + '" placeholder="颜色:粉色，尺寸:M" /></label>' +
+      '<button class="button tiny ghost sku-remove" type="button" data-remove-product-sku="' + index + '"' + (draftProductSkus.length === 1 ? ' disabled' : '') + '>移除</button></div>';
+  }).join('') : '<div class="sku-empty">请至少添加一条 SKU 明细。</div>';
+}
+function readProductSkuDrafts() {
+  return $$('[data-product-sku-row]').map(function (row) {
+    const existing = draftProductSkus[Number(row.dataset.skuIndex)] || skuDraft();
+    const attributes = {};
+    String(row.querySelector('[data-sku-field="attributes"]').value || '').split(/[，,]/).forEach(function (entry) {
+      const pair = entry.split(/[:：]/);
+      if (pair.length > 1 && pair[0].trim() && pair.slice(1).join(':').trim()) attributes[pair[0].trim()] = pair.slice(1).join(':').trim();
+    });
+    return Object.assign(existing, {
+      code: row.querySelector('[data-sku-field="code"]').value.trim(),
+      cost: row.querySelector('[data-sku-field="cost"]').value,
+      safetyStock: row.querySelector('[data-sku-field="safetyStock"]').value,
+      attributes: attributes
+    });
+  });
+}
 function openProductEditor(productId, presetKind) {
   const product = productId ? productById(productId) : null;
   $('#productForm').reset();
@@ -2124,12 +2178,10 @@ function openProductEditor(productId, presetKind) {
   if ($('#saveProductDraft')) $('#saveProductDraft').textContent = product ? '存为草稿' : '保存草稿';
   $('#productName').value = product ? product.name : '';
   $('#productKind').value = product ? product.kind : (presetKind || 'own');
-  $('#productSku').value = product ? product.sku : '';
   $('#sellerName').value = product ? product.seller : '';
   $('#productMarket').value = product ? product.market : 'MY';
   $('#productCurrency').value = product ? product.salesCurrency : ($('#productKind').value === 'own' ? 'CNY' : 'MYR');
-  $('#productCost').value = product && product.kind === 'own' ? product.standardCost : '';
-  $('#productSafetyStock').value = product && product.kind === 'own' ? product.safetyStock : 0;
+  draftProductSkus = product && product.kind === 'own' ? editableSkuDrafts(product) : (presetKind === 'own' ? [skuDraft()] : []);
   $('#productSupplier').value = product ? product.defaultSupplier : '';
   $('#productStatus').value = product ? product.status : 'active';
   $('#productUrl').value = product ? product.productUrl : '';
@@ -2141,6 +2193,7 @@ function openProductEditor(productId, presetKind) {
   $('#firstSnapshotAt').value = localDateTime(new Date());
   ['#firstPrice', '#firstSold', '#firstRating', '#firstReviews', '#firstLowReviews', '#firstShopRating'].forEach(function (selector) { $(selector).value = ''; });
   toggleProductFields();
+  renderProductSkuEditor();
   updateProductImagePreview();
   openModal('productModal');
 }
@@ -2158,8 +2211,11 @@ function productMissingFields(product, rawCost) {
   if (!validUrl(product.productUrl)) missing.push('商品链接');
   if (!product.image || (TEAM_MODE && !/^https:\/\//i.test(product.image))) missing.push(TEAM_MODE ? 'HTTPS 商品图片' : '商品图片');
   if (product.kind === 'own') {
-    if (!product.sku) missing.push('SKU');
-    if (rawCost === '' || !Number.isFinite(Number(rawCost)) || Number(rawCost) <= 0) missing.push('大于 0 的商品成本');
+    const skus = Array.isArray(product.skus) ? product.skus : [{ code: product.sku, cost: rawCost }];
+    if (!skus.length || skus.some(function (sku) { return !String(sku.code || '').trim(); })) missing.push('SKU 编码');
+    if (skus.some(function (sku) { return sku.cost === '' || !Number.isFinite(Number(sku.cost)) || Number(sku.cost) <= 0; })) missing.push('大于 0 的 SKU 成本');
+    const codes = skus.map(function (sku) { return normalizeSku(sku.code); }).filter(Boolean);
+    if (new Set(codes).size !== codes.length) missing.push('不重复的 SKU 编码');
   }
   return missing;
 }
@@ -2606,6 +2662,8 @@ async function saveProductFromForm(forceDraft) {
   const requestedStatus = $('#productStatus').value;
   const draft = Boolean(forceDraft || requestedStatus === 'draft');
   const image = safeImageUrl(pendingProductImage || $('#productImageUrl').value);
+  const skus = kind === 'own' ? readProductSkuDrafts() : [];
+  const primarySku = skus[0] || skuDraft();
   const product = normalizeProduct({
     id: editId || uid('product'),
     apiProductId: current ? current.apiProductId : '',
@@ -2613,31 +2671,38 @@ async function saveProductFromForm(forceDraft) {
     skuId: current ? current.skuId : '',
     imageId: current ? current.imageId : '',
     defaultSupplierId: current ? current.defaultSupplierId : '',
-    skuCount: current ? current.skuCount : 0,
+    skuCount: kind === 'own' ? skus.length : 0,
     name: $('#productName').value,
     kind: kind,
-    sku: kind === 'own' ? $('#productSku').value : '',
+    sku: kind === 'own' ? primarySku.code : '',
     seller: $('#sellerName').value,
     market: $('#productMarket').value,
     salesCurrency: $('#productCurrency').value,
     costCurrency: $('#productCurrency').value,
-    standardCost: kind === 'own' ? $('#productCost').value : 0,
-    safetyStock: kind === 'own' ? $('#productSafetyStock').value : 0,
+    standardCost: kind === 'own' ? primarySku.cost : 0,
+    safetyStock: kind === 'own' ? primarySku.safetyStock : 0,
     defaultSupplier: kind === 'own' ? $('#productSupplier').value : '',
     status: draft ? 'draft' : requestedStatus,
     productUrl: $('#productUrl').value,
     purchaseUrl: kind === 'own' ? $('#productPurchaseUrl').value : '',
     image: image,
+    skus: skus,
     monitoringEnabled: kind !== 'own' || $('#productCompare').checked,
     needsReview: false,
     createdAt: current ? current.createdAt : new Date().toISOString(),
     updatedAt: new Date().toISOString()
   });
-  const missing = productMissingFields(product, kind === 'own' ? $('#productCost').value : 0);
+  const missing = productMissingFields(product, kind === 'own' ? primarySku.cost : 0);
   product.needsReview = missing.length > 0;
   if (missing.length) product.status = 'draft';
-  if (kind === 'own' && product.sku && state.products.some(function (item) { return item.id !== editId && item.kind === 'own' && normalizeSku(item.sku) === normalizeSku(product.sku); })) {
-    return showToast('SKU 已存在，请使用唯一的本店 SKU。');
+  if (kind === 'own') {
+    const currentCatalogId = current && (current.catalogProductId || current.apiProductId || current.id);
+    const existingCodes = state.products.filter(function (item) {
+      return item.kind === 'own' && (item.catalogProductId || item.apiProductId || item.id) !== currentCatalogId;
+    }).map(function (item) { return normalizeSku(item.sku); });
+    if (skus.some(function (sku) { return sku.code && existingCodes.includes(normalizeSku(sku.code)); })) {
+      return showToast('SKU 已存在，请使用唯一的本店 SKU 编码。');
+    }
   }
   if (current && current.kind === 'own' && kind !== 'own' && hasBusinessReferences(current.id)) {
     return showToast('该商品已有库存或业务单据，只能停用，不能改为竞品。');
@@ -2659,9 +2724,33 @@ async function saveProductFromForm(forceDraft) {
     return;
   }
   const saved = commit(function (next) {
-    const index = next.products.findIndex(function (item) { return item.id === product.id; });
-    if (index >= 0) next.products[index] = product; else next.products.push(product);
-    if (product.kind === 'own') ensureBalance(next, product.id);
+    if (product.kind === 'own') {
+      const catalogId = current ? (current.catalogProductId || current.id) : uid('catalog');
+      const existing = next.products.filter(function (item) {
+        return item.kind === 'own' && (item.catalogProductId || item.id) === catalogId;
+      });
+      const kept = new Set();
+      skus.forEach(function (sku, index) {
+        const match = existing.find(function (item) { return sku.id && String(item.id) === String(sku.id); }) || existing.find(function (item) { return normalizeSku(item.sku) === normalizeSku(sku.code); });
+        const item = normalizeProduct(Object.assign({}, product, {
+          id: match ? match.id : (index === 0 ? product.id : uid('product')), catalogProductId: catalogId, skuId: sku.id || (match ? match.skuId : ''),
+          sku: sku.code, standardCost: sku.cost, safetyStock: sku.safetyStock, skuCount: skus.length,
+          createdAt: match ? match.createdAt : product.createdAt
+        }));
+        kept.add(item.id);
+        const position = next.products.findIndex(function (entry) { return entry.id === item.id; });
+        if (position >= 0) next.products[position] = item; else next.products.push(item);
+        ensureBalance(next, item.id);
+        if (index === 0) product.id = item.id;
+      });
+      existing.filter(function (item) { return !kept.has(item.id); }).forEach(function (item) {
+        if (hasBusinessReferences(item.id, next)) item.status = 'inactive';
+        else next.products = next.products.filter(function (entry) { return entry.id !== item.id; });
+      });
+    } else {
+      const index = next.products.findIndex(function (item) { return item.id === product.id; });
+      if (index >= 0) next.products[index] = product; else next.products.push(product);
+    }
     if (initialSnapshot) next.snapshots.push(initialSnapshot);
     if (!next.selectedProductId && product.status === 'active' && product.monitoringEnabled) next.selectedProductId = product.id;
     if (!product.needsReview) next.migrationIssues = next.migrationIssues.filter(function (issue) { return issue.productId !== product.id; });
@@ -3087,6 +3176,12 @@ function bindEvents() {
       draftTransferLines = draftTransferLines.filter(function (line) { return line.productId !== removeTransfer.dataset.removeTransferLine; });
       return renderTransferDraft();
     }
+    const removeProductSku = event.target.closest('[data-remove-product-sku]');
+    if (removeProductSku) {
+      draftProductSkus = readProductSkuDrafts();
+      draftProductSkus.splice(Number(removeProductSku.dataset.removeProductSku), 1);
+      return renderProductSkuEditor();
+    }
   });
   $$('.modal-backdrop').forEach(function (backdrop) {
     backdrop.addEventListener('mousedown', function (event) { if (event.target === backdrop) closeModal(backdrop.id); });
@@ -3301,6 +3396,12 @@ function bindEvents() {
     $(selector).addEventListener('click', function () { openProductEditor('', 'direct'); });
   });
   $('#productKind').addEventListener('change', toggleProductFields);
+  $('#productKind').addEventListener('change', renderProductSkuEditor);
+  $('#addProductSku').addEventListener('click', function () {
+    draftProductSkus = readProductSkuDrafts();
+    draftProductSkus.push(skuDraft());
+    renderProductSkuEditor();
+  });
   $('#productImageUrl').addEventListener('input', function () { pendingProductImage = $('#productImageUrl').value; updateProductImagePreview(); });
   $('#chooseProductImage').addEventListener('click', function () {
     if (TEAM_MODE) return showToast('团队模式请填写可共享的 HTTPS 图片网址。');

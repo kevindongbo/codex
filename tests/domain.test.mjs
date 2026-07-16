@@ -64,7 +64,7 @@ test("draft products remain drafts and cannot enter warehouse selectors", async 
   state.products.push(draft);
 
   assert.equal(draft.status, "draft");
-  assert.deepEqual(Array.from(domain.productMissingFields(draft, "")), ["商品链接", "商品图片", "SKU", "大于 0 的商品成本"]);
+  assert.deepEqual(Array.from(domain.productMissingFields(draft, "")), ["商品链接", "商品图片", "SKU 编码", "大于 0 的 SKU 成本"]);
   assert.equal(domain.ownProducts(state).length, 0);
   assert.equal(domain.ownProducts(state, true).length, 1);
 });

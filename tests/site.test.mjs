@@ -35,7 +35,7 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 test("contains product, warehouse, order and monitoring workflows", async () => {
   const html = await (await fetchPath("/index.html")).text();
   const requiredIds = [
-    "productRows", "productCost", "productImageUrl", "productImageFile",
+    "productRows", "productSkuEditor", "productSkuList", "addProductSku", "productImageUrl", "productImageFile",
     "purchaseRows", "purchaseLineList", "receiveForm", "warehouseRows",
     "movementRows", "orderRows", "orderLineList", "returnForm", "competitorRows",
     "historyRows", "trendChart", "changeList", "moduleSidebar", "sidebarToggle",
@@ -65,6 +65,7 @@ test("contains product, warehouse, order and monitoring workflows", async () => 
   assert.match(html, /一次确认完成整单库存校验、扣库与出库流水/);
   assert.match(html, /已有基准后只需修改累计销量/);
   assert.match(html, /其他公开数据（已自动沿用，有变化时再修改）/);
+  assert.match(html, /同一个商品可维护多个颜色、尺寸或套装 SKU/);
   assert.match(html, />确认并出库</);
 });
 

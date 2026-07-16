@@ -374,9 +374,9 @@
         skus.forEach(function (sku, index) {
           const viewId = skus.length > 1 && sku ? String(item.id) + ':' + String(sku.id) : String(item.id);
           const view = {
-            id: viewId, apiProductId: String(item.id), skuId: sku ? String(sku.id) : '',
+            id: viewId, apiProductId: String(item.id), catalogProductId: String(item.id), skuId: sku ? String(sku.id) : '',
             imageId: image ? String(image.id) : '', defaultSupplierId: supplier ? String(supplier.id) : '',
-            skuCount: (item.skus || []).length,
+            skuCount: (item.skus || []).length, skuActive: sku ? sku.active !== false : false,
             name: item.name, sku: sku ? sku.code : '', seller: item.seller || '', kind: 'own',
             market: item.market || '', salesCurrency: item.sales_currency || (sku ? sku.currency : 'CNY'),
             costCurrency: sku ? sku.currency : 'CNY', standardCost: sku ? number(sku.cost) : 0,
@@ -657,18 +657,36 @@
         raw = await this.request('/products/', { method: 'POST', body: payload });
         product.apiProductId = String(raw.id);
       }
-      const rawSku = (raw.skus || []).find(function (item) { return String(item.id) === String(product.skuId); }) || (raw.skus || [])[0];
-      if (product.sku) {
+      const requestedSkus = Array.isArray(product.skus) ? product.skus : [{
+        id: product.skuId, code: product.sku, cost: product.standardCost,
+        safetyStock: product.safetyStock, attributes: {}
+      }];
+      const existingSkus = raw.skus || [];
+      const requestedIds = new Set(requestedSkus.filter(function (sku) { return sku.id; }).map(function (sku) { return String(sku.id); }));
+      const requestedCodes = new Set();
+      for (const sku of requestedSkus) {
+        const code = String(sku.code || '').trim();
+        if (!code) continue;
+        if (requestedCodes.has(code.toUpperCase())) throw new ApiError('同一商品内的 SKU 编码不能重复。', 400, null);
+        requestedCodes.add(code.toUpperCase());
+        const currentSku = existingSkus.find(function (item) { return String(item.id) === String(sku.id); }) || null;
         const skuPayload = {
-          product: raw.id, code: product.sku, barcode: '', cost: product.standardCost,
-          currency: product.costCurrency || product.salesCurrency || 'CNY', safety_stock: product.safetyStock,
-          active: true, attributes: {}
+          product: raw.id, code: code, barcode: '', cost: sku.cost,
+          currency: product.costCurrency || product.salesCurrency || 'CNY', safety_stock: sku.safetyStock || 0,
+          active: true, attributes: sku.attributes || {}
         };
-        const savedSku = rawSku
-          ? await this.request('/skus/' + rawSku.id + '/', { method: 'PATCH', body: skuPayload })
+        const savedSku = currentSku
+          ? await this.request('/skus/' + currentSku.id + '/', { method: 'PATCH', body: skuPayload })
           : await this.request('/skus/', { method: 'POST', body: skuPayload });
-        product.skuId = String(savedSku.id);
+        sku.id = String(savedSku.id);
+        requestedIds.add(String(savedSku.id));
       }
+      for (const existingSku of existingSkus) {
+        if (!requestedIds.has(String(existingSku.id)) && existingSku.active !== false) {
+          await this.request('/skus/' + existingSku.id + '/', { method: 'PATCH', body: { active: false } });
+        }
+      }
+      product.skuId = requestedSkus[0] && requestedSkus[0].id ? String(requestedSkus[0].id) : '';
       const rawImage = (raw.images || []).find(function (item) { return String(item.id) === String(product.imageId); }) || (raw.images || [])[0];
       if (product.image) {
         const imagePayload = { product: raw.id, url: product.image, alt: product.name, position: 0 };

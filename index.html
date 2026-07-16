@@ -365,17 +365,18 @@
         <div class="form-grid two">
           <label>商品名称 <span>可稍后完善</span><input id="productName" placeholder="例如：蝴蝶图案帆布托特包" /></label>
           <label>商品类型 <span>*</span><select id="productKind" required><option value="own">本店商品</option><option value="direct">直接竞品</option><option value="indirect">间接竞品</option></select></label>
-          <label class="own-field">SKU <span>*</span><input id="productSku" placeholder="例如：DB-TOTE-001" /></label>
           <label>店铺名称<input id="sellerName" placeholder="例如：Dongbo MY" /></label>
           <label>市场<select id="productMarket"><option value="MY">马来西亚 MY</option><option value="US">美国 US</option><option value="GB">英国 GB</option><option value="SG">新加坡 SG</option><option value="TH">泰国 TH</option><option value="VN">越南 VN</option><option value="PH">菲律宾 PH</option><option value="ID">印度尼西亚 ID</option><option value="OTHER">其他</option></select></label>
           <label>币种<select id="productCurrency"><option value="CNY">CNY · ¥</option><option value="MYR">MYR · RM</option><option value="USD">USD · $</option><option value="GBP">GBP · £</option><option value="SGD">SGD · S$</option><option value="THB">THB · ฿</option><option value="VND">VND · ₫</option><option value="PHP">PHP · ₱</option><option value="IDR">IDR · Rp</option></select></label>
-          <label class="own-field">标准采购成本 <span>*</span><input id="productCost" type="number" min="0.01" step="0.01" placeholder="例如：18.50" /></label>
-          <label class="own-field">安全库存<input id="productSafetyStock" type="number" min="0" step="1" placeholder="例如：20" /></label>
           <label class="own-field">供应商<input id="productSupplier" placeholder="例如：义乌供应商 A" /></label>
           <label>商品状态<select id="productStatus"><option value="active">启用</option><option value="draft">草稿</option><option value="inactive">停用</option></select></label>
           <label class="full">商品链接 <span>*</span><input id="productUrl" type="url" required placeholder="https://www.tiktok.com/view/product/..." /></label>
           <label class="full own-field">采购链接<input id="productPurchaseUrl" type="url" placeholder="https://detail.1688.com/..." /></label>
           <label class="checkbox-field full own-field"><input id="productCompare" type="checkbox" /><span><strong>同时参与竞品对比</strong><small>开启后，本店商品也会出现在竞品监控中。</small></span></label>
+          <section class="sku-editor own-field full" id="productSkuEditor" aria-label="商品 SKU 明细">
+            <div class="sku-editor-heading"><div><strong>SKU 规格明细 <em>*</em></strong><span>同一个商品可维护多个颜色、尺寸或套装 SKU；库存与采购会分别按 SKU 计算。</span></div><button class="button tiny secondary" id="addProductSku" type="button">＋ 添加 SKU</button></div>
+            <div class="sku-editor-list" id="productSkuList"></div>
+          </section>
           <div class="product-image-field full">
             <span class="field-label">商品图片 <em>*</em></span>
             <div class="product-image-editor">
