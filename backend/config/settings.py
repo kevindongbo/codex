@@ -73,6 +73,23 @@ DATABASES = {
     )
 }
 
+# Development keeps cache in memory. Production uses a shared on-host file
+# cache so all Gunicorn workers reuse the same paid selection response.
+CACHES = {
+    "default": {
+        "BACKEND": (
+            "django.core.cache.backends.locmem.LocMemCache"
+            if DEBUG else "django.core.cache.backends.filebased.FileBasedCache"
+        ),
+        "LOCATION": (
+            "dongbo-erp-development-cache"
+            if DEBUG else os.getenv("DJANGO_CACHE_LOCATION", "/tmp/dongbo-erp-cache")
+        ),
+        "TIMEOUT": 600,
+        "OPTIONS": {"MAX_ENTRIES": 2000},
+    }
+}
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
@@ -87,6 +104,13 @@ INTERNAL_ORGANIZATION_NAME = os.getenv("INTERNAL_ORGANIZATION_NAME", "东铂跨�
 INTERNAL_ORGANIZATION_SLUG = os.getenv("INTERNAL_ORGANIZATION_SLUG", "dongbo-internal")
 OWNER_EMAIL_VERIFICATION_REQUIRED = env_bool("OWNER_EMAIL_VERIFICATION_REQUIRED")
 OWNER_EMAIL_CODE_TTL_SECONDS = int(os.getenv("OWNER_EMAIL_CODE_TTL_SECONDS", "600"))
+ALPHASHOP_ACCESS_KEY = os.getenv("ALPHASHOP_ACCESS_KEY", os.getenv("ALPHACLAW_ACCESS_KEY", "")).strip()
+ALPHASHOP_SECRET_KEY = os.getenv("ALPHASHOP_SECRET_KEY", os.getenv("ALPHACLAW_SECRET_KEY", "")).strip()
+ALPHASHOP_API_BASE = os.getenv("ALPHASHOP_API_BASE", "https://api.alphashop.cn").strip().rstrip("/")
+ALPHASHOP_KEYWORD_TIMEOUT = int(os.getenv("ALPHASHOP_KEYWORD_TIMEOUT", "30"))
+ALPHASHOP_REPORT_TIMEOUT = int(os.getenv("ALPHASHOP_REPORT_TIMEOUT", "120"))
+ALPHASHOP_KEYWORD_CACHE_SECONDS = int(os.getenv("ALPHASHOP_KEYWORD_CACHE_SECONDS", "600"))
+ALPHASHOP_REPORT_CACHE_SECONDS = int(os.getenv("ALPHASHOP_REPORT_CACHE_SECONDS", "1800"))
 EMAIL_BACKEND = os.getenv("DJANGO_EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))

@@ -43,7 +43,7 @@ services:
       - --workers
       - "${GUNICORN_WORKERS:-3}"
       - --timeout
-      - "${GUNICORN_TIMEOUT:-60}"
+      - "${GUNICORN_TIMEOUT:-150}"
     volumes:
       - django_static:/app/staticfiles
       - django_media:/app/media

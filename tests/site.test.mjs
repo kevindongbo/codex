@@ -16,10 +16,12 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
   assert.match(html, /商品中心/);
   assert.match(html, /仓配中心/);
   assert.match(html, /竞品监控/);
+  assert.match(html, /智能选品/);
   assert.doesNotMatch(html, />\s*总览\s*</);
   assert.match(html, /data-module="products"/);
   assert.match(html, /data-module="warehouse"/);
   assert.match(html, /data-module="competitors"/);
+  assert.match(html, /data-module="selection"/);
   assert.match(html, /property="og:title" content="东铂跨境 · 跨境电商运营管理系统"/);
   assert.match(html, /账号与权限/);
   assert.match(html, /主账号可统一管理所有内部成员/);
@@ -34,9 +36,9 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260716-safe-delete-1/);
-  assert.match(html, /team\.js\?v=20260716-safe-delete-1/);
-  assert.match(html, /app\.js\?v=20260716-safe-delete-1/);
+  assert.match(html, /styles\.css\?v=20260717-alphashop-selection-1/);
+  assert.match(html, /team\.js\?v=20260717-alphashop-selection-1/);
+  assert.match(html, /app\.js\?v=20260717-alphashop-selection-1/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
@@ -54,6 +56,10 @@ test("contains product, warehouse, order and monitoring workflows", async () => 
     "ownerPasswordChangeForm", "returnCondition",
     "downloadLocalBackup", "localBackupFile", "chooseLocalBackup", "migrationPreview",
     "commitLocalMigration",
+    "selectionApiState", "selectionKeywordPanel", "selectionKeywordForm",
+    "selectionPlatform", "selectionRegion", "selectionListingTime", "selectionKeyword",
+    "selectionKeywordResults", "selectionReportPanel", "selectionReportForm",
+    "selectionChosenKeyword", "selectionReportButton", "selectionSummary", "selectionProducts",
     "warehouseSwitcher", "manageWarehouses", "warehouseModal", "warehouseForm",
     "warehouseCode", "warehouseName", "warehouseType", "warehouseCountry",
     "warehouseTimezone", "warehouseContact", "warehouseAddress",
@@ -128,6 +134,10 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /inventorySection = parts\[2\] === 'movements'/);
   assert.match(scriptText, /executeTeamCommand/);
   assert.match(scriptText, /initializeTeamMode/);
+  assert.match(scriptText, /searchSelectionKeywords/);
+  assert.match(scriptText, /generateSelectionReport/);
+  assert.match(scriptText, /importSelectionProduct/);
+  assert.doesNotMatch(scriptText, /ALPHASHOP_(?:ACCESS|SECRET)_KEY/);
   assert.equal(teamScript.status, 200);
   const teamText = await teamScript.text();
   assert.match(teamText, /class TeamGateway/);
@@ -140,6 +150,8 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(teamText, /replenishment/);
   assert.match(teamText, /local-imports\/validate/);
   assert.match(teamText, /local-imports\/commit/);
+  assert.match(teamText, /product-selection\/keywords/);
+  assert.match(teamText, /product-selection\/report/);
   assert.equal(runtimeConfig.status, 200);
   assert.match(await runtimeConfig.text(), /mode: 'local'/);
   assert.equal(stylesheet.status, 200);

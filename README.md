@@ -85,6 +85,8 @@ cp .env.example .env
 
 必须替换 `DJANGO_SECRET_KEY`、`POSTGRES_PASSWORD` 和 `DATABASE_URL`。生产模式会拒绝空值、占位值或少于 50 个字符的 Django 密钥。数据库密码应使用 URL 安全字符，并在 `POSTGRES_PASSWORD` 和 `DATABASE_URL` 中保持一致。不要提交 `.env`。
 
+启用“智能选品”时，仅在服务器 `.env` 中设置 `ALPHASHOP_ACCESS_KEY` 与 `ALPHASHOP_SECRET_KEY`。浏览器只访问本站的 `/api/product-selection/` 代理，密钥不会下发到前端。关键词结果默认缓存 10 分钟，商品报告默认缓存 30 分钟；生产环境用 `DJANGO_CACHE_LOCATION` 指定的主机文件缓存供多个 Gunicorn worker 共用。报告上游最长等待 120 秒，因此 Gunicorn 超时应保持在 150 秒或更高。
+
 本机 HTTP 测试保持：
 
 ```dotenv

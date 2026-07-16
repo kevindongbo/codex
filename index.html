@@ -20,7 +20,7 @@
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260716-safe-delete-1" />
+  <link rel="stylesheet" href="styles.css?v=20260717-alphashop-selection-1" />
 </head>
 <body>
   <header class="app-header">
@@ -31,6 +31,7 @@
 
     <nav class="primary-nav" aria-label="主导航">
       <button class="primary-nav-item active" data-module="products"><span>商品中心</span><b id="navProductCount">0</b></button>
+      <button class="primary-nav-item" data-module="selection"><span>智能选品</span><b>AI</b></button>
       <button class="primary-nav-item" data-module="warehouse"><span>仓配中心</span><b id="navWarehouseCount">0</b></button>
       <button class="primary-nav-item" data-module="competitors"><span>竞品监控</span><b id="navAlertCount">0</b></button>
     </nav>
@@ -62,6 +63,21 @@
             <p>数据维护</p>
             <button class="side-link" type="button" data-side-link data-scroll-target="importCsv" data-side-action="import"><span class="side-icon">⇧</span><span>导入商品</span></button>
             <button class="side-link" type="button" data-side-link data-scroll-target="exportCsv" data-side-action="export"><span class="side-icon">⇩</span><span>导出数据</span></button>
+          </div>
+        </nav>
+      </section>
+
+      <section class="sidebar-module" data-sidebar-module="selection">
+        <div class="sidebar-heading"><span>智能选品</span><small>市场机会分析</small></div>
+        <nav class="sidebar-nav" aria-label="智能选品功能">
+          <div class="sidebar-group">
+            <p>选品流程</p>
+            <button class="side-link active" type="button" data-side-link data-selection-scroll="selectionKeywordPanel"><span class="side-icon">⌕</span><span>关键词机会</span></button>
+            <button class="side-link" type="button" data-side-link data-selection-scroll="selectionReportPanel"><span class="side-icon">▦</span><span>商品推荐</span></button>
+          </div>
+          <div class="sidebar-group">
+            <p>默认市场</p>
+            <div class="selection-sidebar-note"><strong>TikTok · 马来西亚</strong><span>可在查询区切换平台和国家。</span></div>
           </div>
         </nav>
       </section>
@@ -153,6 +169,51 @@
           </table>
           <div class="empty-state" id="productEmpty"><span>◎</span><strong>还没有符合条件的商品</strong><p>新增本店 SKU 或竞品，商品图片、链接和成本会统一保存。</p><button class="button primary" id="emptyAddProduct">新增第一个商品</button></div>
         </div>
+      </section>
+    </section>
+
+    <section class="module-page" id="module-selection" data-module-page="selection" hidden>
+      <div class="page-heading">
+        <div>
+          <p class="eyebrow">ALPHASHOP DATA</p>
+          <h1>智能选品</h1>
+          <p>先找高机会关键词，再按价格、销量、评分和上架时间筛选商品。默认 TikTok 马来西亚。</p>
+        </div>
+        <div class="selection-api-state" id="selectionApiState"><i></i><div><strong>正在检查接口</strong><span>密钥只保存在服务器</span></div></div>
+      </div>
+
+      <section class="panel selection-panel" id="selectionKeywordPanel">
+        <div class="panel-title"><div><h2>第一步：搜索关键词机会</h2><p>报告只接受这里返回的候选词；先搜索再选择可避免无效调用。</p></div><span class="selection-step">01</span></div>
+        <form class="selection-search-form" id="selectionKeywordForm">
+          <label>平台<select id="selectionPlatform"><option value="tiktok">TikTok Shop</option><option value="amazon">Amazon</option></select></label>
+          <label>国家 / 地区<select id="selectionRegion"><option value="MY">马来西亚 MY</option></select></label>
+          <label>上架时间<select id="selectionListingTime"><option value="90">近 90 天</option><option value="180">近 180 天</option></select></label>
+          <label class="selection-keyword-input">产品方向 / 关键词<input id="selectionKeyword" maxlength="120" required placeholder="例如：women bag、收纳盒、宠物玩具" /></label>
+          <button class="button primary" id="selectionKeywordButton" type="submit">查询关键词</button>
+        </form>
+        <div class="selection-call-note">每次点击才会调用接口；相同条件会优先使用服务器缓存，减少重复扣费。</div>
+        <div class="selection-loading" id="selectionKeywordLoading" hidden><i></i><span>正在查询关键词机会…</span></div>
+        <div class="selection-keyword-grid" id="selectionKeywordResults"></div>
+        <div class="empty-state compact show" id="selectionKeywordEmpty"><span>⌕</span><strong>输入产品方向开始选品</strong><p>建议用具体品类词，不要只输入过宽的单词。</p></div>
+      </section>
+
+      <section class="panel selection-panel" id="selectionReportPanel">
+        <div class="panel-title"><div><h2>第二步：生成商品报告</h2><p id="selectionChosenHint">请先从上方选择一个候选关键词。</p></div><span class="selection-step">02</span></div>
+        <form class="selection-filter-form" id="selectionReportForm">
+          <input id="selectionChosenKeyword" type="hidden" />
+          <label>最低价格<input id="selectionMinPrice" type="number" min="0" step="0.01" placeholder="不限" /></label>
+          <label>最高价格<input id="selectionMaxPrice" type="number" min="0" step="0.01" placeholder="不限" /></label>
+          <label>最低月销量<input id="selectionMinVolume" type="number" min="0" step="1" placeholder="例如 50" /></label>
+          <label>最高月销量<input id="selectionMaxVolume" type="number" min="0" step="1" placeholder="不限" /></label>
+          <label>最低评分<input id="selectionMinRating" type="number" min="0" max="5" step="0.1" placeholder="例如 4.0" /></label>
+          <label>最高评分<input id="selectionMaxRating" type="number" min="0" max="5" step="0.1" placeholder="5.0" /></label>
+          <button class="button primary" id="selectionReportButton" type="submit" disabled>生成选品报告</button>
+        </form>
+        <div class="selection-cost-warning">生成报告属于高成本调用。系统会要求二次确认，并限制短时间内的重复请求。</div>
+        <div class="selection-loading" id="selectionReportLoading" hidden><i></i><span>正在分析市场和商品，最长可能需要约 2 分钟…</span></div>
+        <div id="selectionSummary"></div>
+        <div class="selection-product-grid" id="selectionProducts"></div>
+        <div class="empty-state compact show" id="selectionProductEmpty"><span>▦</span><strong>还没有商品报告</strong><p>选择关键词并设置筛选条件后生成。</p></div>
       </section>
     </section>
 
@@ -658,7 +719,7 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js"></script>
-  <script src="team.js?v=20260716-safe-delete-1"></script>
-  <script src="app.js?v=20260716-safe-delete-1"></script>
+  <script src="team.js?v=20260717-alphashop-selection-1"></script>
+  <script src="app.js?v=20260717-alphashop-selection-1"></script>
 </body>
 </html>

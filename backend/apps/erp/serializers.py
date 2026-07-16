@@ -17,6 +17,39 @@ from .models import (
 from .permissions import PERMISSION_CATALOG, request_organization
 
 
+SELECTION_PLATFORMS = ("tiktok", "amazon")
+SELECTION_LISTING_TIMES = ("90", "180")
+
+
+class ProductSelectionKeywordInputSerializer(serializers.Serializer):
+    platform = serializers.ChoiceField(choices=SELECTION_PLATFORMS, default="tiktok")
+    region = serializers.CharField(min_length=2, max_length=2, default="MY")
+    keyword = serializers.CharField(min_length=1, max_length=120, trim_whitespace=True)
+    listing_time = serializers.ChoiceField(choices=SELECTION_LISTING_TIMES, required=False, allow_blank=True)
+
+    def validate_region(self, value):
+        return value.upper()
+
+
+class ProductSelectionReportInputSerializer(ProductSelectionKeywordInputSerializer):
+    min_price = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0, required=False, allow_null=True)
+    max_price = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0, required=False, allow_null=True)
+    min_volume = serializers.IntegerField(min_value=0, required=False, allow_null=True)
+    max_volume = serializers.IntegerField(min_value=0, required=False, allow_null=True)
+    min_rating = serializers.DecimalField(max_digits=3, decimal_places=2, min_value=0, max_value=5, required=False, allow_null=True)
+    max_rating = serializers.DecimalField(max_digits=3, decimal_places=2, min_value=0, max_value=5, required=False, allow_null=True)
+
+    def validate(self, attrs):
+        for minimum, maximum, label in (
+            ("min_price", "max_price", "价格"),
+            ("min_volume", "max_volume", "销量"),
+            ("min_rating", "max_rating", "评分"),
+        ):
+            if attrs.get(minimum) is not None and attrs.get(maximum) is not None and attrs[minimum] > attrs[maximum]:
+                raise serializers.ValidationError({maximum: f"{label}上限不能小于下限。"})
+        return attrs
+
+
 def _context_organization(serializer):
     view = serializer.context.get("view")
     organization = getattr(view, "organization", None)

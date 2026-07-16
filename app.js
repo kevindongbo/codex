@@ -112,6 +112,12 @@ let ownerLoginChallengeId = '';
 let ownerPasswordChallengeId = '';
 let ownerPermissionCatalog = {};
 let internalAccounts = [];
+let selectionState = {
+  statusLoaded: false, configured: false, loadingStatus: false,
+  loadingKeywords: false, loadingReport: false, keywords: [], selectedKeyword: '',
+  keywordResponseCached: false, report: null, reportCached: false,
+  platformRegions: { tiktok: ['MY'], amazon: ['US'] }
+};
 
 const $ = function (selector) { return document.querySelector(selector); };
 const $$ = function (selector) { return Array.from(document.querySelectorAll(selector)); };
@@ -290,7 +296,7 @@ function normalizeV5(saved) {
   base.migrationIssues = Array.isArray(saved.migrationIssues) ? saved.migrationIssues : [];
   base.selectedProductId = saved.selectedProductId || '';
   const savedUi = saved.ui && typeof saved.ui === 'object' ? saved.ui : {};
-  if (['products', 'warehouse', 'competitors'].includes(savedUi.module)) base.ui.module = savedUi.module;
+  if (['products', 'selection', 'warehouse', 'competitors'].includes(savedUi.module)) base.ui.module = savedUi.module;
   if (['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(savedUi.warehouseTab)) base.ui.warehouseTab = savedUi.warehouseTab;
   if (['products', 'snapshots', 'trends', 'alerts'].includes(savedUi.competitorTab)) base.ui.competitorTab = savedUi.competitorTab;
   const activeWarehouse = base.warehouses.find(function (item) { return item.active && item.id === savedUi.warehouseId; }) ||
@@ -494,7 +500,7 @@ function restoreUiPreferences() {
   if (!TEAM_MODE) return;
   try {
     const saved = JSON.parse(localStorage.getItem(UI_STORAGE_KEY) || '{}');
-    if (saved.ui && ['products', 'warehouse', 'competitors'].includes(saved.ui.module)) state.ui.module = saved.ui.module;
+    if (saved.ui && ['products', 'selection', 'warehouse', 'competitors'].includes(saved.ui.module)) state.ui.module = saved.ui.module;
     if (saved.ui && ['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(saved.ui.warehouseTab)) state.ui.warehouseTab = saved.ui.warehouseTab;
     if (saved.ui && saved.ui.warehouseId) state.ui.warehouseId = saved.ui.warehouseId;
     if (saved.ui && ['products', 'snapshots', 'trends', 'alerts'].includes(saved.ui.competitorTab)) state.ui.competitorTab = saved.ui.competitorTab;
@@ -870,7 +876,7 @@ function renderModeControls() {
     $$(selector).forEach(function (node) { node.hidden = TEAM_MODE; });
   });
   const capabilityControls = {
-    catalog: ['#openProductModal', '#tableAddProduct', '#emptyAddProduct', '#competitorAddProduct', '#competitorTableAdd', '#saveProductDraft', '#productForm button[type="submit"]'],
+    catalog: ['#openProductModal', '#tableAddProduct', '#emptyAddProduct', '#competitorAddProduct', '#competitorTableAdd', '#saveProductDraft', '#productForm button[type="submit"]', '#selectionKeywordButton'],
     purchase: ['#openPurchaseModal', '#purchaseForm button[type="submit"]'],
     receipt: ['#receiveForm button[type="submit"]'],
     inventory: ['#openStockModal', '#stockForm button[type="submit"]'],
@@ -1249,7 +1255,7 @@ function setRoute(module, subtab) {
 }
 function applyHashRoute() {
   const parts = location.hash.replace(/^#/, '').split('/');
-  if (['products', 'warehouse', 'competitors'].includes(parts[0])) state.ui.module = parts[0];
+  if (['products', 'selection', 'warehouse', 'competitors'].includes(parts[0])) state.ui.module = parts[0];
   if (parts[0] === 'products') productFilter = ['own', 'direct', 'indirect', 'inactive'].includes(parts[1]) ? parts[1] : 'all';
   if (parts[0] === 'warehouse' && ['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(parts[1])) {
     state.ui.warehouseTab = parts[1];
@@ -1314,6 +1320,9 @@ function renderSidebar() {
     if (state.ui.module === 'competitors' && button.dataset.competitorView) {
       active = button.dataset.competitorView === state.ui.competitorTab;
     }
+    if (state.ui.module === 'selection' && button.dataset.selectionScroll) {
+      active = button.dataset.selectionScroll === 'selectionKeywordPanel';
+    }
     button.classList.toggle('active', active);
     if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
   });
@@ -1360,6 +1369,10 @@ function handleSideLink(button) {
     productFilter = button.dataset.productView;
     setRoute('products');
     return;
+  }
+  if (button.dataset.selectionScroll) {
+    setRoute('selection');
+    return setTimeout(function () { scrollToPanel(button.dataset.selectionScroll); }, 0);
   }
   if (button.dataset.warehouseView) {
     const view = button.dataset.warehouseView;
@@ -2079,6 +2092,262 @@ function renderChart() {
   });
 }
 
+const SELECTION_REGION_LABELS = {
+  MY: '马来西亚 MY', ID: '印度尼西亚 ID', VN: '越南 VN', TH: '泰国 TH', PH: '菲律宾 PH',
+  SG: '新加坡 SG', US: '美国 US', BR: '巴西 BR', MX: '墨西哥 MX', GB: '英国 GB', ES: '西班牙 ES',
+  FR: '法国 FR', DE: '德国 DE', IT: '意大利 IT', JP: '日本 JP', CA: '加拿大 CA'
+};
+
+function selectionNumber(value, digits) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return '—';
+  return parsed.toLocaleString('zh-CN', { maximumFractionDigits: digits == null ? 0 : digits });
+}
+
+function selectionField(source, direct, nested, nestedField) {
+  if (source && source[direct] != null) return source[direct];
+  if (source && source[nested] && source[nested][nestedField] != null) return source[nested][nestedField];
+  return null;
+}
+
+function selectionRange(value) {
+  if (value == null || value === '') return '—';
+  if (Array.isArray(value)) return value.filter(function (item) { return item != null; }).join(' – ') || '—';
+  if (typeof value === 'object') {
+    const minimum = value.min != null ? value.min : (value.minimum != null ? value.minimum : value.low);
+    const maximum = value.max != null ? value.max : (value.maximum != null ? value.maximum : value.high);
+    if (minimum != null && maximum != null) return minimum + ' – ' + maximum;
+    return Object.values(value).filter(function (item) { return item != null && typeof item !== 'object'; }).join(' – ') || '—';
+  }
+  return String(value);
+}
+
+function renderSelectionRegions() {
+  const platform = $('#selectionPlatform').value;
+  const regions = selectionState.platformRegions[platform] || [];
+  const previous = $('#selectionRegion').value;
+  $('#selectionRegion').innerHTML = regions.map(function (region) {
+    return '<option value="' + escapeHtml(region) + '">' + escapeHtml(SELECTION_REGION_LABELS[region] || region) + '</option>';
+  }).join('');
+  $('#selectionRegion').value = regions.includes(previous) ? previous : (regions.includes('MY') ? 'MY' : (regions[0] || ''));
+}
+
+function renderSelectionStatus() {
+  const node = $('#selectionApiState');
+  if (!node) return;
+  node.classList.toggle('ready', selectionState.configured);
+  node.classList.toggle('error', selectionState.statusLoaded && !selectionState.configured);
+  if (!TEAM_MODE) node.innerHTML = '<i></i><div><strong>仅团队服务器可用</strong><span>本机模式不会暴露或保存 API 密钥</span></div>';
+  else if (!teamAuthenticated()) node.innerHTML = '<i></i><div><strong>请先登录</strong><span>登录后检查服务器接口配置</span></div>';
+  else if (selectionState.loadingStatus) node.innerHTML = '<i></i><div><strong>正在检查接口</strong><span>密钥只保存在服务器</span></div>';
+  else if (selectionState.configured) node.innerHTML = '<i></i><div><strong>选品接口已就绪</strong><span>服务端鉴权 · 前端不保存密钥</span></div>';
+  else node.innerHTML = '<i></i><div><strong>服务器尚未配置密钥</strong><span>配置后无需修改网页代码</span></div>';
+}
+
+async function loadProductSelectionStatus() {
+  if (!TEAM_MODE || !teamGateway || !teamAuthenticated() || selectionState.loadingStatus || selectionState.statusLoaded) return;
+  selectionState.loadingStatus = true;
+  renderSelectionStatus();
+  try {
+    const payload = await teamGateway.productSelectionStatus();
+    selectionState.configured = Boolean(payload && payload.configured);
+    selectionState.platformRegions = payload && payload.platform_regions ? payload.platform_regions : selectionState.platformRegions;
+    selectionState.statusLoaded = true;
+    renderSelectionRegions();
+  } catch (error) {
+    selectionState.statusLoaded = true;
+    selectionState.configured = false;
+    handleTeamError(error);
+  } finally {
+    selectionState.loadingStatus = false;
+    renderSelectionStatus();
+  }
+}
+
+function renderSelectionKeywords() {
+  const results = $('#selectionKeywordResults');
+  const empty = $('#selectionKeywordEmpty');
+  if (!results || !empty) return;
+  results.innerHTML = selectionState.keywords.map(function (item, index) {
+    const keyword = String(item.keyword || item.keywordEn || '');
+    const keywordCn = String(item.keywordCn || item.keywordCN || '');
+    const score = selectionField(item, 'oppScore', 'opportunityInfo', 'score');
+    const sold = selectionField(item, 'soldCnt30d', 'salesInfo', 'soldCnt30d');
+    const amount = selectionField(item, 'soldAmt30d', 'salesInfo', 'soldAmt30d');
+    const rank = selectionField(item, 'searchRank', 'demandInfo', 'searchRank');
+    const description = item.oppScoreDesc || item.description || (keywordCn && keywordCn !== keyword ? keywordCn : '候选机会关键词');
+    return '<article class="selection-keyword-card ' + (selectionState.selectedKeyword === keyword ? 'selected' : '') + '">' +
+      '<div class="selection-keyword-head"><strong title="' + escapeHtml(keyword) + '">' + escapeHtml(keyword || keywordCn || '未命名关键词') + '</strong><span>机会 ' + escapeHtml(selectionNumber(score, 1)) + '</span></div>' +
+      '<p>' + escapeHtml(description) + '</p><div class="selection-keyword-metrics">' +
+      '<span><b>' + escapeHtml(selectionNumber(rank)) + '</b>搜索排名</span>' +
+      '<span><b>' + escapeHtml(selectionNumber(sold)) + '</b>30 天销量</span>' +
+      '<span><b>' + escapeHtml(selectionNumber(amount, 2)) + '</b>30 天销售额</span></div>' +
+      '<button class="button tiny ' + (selectionState.selectedKeyword === keyword ? 'primary' : 'secondary') + '" type="button" data-selection-keyword-index="' + index + '">' + (selectionState.selectedKeyword === keyword ? '已选择' : '选择这个词') + '</button></article>';
+  }).join('');
+  empty.classList.toggle('show', !selectionState.loadingKeywords && !selectionState.keywords.length);
+  $('#selectionKeywordLoading').hidden = !selectionState.loadingKeywords;
+}
+
+function selectionSummaryHtml(summary) {
+  if (!summary || !Object.keys(summary).length) return '';
+  const info = summary.keywordIndexesInfo || summary.keywordIndexInfo || summary;
+  const level = summary.keywordLevelDetail || {};
+  const sales = info.salesInfo || {};
+  const supply = info.supplyInfo || {};
+  const profit = info.profitInfo || {};
+  const score = info.oppScore != null ? info.oppScore : summary.oppScore;
+  const summaryText = summary.summary || level.text || level.valueLevelDesc || '已生成关键词市场机会分析。';
+  return '<section class="selection-market-summary"><div class="selection-summary-head"><div><h3>' +
+    escapeHtml(info.keyword || selectionState.selectedKeyword || '关键词机会') + '</h3><p>' + escapeHtml(summaryText) + '</p></div>' +
+    '<div class="selection-summary-score"><strong>' + escapeHtml(selectionNumber(score, 1)) + '</strong><span>' + escapeHtml(level.valueLevelDesc || level.valueLevel || '机会评分') + '</span></div></div>' +
+    '<div class="selection-summary-metrics">' +
+    '<div><span>30 天销量</span><strong>' + escapeHtml(selectionNumber(sales.soldCnt30d || info.soldCnt30d)) + '</strong></div>' +
+    '<div><span>30 天销售额</span><strong>' + escapeHtml(selectionNumber(sales.soldAmt30d || info.soldAmt30d, 2)) + '</strong></div>' +
+    '<div><span>商品供给数</span><strong>' + escapeHtml(selectionNumber(supply.itemCount || info.itemCount)) + '</strong></div>' +
+    '<div><span>平均评分</span><strong>' + escapeHtml(selectionNumber(supply.ratingAvg || info.ratingAvg, 2)) + '</strong></div>' +
+    '<div><span>平均价格</span><strong>' + escapeHtml(selectionNumber(profit.priceAvg || info.priceAvg, 2)) + '</strong></div></div></section>';
+}
+
+function renderSelectionReport() {
+  const report = selectionState.report;
+  $('#selectionReportLoading').hidden = !selectionState.loadingReport;
+  $('#selectionSummary').innerHTML = report ? selectionSummaryHtml(report.keyword_summary || {}) : '';
+  const products = report && Array.isArray(report.products) ? report.products : [];
+  $('#selectionProducts').innerHTML = products.map(function (product, index) {
+    const image = safeImageUrl(product.mainImgUrl || product.imageUrl || product.image || '');
+    const title = product.title || product.productName || '未命名商品';
+    const url = validUrl(product.productUrl) ? product.productUrl : '';
+    const sold = product.soldCnt30d != null ? product.soldCnt30d : product.salesVolume30d;
+    const rating = product.ratingRange != null ? selectionRange(product.ratingRange) : selectionNumber(product.rating, 2);
+    const price = selectionRange(product.priceRange != null ? product.priceRange : product.price);
+    const days = product.onShelfDays != null ? product.onShelfDays : '—';
+    return '<article class="selection-product-card"><div class="selection-product-image">' +
+      (image ? '<img src="' + escapeHtml(image) + '" alt="' + escapeHtml(title) + '" loading="lazy" onerror="this.hidden=true">' : '') +
+      '<span>上架 ' + escapeHtml(String(days)) + ' 天</span></div><div class="selection-product-body"><h3 title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</h3>' +
+      '<div class="selection-product-meta"><span><b>' + escapeHtml(price) + '</b>价格</span><span><b>' + escapeHtml(selectionNumber(sold)) + '</b>30 天销量</span><span><b>' + escapeHtml(rating) + '</b>评分 · ' + escapeHtml(selectionNumber(product.reviewCnt)) + ' 评</span></div>' +
+      '<div class="selection-product-actions"><button class="button tiny primary" type="button" data-selection-import-index="' + index + '">加入竞品库</button>' +
+      (url ? '<a class="button tiny secondary" href="' + escapeHtml(url) + '" target="_blank" rel="noopener">打开商品</a>' : '<button class="button tiny secondary" disabled>无商品链接</button>') + '</div></div></article>';
+  }).join('');
+  $('#selectionProductEmpty').classList.toggle('show', !selectionState.loadingReport && !products.length);
+}
+
+function renderSelection() {
+  renderSelectionStatus();
+  renderSelectionKeywords();
+  renderSelectionReport();
+  if (state.ui.module === 'selection') loadProductSelectionStatus();
+}
+
+function selectionBasePayload() {
+  return {
+    platform: $('#selectionPlatform').value,
+    region: $('#selectionRegion').value,
+    keyword: $('#selectionKeyword').value.trim(),
+    listing_time: $('#selectionListingTime').value
+  };
+}
+
+async function searchSelectionKeywords(event) {
+  event.preventDefault();
+  if (!TEAM_MODE) return showToast('智能选品只在团队服务器模式中调用，密钥不会保存到浏览器。');
+  if (!teamAuthenticated()) return showToast('请先登录团队账号。');
+  if (!teamGateway.can('selection')) return showToast('当前账号没有商品与选品权限。');
+  if (!selectionState.configured) return showToast('服务器尚未配置选品 API 密钥。');
+  const payload = selectionBasePayload();
+  if (!payload.keyword) return showToast('请输入产品方向或关键词。');
+  selectionState.loadingKeywords = true;
+  selectionState.keywords = [];
+  selectionState.selectedKeyword = '';
+  selectionState.report = null;
+  $('#selectionReportButton').disabled = true;
+  renderSelectionKeywords();
+  renderSelectionReport();
+  try {
+    const response = await teamGateway.searchProductSelectionKeywords(payload);
+    selectionState.keywords = Array.isArray(response.keywords) ? response.keywords : [];
+    selectionState.keywordResponseCached = Boolean(response.cached);
+    showToast(selectionState.keywords.length ? ('找到 ' + selectionState.keywords.length + ' 个候选词' + (response.cached ? '（已使用缓存）' : '') + '。') : '没有找到候选词，请换一个更具体的产品方向。');
+  } catch (error) {
+    handleTeamError(error);
+  } finally {
+    selectionState.loadingKeywords = false;
+    renderSelectionKeywords();
+  }
+}
+
+function chooseSelectionKeyword(index) {
+  const item = selectionState.keywords[index];
+  if (!item) return;
+  const keyword = String(item.keyword || item.keywordEn || '').trim();
+  if (!keyword) return showToast('该候选词缺少可提交的英文关键词。');
+  selectionState.selectedKeyword = keyword;
+  selectionState.report = null;
+  $('#selectionChosenKeyword').value = keyword;
+  $('#selectionChosenHint').textContent = '已选择：' + keyword + (item.keywordCn ? '（' + item.keywordCn + '）' : '') + '。可继续设置筛选条件。';
+  $('#selectionReportButton').disabled = false;
+  renderSelectionKeywords();
+  renderSelectionReport();
+  scrollToPanel('selectionReportPanel');
+}
+
+function optionalSelectionValue(selector) {
+  const value = $(selector).value;
+  return value === '' ? null : Number(value);
+}
+
+async function generateSelectionReport() {
+  const payload = selectionBasePayload();
+  payload.keyword = selectionState.selectedKeyword;
+  Object.assign(payload, {
+    min_price: optionalSelectionValue('#selectionMinPrice'), max_price: optionalSelectionValue('#selectionMaxPrice'),
+    min_volume: optionalSelectionValue('#selectionMinVolume'), max_volume: optionalSelectionValue('#selectionMaxVolume'),
+    min_rating: optionalSelectionValue('#selectionMinRating'), max_rating: optionalSelectionValue('#selectionMaxRating')
+  });
+  selectionState.loadingReport = true;
+  selectionState.report = null;
+  $('#selectionReportButton').disabled = true;
+  renderSelectionReport();
+  try {
+    const response = await teamGateway.generateProductSelectionReport(payload);
+    selectionState.report = response;
+    selectionState.reportCached = Boolean(response.cached);
+    const count = Array.isArray(response.products) ? response.products.length : 0;
+    showToast('报告已生成，共 ' + count + ' 个商品' + (response.cached ? '（已使用缓存）' : '') + '。');
+  } catch (error) {
+    handleTeamError(error);
+  } finally {
+    selectionState.loadingReport = false;
+    $('#selectionReportButton').disabled = !selectionState.selectedKeyword;
+    renderSelectionReport();
+  }
+}
+
+function submitSelectionReport(event) {
+  event.preventDefault();
+  if (!TEAM_MODE || !teamAuthenticated()) return showToast('请先登录团队账号。');
+  if (!teamGateway.can('selection')) return showToast('当前账号没有商品与选品权限。');
+  if (!selectionState.selectedKeyword) return showToast('请先选择候选关键词。');
+  askConfirm('确认调用选品报告？该操作可能消耗接口额度，相同条件会优先读取缓存。', generateSelectionReport);
+}
+
+function importSelectionProduct(index) {
+  const product = selectionState.report && selectionState.report.products && selectionState.report.products[index];
+  if (!product) return;
+  openProductEditor('', 'direct');
+  $('#productName').value = product.title || product.productName || '';
+  $('#productMarket').value = $('#selectionRegion').value || 'MY';
+  $('#productCurrency').value = $('#selectionRegion').value === 'MY' ? 'MYR' : 'USD';
+  $('#productUrl').value = validUrl(product.productUrl) ? product.productUrl : '';
+  pendingProductImage = safeImageUrl(product.mainImgUrl || product.imageUrl || product.image || '');
+  $('#productImageUrl').value = exportableImageUrl(pendingProductImage);
+  $('#firstSold').value = product.soldCnt30d == null ? '' : product.soldCnt30d;
+  const rating = Number(product.rating);
+  $('#firstRating').value = Number.isFinite(rating) ? rating : '';
+  $('#firstReviews').value = product.reviewCnt == null ? '' : product.reviewCnt;
+  updateProductImagePreview();
+  showToast('已带入竞品资料，请核对后保存。');
+}
+
 function render() {
   renderNavigation();
   renderSidebar();
@@ -2097,6 +2366,7 @@ function render() {
   renderHistory();
   renderTrendMetrics();
   renderAlerts();
+  renderSelection();
   if (state.ui.module === 'competitors' && state.ui.competitorTab === 'trends') requestAnimationFrame(renderChart);
   renderRuntimeState();
 }
@@ -3166,6 +3436,10 @@ function bindEvents() {
     }
     const warehouseSwitch = event.target.closest('[data-warehouse-switch]');
     if (warehouseSwitch) return switchWarehouse(warehouseSwitch.dataset.warehouseSwitch);
+    const selectionKeyword = event.target.closest('[data-selection-keyword-index]');
+    if (selectionKeyword) return chooseSelectionKeyword(Number(selectionKeyword.dataset.selectionKeywordIndex));
+    const selectionImport = event.target.closest('[data-selection-import-index]');
+    if (selectionImport) return importSelectionProduct(Number(selectionImport.dataset.selectionImportIndex));
     const action = event.target.closest('[data-action]');
     if (action) return handleAction(action.dataset.action, action.dataset.id);
     const close = event.target.closest('[data-close]');
@@ -3398,6 +3672,29 @@ function bindEvents() {
     searchTerm = event.target.value.trim().toLowerCase();
     renderProducts(); renderPurchases(); renderInventory(); renderMovements(); renderTransfers(); renderReplenishment(); renderOrders(); renderCompetitorProducts();
   });
+  $('#selectionPlatform').addEventListener('change', function () {
+    renderSelectionRegions();
+    selectionState.keywords = [];
+    selectionState.selectedKeyword = '';
+    selectionState.report = null;
+    $('#selectionReportButton').disabled = true;
+    $('#selectionChosenHint').textContent = '请先从上方选择一个候选关键词。';
+    renderSelectionKeywords();
+    renderSelectionReport();
+  });
+  ['#selectionRegion', '#selectionListingTime'].forEach(function (selector) {
+    $(selector).addEventListener('change', function () {
+      selectionState.keywords = [];
+      selectionState.selectedKeyword = '';
+      selectionState.report = null;
+      $('#selectionReportButton').disabled = true;
+      $('#selectionChosenHint').textContent = '筛选范围已改变，请重新查询并选择候选关键词。';
+      renderSelectionKeywords();
+      renderSelectionReport();
+    });
+  });
+  $('#selectionKeywordForm').addEventListener('submit', searchSelectionKeywords);
+  $('#selectionReportForm').addEventListener('submit', submitSelectionReport);
   ['#openProductModal', '#tableAddProduct', '#emptyAddProduct'].forEach(function (selector) {
     $(selector).addEventListener('click', function () { openProductEditor('', 'own'); });
   });

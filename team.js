@@ -13,6 +13,7 @@
     order: 'order',
     return: 'order',
     competitor: 'catalog',
+    selection: 'catalog',
     replenishment: 'replenishment',
     migration: 'data'
   };
@@ -316,6 +317,18 @@
 
     async updateInternalAccount(id, payload) {
       return this.request('/internal-accounts/' + encodeURIComponent(id) + '/', { method: 'PATCH', body: payload });
+    }
+
+    async productSelectionStatus() {
+      return this.request('/product-selection/status/');
+    }
+
+    async searchProductSelectionKeywords(payload) {
+      return this.request('/product-selection/keywords/', { method: 'POST', body: payload });
+    }
+
+    async generateProductSelectionReport(payload) {
+      return this.request('/product-selection/report/', { method: 'POST', body: payload });
     }
 
     async disableInternalAccount(id) {

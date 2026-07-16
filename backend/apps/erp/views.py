@@ -3,14 +3,17 @@ from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
+from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, connection, transaction
 from django.db.models.deletion import ProtectedError
+from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework.exceptions import APIException, NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import APIException, NotFound, PermissionDenied, Throttled, ValidationError
+from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -40,7 +43,9 @@ from .serializers import (
     ShipmentSerializer, ShipInputSerializer, SKUSerializer, StockBalanceSerializer,
     StockLedgerSerializer, StockTransferSerializer, SupplierSerializer,
     TransferPostInputSerializer, WarehouseSerializer,
+    ProductSelectionKeywordInputSerializer, ProductSelectionReportInputSerializer,
 )
+from . import alphashop
 from .services import (
     adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
     confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
@@ -86,6 +91,73 @@ def health(request):
         cursor.execute("SELECT 1")
         cursor.fetchone()
     return Response({"status": "ok", "database": "ok"})
+
+
+def _selection_rate_limit(request, action, limit, seconds):
+    organization = request_organization(request)
+    bucket = int(timezone.now().timestamp()) // seconds
+    key = f"selection-rate:{organization.pk}:{request.user.pk}:{action}:{bucket}"
+    if cache.add(key, 1, timeout=seconds + 5):
+        return
+    try:
+        count = cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, seconds + 5)
+        count = 1
+    if count > limit:
+        raise Throttled(wait=seconds, detail="选品查询过于频繁，请稍后再试，避免重复消耗接口额度。")
+
+
+class ProductSelectionStatusView(APIView):
+    permission_classes = [OrganizationRolePermission]
+    capability = "catalog"
+
+    def get(self, request):
+        request_organization(request)
+        return Response({
+            "configured": alphashop.configured(),
+            "platform_regions": {key: list(value) for key, value in alphashop.PLATFORM_REGIONS.items()},
+            "listing_times": list(alphashop.LISTING_TIMES),
+            "defaults": {"platform": "tiktok", "region": "MY", "listing_time": "90"},
+        })
+
+
+class ProductSelectionKeywordView(APIView):
+    permission_classes = [OrganizationRolePermission]
+    capability = "catalog"
+
+    def post(self, request):
+        request_organization(request)
+        serializer = ProductSelectionKeywordInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = serializer.validated_data
+        regions = alphashop.PLATFORM_REGIONS.get(values["platform"], ())
+        if values["region"] not in regions:
+            raise ValidationError({"region": "该平台暂不支持这个国家或地区。"})
+        _selection_rate_limit(request, "keywords", 30, 60)
+        try:
+            return Response(alphashop.search_keywords(**values))
+        except alphashop.AlphaShopError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=exc.status_code)
+
+
+class ProductSelectionReportView(APIView):
+    permission_classes = [OrganizationRolePermission]
+    capability = "catalog"
+
+    def post(self, request):
+        request_organization(request)
+        serializer = ProductSelectionReportInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = serializer.validated_data
+        regions = alphashop.PLATFORM_REGIONS.get(values["platform"], ())
+        if values["region"] not in regions:
+            raise ValidationError({"region": "该平台暂不支持这个国家或地区。"})
+        _selection_rate_limit(request, "report", 10, 3600)
+        try:
+            return Response(alphashop.generate_report(**values))
+        except alphashop.AlphaShopError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=exc.status_code)
 
 
 @api_view(["GET"])

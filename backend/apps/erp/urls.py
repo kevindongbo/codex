@@ -33,6 +33,9 @@ urlpatterns = [
     path("health/", views.health, name="health"),
     path("sync/version/", views.sync_version, name="sync-version"),
     path("auth/me/", views.me, name="me"),
+    path("product-selection/status/", views.ProductSelectionStatusView.as_view(), name="product-selection-status"),
+    path("product-selection/keywords/", views.ProductSelectionKeywordView.as_view(), name="product-selection-keywords"),
+    path("product-selection/report/", views.ProductSelectionReportView.as_view(), name="product-selection-report"),
     path("internal-accounts/", views.internal_accounts, name="internal-accounts"),
     path("internal-accounts/<uuid:membership_id>/", views.internal_account_detail, name="internal-account-detail"),
     path(

@@ -36,6 +36,9 @@ DJANGO_SESSION_COOKIE_SECURE=true
 DJANGO_CSRF_COOKIE_SECURE=true
 DJANGO_TIME_ZONE=Asia/Shanghai
 DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE=26214400
+ALPHASHOP_ACCESS_KEY=<server-only-access-key>
+ALPHASHOP_SECRET_KEY=<server-only-secret-key>
+ALPHASHOP_REPORT_TIMEOUT=120
 ```
 
 容器监听 `8000`，健康检查为 `GET /api/health/`；静态文件与媒体目录分别是 `/app/staticfiles`、`/app/media`。商品图片可使用 HTTPS 网址，也可由前端压缩后以受限大小的 JPG、PNG、WebP 数据图片同步到团队数据库；媒体目录仍为后续文件对象存储预留。
@@ -57,6 +60,9 @@ GET   /api/health/
 POST  /api/auth/token/
 POST  /api/auth/token/refresh/
 GET   /api/auth/me/
+GET   /api/product-selection/status/
+POST  /api/product-selection/keywords/
+POST  /api/product-selection/report/
 ```
 
 ### 资源集合

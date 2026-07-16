@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
@@ -9,6 +9,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.erp.apps import ErpConfig
+from apps.erp import alphashop
 from apps.erp.models import (
     AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
     Product, ProductImage, PurchaseOrder, ReplenishmentPolicy, ReturnOrder, SalesOrder,
@@ -1414,3 +1415,106 @@ class ApiTests(TestCase):
         self.assertEqual(preview.data["summary"]["source_version"], 6)
         self.assertEqual(committed.status_code, 201, committed.data)
         self.assertEqual(committed.data["source_version"], 6)
+
+    @override_settings(ALPHASHOP_ACCESS_KEY="", ALPHASHOP_SECRET_KEY="")
+    def test_product_selection_status_never_exposes_credentials(self):
+        self.client.force_authenticate(self.user)
+        response = self.client.get(
+            "/api/product-selection/status/",
+            HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(response.data["configured"])
+        self.assertEqual(response.data["defaults"], {"platform": "tiktok", "region": "MY", "listing_time": "90"})
+        self.assertNotIn("access_key", response.data)
+        self.assertNotIn("secret_key", response.data)
+
+    @patch("apps.erp.views.alphashop.search_keywords")
+    def test_product_selection_keyword_search_uses_authenticated_server_proxy(self, search_keywords):
+        self.client.force_authenticate(self.user)
+        search_keywords.return_value = {
+            "keywords": [{"keyword": "women bag", "oppScore": 88}],
+            "cached": False,
+        }
+        response = self.client.post(
+            "/api/product-selection/keywords/",
+            {"platform": "tiktok", "region": "my", "keyword": "bag", "listing_time": "90"},
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["keywords"][0]["keyword"], "women bag")
+        search_keywords.assert_called_once_with(
+            platform="tiktok", region="MY", keyword="bag", listing_time="90"
+        )
+
+    @patch("apps.erp.views.alphashop.generate_report")
+    def test_product_selection_report_validates_filters_and_forwards_selected_keyword(self, generate_report):
+        self.client.force_authenticate(self.user)
+        generate_report.return_value = {
+            "keyword_summary": {"summary": "机会良好"},
+            "products": [{"productId": "123", "title": "Test product"}],
+            "cached": False,
+        }
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        invalid = self.client.post(
+            "/api/product-selection/report/",
+            {
+                "platform": "tiktok", "region": "MY", "keyword": "women bag", "listing_time": "90",
+                "min_price": 100, "max_price": 10,
+            },
+            format="json", **headers,
+        )
+        self.assertEqual(invalid.status_code, 400, invalid.data)
+        valid = self.client.post(
+            "/api/product-selection/report/",
+            {
+                "platform": "tiktok", "region": "MY", "keyword": "women bag", "listing_time": "90",
+                "min_price": 10, "max_price": 100, "min_volume": 50, "min_rating": 4,
+            },
+            format="json", **headers,
+        )
+        self.assertEqual(valid.status_code, 200, valid.data)
+        self.assertEqual(valid.data["products"][0]["productId"], "123")
+        self.assertEqual(generate_report.call_args.kwargs["keyword"], "women bag")
+        self.assertEqual(generate_report.call_args.kwargs["region"], "MY")
+
+    def test_product_selection_rejects_unsupported_region_and_read_only_member(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        unsupported = self.client.post(
+            "/api/product-selection/keywords/",
+            {"platform": "amazon", "region": "MY", "keyword": "bag"},
+            format="json", **headers,
+        )
+        self.assertEqual(unsupported.status_code, 400, unsupported.data)
+
+        viewer = get_user_model().objects.create_user(username="selection-viewer", password="test-pass-123")
+        Membership.objects.create(organization=self.organization, user=viewer, role=Membership.Role.VIEWER)
+        self.client.force_authenticate(viewer)
+        denied = self.client.post(
+            "/api/product-selection/keywords/",
+            {"platform": "tiktok", "region": "MY", "keyword": "bag"},
+            format="json", **headers,
+        )
+        self.assertEqual(denied.status_code, 403, denied.data)
+
+    @override_settings(
+        ALPHASHOP_ACCESS_KEY="test-access-key",
+        ALPHASHOP_SECRET_KEY="test-secret-key-that-is-long-enough-for-hs256",
+        ALPHASHOP_API_BASE="https://api.alphashop.cn",
+        ALPHASHOP_KEYWORD_CACHE_SECONDS=60,
+    )
+    @patch("apps.erp.alphashop.urlopen")
+    def test_alphashop_client_signs_server_request_and_normalizes_keywords(self, mocked_urlopen):
+        response = MagicMock()
+        response.read.return_value = b'{"success":true,"code":"SUCCESS","data":{"keywordList":[{"keyword":"bag"}]}}'
+        mocked_urlopen.return_value.__enter__.return_value = response
+        result = alphashop.search_keywords(
+            platform="tiktok", region="MY", keyword="unique-test-bag", listing_time="90"
+        )
+        self.assertEqual(result["keywords"], [{"keyword": "bag"}])
+        request = mocked_urlopen.call_args.args[0]
+        self.assertTrue(request.get_header("Authorization").startswith("Bearer "))
+        self.assertNotIn("test-secret-key-that-is-long-enough-for-hs256", request.get_header("Authorization"))
+        self.assertEqual(request.full_url, "https://api.alphashop.cn/opp.selection.keyword.search/1.0")
