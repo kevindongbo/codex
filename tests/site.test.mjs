@@ -34,10 +34,11 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260716-image-upload-2/);
-  assert.match(html, /team\.js\?v=20260716-image-upload-2/);
-  assert.match(html, /app\.js\?v=20260716-image-upload-2/);
-  assert.match(html, /accept="\.jpg,\.jpeg,\.png,\.webp,image\/jpeg,image\/png,image\/webp"/);
+  assert.match(html, /styles\.css\?v=20260716-image-upload-3/);
+  assert.match(html, /team\.js\?v=20260716-image-upload-3/);
+  assert.match(html, /app\.js\?v=20260716-image-upload-3/);
+  assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
+  assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
 
 test("contains product, warehouse, order and monitoring workflows", async () => {
@@ -93,6 +94,8 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /localStorage/);
   assert.match(scriptText, /migrateLegacy/);
   assert.match(scriptText, /compressProductImage/);
+  assert.match(scriptText, /productImageStatus/);
+  assert.doesNotMatch(scriptText, /chooseProductImage['"]\)\.disabled\s*=\s*TEAM_MODE/);
   assert.match(scriptText, /purchaseOrders/);
   assert.match(scriptText, /inventoryBalances/);
   assert.match(scriptText, /inventoryMovements/);

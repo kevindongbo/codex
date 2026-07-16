@@ -869,10 +869,6 @@ function renderModeControls() {
   localOnly.forEach(function (selector) {
     $$(selector).forEach(function (node) { node.hidden = TEAM_MODE; });
   });
-  if ($('#chooseProductImage')) {
-    $('#chooseProductImage').disabled = TEAM_MODE;
-    $('#chooseProductImage').title = TEAM_MODE ? '团队模式请填写可共享的 HTTPS 图片网址' : '';
-  }
   const capabilityControls = {
     catalog: ['#openProductModal', '#tableAddProduct', '#emptyAddProduct', '#competitorAddProduct', '#competitorTableAdd', '#saveProductDraft', '#productForm button[type="submit"]'],
     purchase: ['#openPurchaseModal', '#purchaseForm button[type="submit"]'],
@@ -2189,6 +2185,8 @@ function openProductEditor(productId, presetKind) {
   $('#productCompare').checked = product ? product.monitoringEnabled : false;
   pendingProductImage = product ? product.image : '';
   $('#productImageUrl').value = product ? exportableImageUrl(product.image) : '';
+  $('#productImageStatus').classList.remove('error');
+  $('#productImageStatus').textContent = product && /^data:image\//i.test(product.image || '') ? '当前图片由电脑上传并已同步。' : '';
   $('#initialSnapshotFields').hidden = Boolean(product);
   $('#firstSnapshotAt').value = localDateTime(new Date());
   ['#firstPrice', '#firstSold', '#firstRating', '#firstReviews', '#firstLowReviews', '#firstShopRating'].forEach(function (selector) { $(selector).value = ''; });
@@ -2252,8 +2250,8 @@ function snapshotAdvancedChanged(snapshot, latest) {
 }
 
 async function compressProductImage(file) {
-  if (!file || !/^image\/(jpeg|png|webp)$/i.test(file.type)) throw new Error('请选择 JPG、PNG 或 WebP 图片。');
-  if (file.size > 8 * 1024 * 1024) throw new Error('原图不能超过 8MB。');
+  if (!file || !String(file.type || '').toLowerCase().startsWith('image/')) throw new Error('请选择图片文件。');
+  if (file.size > 20 * 1024 * 1024) throw new Error('原图不能超过 20MB。');
   const dataUrl = await new Promise(function (resolve, reject) {
     const reader = new FileReader();
     reader.onload = function () { resolve(reader.result); };
@@ -3402,23 +3400,28 @@ function bindEvents() {
     draftProductSkus.push(skuDraft());
     renderProductSkuEditor();
   });
-  $('#productImageUrl').addEventListener('input', function () { pendingProductImage = $('#productImageUrl').value; updateProductImagePreview(); });
-  $('#chooseProductImage').addEventListener('click', function () {
-    $('#productImageFile').click();
-  });
+  $('#productImageUrl').addEventListener('input', function () { pendingProductImage = $('#productImageUrl').value; $('#productImageStatus').textContent = ''; updateProductImagePreview(); });
   $('#productImageFile').addEventListener('change', async function (event) {
+    const status = $('#productImageStatus');
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    status.classList.remove('error');
+    status.textContent = '正在处理：' + file.name;
     try {
-      pendingProductImage = await compressProductImage(event.target.files[0]);
+      pendingProductImage = await compressProductImage(file);
       $('#productImageUrl').value = '';
       updateProductImagePreview();
+      status.textContent = '已选择：' + file.name + '，保存商品后同步到团队。';
       showToast(TEAM_MODE ? '图片已压缩，保存商品时会同步给团队。' : '图片已压缩并保存到本机数据中。');
     } catch (error) {
+      status.classList.add('error');
+      status.textContent = error.message;
       showToast(error.message);
     } finally {
       event.target.value = '';
     }
   });
-  $('#removeProductImage').addEventListener('click', function () { pendingProductImage = ''; $('#productImageUrl').value = ''; updateProductImagePreview(); });
+  $('#removeProductImage').addEventListener('click', function () { pendingProductImage = ''; $('#productImageUrl').value = ''; $('#productImageStatus').textContent = ''; updateProductImagePreview(); });
   $('#productForm').addEventListener('submit', handleProductSubmit);
   if ($('#saveProductDraft')) $('#saveProductDraft').addEventListener('click', function () { saveProductFromForm(true); });
   $('#openPurchaseModal').addEventListener('click', openPurchaseEditor);
