@@ -419,6 +419,7 @@
       });
       const snapshots = raw.snapshots.map(function (item) {
         const rawExtra = item.raw || {};
+        const monitoring = rawExtra.monitoring || {};
         const productId = competitorTarget.get(String(item.product)) || String(item.product);
         const product = productById.get(productId);
         return {
@@ -427,6 +428,8 @@
           price: item.price == null ? 0 : number(item.price), sold: item.sold_count == null ? 0 : number(item.sold_count),
           rating: item.rating == null ? null : number(item.rating), reviews: item.review_count == null ? 0 : number(item.review_count),
           lowReviews: number(rawExtra.low_reviews), shopRating: rawExtra.shop_rating == null ? null : number(rawExtra.shop_rating),
+          monitorSource: monitoring.provider || '', monitorAnomaly: monitoring.anomaly || '',
+          monitorInherited: Array.isArray(monitoring.inherited_fields) ? monitoring.inherited_fields : [],
           createdAt: item.created_at
         };
       });
@@ -957,6 +960,14 @@
       if (product.kind === 'own' && !competitorId) competitorId = await this.ensureMonitoringProfile(product);
       return this.request('/competitor-snapshots/quick-sales/', {
         method: 'POST', body: { product: competitorId, sold_count: snapshot.sold, captured_at: snapshot.at }
+      });
+    }
+
+    async collectCompetitor(product) {
+      const competitorId = product.apiCompetitorId || (product.kind === 'own' ? '' : product.id);
+      if (!competitorId) throw new ApiError('该商品还没有监控档案。', 400, null);
+      return this.request('/competitors/' + competitorId + '/collect/', {
+        method: 'POST', body: { provider: 'auto' }
       });
     }
 

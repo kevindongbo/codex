@@ -108,11 +108,12 @@ POST /api/returns/{id}/receive/
 POST /api/returns/{id}/reject/
 
 POST /api/competitor-snapshots/quick-sales/
+POST /api/competitors/{id}/collect/
 POST /api/local-imports/validate/
 POST /api/local-imports/commit/
 ```
 
-`confirm-and-ship` 请求体为 `idempotency_key`，并可选传入出库单号 `number` 与物流单号 `tracking_number`。`quick-sales` 请求体为 `product`、`sold_count` 与可选 `captured_at`；若没有基线快照会返回校验错误。
+`confirm-and-ship` 请求体为 `idempotency_key`，并可选传入出库单号 `number` 与物流单号 `tracking_number`。`quick-sales` 请求体为 `product`、`sold_count` 与可选 `captured_at`；若没有基线快照会返回校验错误。`competitors/{id}/collect` 从服务端环境变量读取 TikHub/Apify 密钥，只支持马来西亚 `MY` 的公开 TikTok Shop 商品数据。
 
 ## 补货计算与信心度
 

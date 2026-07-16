@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import timedelta
 from decimal import Decimal
 from hashlib import sha256
 
@@ -1090,3 +1091,159 @@ def create_quick_sales_snapshot(*, product, sold_count, captured_at=None, actor=
         },
     )
     return snapshot
+
+
+def _low_review_count(metadata):
+    distribution = metadata.get("rating_distribution") if isinstance(metadata, dict) else None
+    if isinstance(distribution, list):
+        total = 0
+        for item in distribution:
+            if not isinstance(item, dict):
+                continue
+            stars = item.get("stars", item.get("rating", item.get("score")))
+            count = item.get("count", item.get("review_count", item.get("value", 0)))
+            try:
+                if int(stars) in {1, 2}:
+                    total += max(0, int(count))
+            except (TypeError, ValueError):
+                continue
+        return total
+    if isinstance(distribution, dict):
+        total = 0
+        for key, value in distribution.items():
+            match = str(key).strip().lower().replace("star", "").replace("_", "")
+            try:
+                if int(match) in {1, 2}:
+                    total += max(0, int(value))
+            except (TypeError, ValueError):
+                continue
+        return total
+    return 0
+
+
+def collect_tiktok_competitor_snapshot(
+    *, product, actor=None, providers=None, provider="auto", captured_at=None, apify_timeout=None
+):
+    """Fetch one public MY TikTok product observation and persist a snapshot."""
+
+    from .tiktok_monitoring import TikTokMonitoringError, fetch_tiktok_observation
+
+    product = CompetitorProduct.objects.select_related("organization").get(pk=product.pk)
+    if not product.active:
+        raise ValidationError("该竞品已经停用，不能自动采集")
+    market = (product.market or "MY").strip().upper()
+    if market != "MY":
+        raise ValidationError("当前自动采集只开放马来西亚 MY 市场")
+    if not product.url:
+        raise ValidationError("请先填写 TikTok Shop 商品链接")
+    try:
+        observation = fetch_tiktok_observation(
+            product.url,
+            market=market,
+            providers=providers,
+            provider=provider,
+            apify_timeout=apify_timeout,
+        )
+    except TikTokMonitoringError as exc:
+        raise ValidationError(str(exc)) from exc
+
+    with transaction.atomic():
+        product = CompetitorProduct.objects.select_for_update().select_related("organization").get(
+            pk=product.pk
+        )
+        if not product.active:
+            raise ValidationError("该竞品已经停用，不能自动采集")
+        latest = (
+            CompetitorSnapshot.objects.select_for_update()
+            .filter(product=product)
+            .order_by("-captured_at", "-created_at")
+            .first()
+        )
+        inherited = []
+        values = {
+            "price": observation.price,
+            "sold_count": observation.sold_count,
+            "rating": observation.rating,
+            "review_count": observation.review_count,
+            "availability": observation.availability,
+        }
+        if latest is not None:
+            for field in ("price", "rating", "review_count", "availability"):
+                if values[field] in (None, "") and getattr(latest, field) not in (None, ""):
+                    values[field] = getattr(latest, field)
+                    inherited.append(field)
+        if values["sold_count"] is None:
+            raise ValidationError("上游没有返回公开累计销量，本次未写入快照")
+        if values["rating"] is not None and not (Decimal("0") <= values["rating"] <= Decimal("5")):
+            raise ValidationError("上游评分超出 0–5 范围，本次未写入快照")
+
+        anomaly = ""
+        if latest is not None and latest.sold_count is not None and values["sold_count"] < latest.sold_count:
+            anomaly = "cumulative_sold_decreased"
+        capture_time = captured_at or observation.captured_at or timezone.now()
+        while CompetitorSnapshot.objects.filter(product=product, captured_at=capture_time).exists():
+            capture_time += timedelta(microseconds=1)
+        monitoring_raw = {
+            "source": "buyer_visible_public_data",
+            "provider": observation.provider,
+            "market": market,
+            "product_id": observation.product_id,
+            "canonical_url": observation.canonical_url,
+            "collected_at": capture_time.isoformat(),
+            "public_data": True,
+            "inherited_fields": inherited,
+            "attempts": list(observation.attempts),
+            "anomaly": anomaly,
+            "details": observation.metadata,
+        }
+        snapshot = CompetitorSnapshot.objects.create(
+            product=product,
+            captured_at=capture_time,
+            price=values["price"],
+            sold_count=values["sold_count"],
+            rating=values["rating"],
+            review_count=values["review_count"],
+            availability=str(values["availability"] or "")[:40],
+            raw={
+                "low_reviews": _low_review_count(observation.metadata),
+                "monitoring": monitoring_raw,
+            },
+        )
+
+        update_fields = []
+        if observation.title and not product.name:
+            product.name = observation.title[:200]
+            update_fields.append("name")
+        if observation.seller and observation.seller != product.seller:
+            product.seller = observation.seller[:160]
+            update_fields.append("seller")
+        if observation.image_url and not product.image_url:
+            product.image_url = observation.image_url[:1000]
+            update_fields.append("image_url")
+        if observation.currency and observation.currency != product.currency:
+            product.currency = observation.currency[:3]
+            update_fields.append("currency")
+        if product.platform != "tiktok_shop":
+            product.platform = "tiktok_shop"
+            update_fields.append("platform")
+        if product.market != market:
+            product.market = market
+            update_fields.append("market")
+        if update_fields:
+            product.save(update_fields=update_fields + ["updated_at"])
+
+        write_audit(
+            organization=product.organization,
+            actor=actor,
+            action="competitor_snapshot.auto_collect",
+            instance=snapshot,
+            after={
+                "product": str(product.pk),
+                "provider": observation.provider,
+                "market": market,
+                "sold_count": values["sold_count"],
+                "price": str(values["price"]) if values["price"] is not None else None,
+                "anomaly": anomaly,
+            },
+        )
+        return snapshot

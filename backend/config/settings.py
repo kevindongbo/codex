@@ -94,6 +94,21 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER or "no-reply@localhost")
+
+# Buyer-visible TikTok Shop monitoring. Secrets stay in the server environment;
+# the browser never receives provider credentials.
+TIKTOK_MONITOR_DEFAULT_MARKET = os.getenv("TIKTOK_MONITOR_DEFAULT_MARKET", "MY").strip().upper()
+TIKTOK_MONITOR_INTERVAL_MINUTES = int(os.getenv("TIKTOK_MONITOR_INTERVAL_MINUTES", "60"))
+TIKTOK_MONITOR_TIMEOUT_SECONDS = int(os.getenv("TIKTOK_MONITOR_TIMEOUT_SECONDS", "30"))
+TIKHUB_API_TOKEN = os.getenv("TIKHUB_API_TOKEN", "")
+TIKHUB_BASE_URL = os.getenv("TIKHUB_BASE_URL", "https://api.tikhub.io").strip()
+TIKHUB_RETRIES = int(os.getenv("TIKHUB_RETRIES", "3"))
+APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN", "")
+APIFY_BASE_URL = os.getenv("APIFY_BASE_URL", "https://api.apify.com").strip()
+APIFY_TIKTOK_ACTOR_ID = os.getenv("APIFY_TIKTOK_ACTOR_ID", "bovi/tiktok-shop-scraper").strip()
+APIFY_TIKTOK_TIMEOUT_SECONDS = int(os.getenv("APIFY_TIKTOK_TIMEOUT_SECONDS", "180"))
+TIKTOK_MONITOR_WEB_APIFY_TIMEOUT_SECONDS = int(os.getenv("TIKTOK_MONITOR_WEB_APIFY_TIMEOUT_SECONDS", "15"))
+APIFY_TIKTOK_MAX_CHARGE_USD = os.getenv("APIFY_TIKTOK_MAX_CHARGE_USD", "0.25").strip()
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"

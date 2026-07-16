@@ -263,6 +263,9 @@ function normalizeV5(saved) {
       reviews: integer(item.reviews),
       lowReviews: integer(item.lowReviews),
       shopRating: item.shopRating === '' || item.shopRating == null ? null : nonNegative(item.shopRating),
+      monitorSource: String(item.monitorSource || ''),
+      monitorAnomaly: String(item.monitorAnomaly || ''),
+      monitorInherited: Array.isArray(item.monitorInherited) ? item.monitorInherited : [],
       createdAt: item.createdAt || item.at || new Date().toISOString()
     };
   }).filter(function (item) { return Boolean(productById(item.productId, base)); });
@@ -351,6 +354,9 @@ function migrateLegacy(saved) {
       reviews: integer(item.reviews),
       lowReviews: integer(item.lowReviews),
       shopRating: item.shopRating == null || item.shopRating === '' ? null : nonNegative(item.shopRating),
+      monitorSource: String(item.monitorSource || ''),
+      monitorAnomaly: String(item.monitorAnomaly || ''),
+      monitorInherited: Array.isArray(item.monitorInherited) ? item.monitorInherited : [],
       createdAt: item.createdAt || item.at || migratedAt
     };
   }).filter(function (item) { return Boolean(productById(item.productId, next)); });
@@ -1876,11 +1882,13 @@ function renderCompetitorProducts() {
     const change = snapshotChange(product.id);
     const latest = change.pair.latest;
     const salesClass = change.sales == null ? 'neutral' : (change.sales >= 0 ? 'up' : 'down');
-    const actions = (teamCapabilityAllowed('competitor') ? rowButton('add-snapshot', product.id, '更新销量', 'primary') : '') +
+    const canAutoCollect = TEAM_MODE && product.kind !== 'own' && /(^|\.)tiktok\.com\//i.test(String(product.productUrl || '').replace(/^https?:\/\//i, ''));
+    const actions = (canAutoCollect && teamCapabilityAllowed('competitor') ? rowButton('collect-competitor', product.id, '立即采集', 'primary') : '') +
+      (teamCapabilityAllowed('competitor') ? rowButton('add-snapshot', product.id, canAutoCollect ? '手动更新' : '更新销量', canAutoCollect ? '' : 'primary') : '') +
       '<a class="row-action" href="' + escapeHtml(product.productUrl) + '" target="_blank" rel="noopener">打开链接</a>' +
       (teamCapabilityAllowed('catalog') ? rowButton('edit-product', product.id, '编辑') : '');
     return '<tr><td>' + productMedia(product) + '</td><td><span class="type-pill ' + product.kind + '">' + KIND_LABELS[product.kind] + '</span></td>' +
-      '<td>' + (latest ? formatDate(latest.at, true) : '未记录') + '</td><td>' + (latest ? money(latest.price, latest.currency) : '—') + '</td>' +
+      '<td>' + (latest ? formatDate(latest.at, true) + (latest.monitorSource ? '<small class="monitor-source">自动 · ' + escapeHtml(latest.monitorSource) + '</small>' : '') : '未记录') + '</td><td>' + (latest ? money(latest.price, latest.currency) : '—') + '</td>' +
       '<td>' + (latest ? latest.sold.toLocaleString('zh-CN') : '—') + '</td><td><span class="delta-pill ' + salesClass + '">' + (change.sales == null ? '—' : (change.sales > 0 ? '+' : '') + change.sales) + '</span></td>' +
       '<td>' + (latest ? (latest.rating == null ? '—' : latest.rating.toFixed(1)) + ' / ' + latest.reviews : '—') + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
   }).join('');
@@ -2984,6 +2992,14 @@ async function handleAction(action, id) {
     return;
   }
   if (action === 'add-snapshot') return openSnapshotEditor(id);
+  if (action === 'collect-competitor') {
+    const product = productById(id);
+    if (!product) return showToast('竞品不存在。');
+    if (!TEAM_MODE) return showToast('自动采集仅在联网团队版可用。');
+    return executeTeamCommand(function () {
+      return teamGateway.collectCompetitor(product);
+    }, '马来 TikTok 公开数据已采集，销量、价格、评分和评论快照已更新。', 'competitor');
+  }
   if (action === 'adjust-stock') return openStockEditor(id);
   if (action === 'view-movements') {
     $('#movementProduct').value = id;

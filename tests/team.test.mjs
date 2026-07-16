@@ -306,6 +306,23 @@ test('one-click shipment and quick sales snapshot call the dedicated atomic endp
   });
 });
 
+test('automatic competitor collection calls the scoped collect endpoint without exposing provider secrets', async () => {
+  const calls = [];
+  const Team = await loadTeam(async (url, options) => {
+    calls.push({ url, options });
+    return response(201, { id: 'snapshot-auto', sold_count: 920 });
+  });
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.accessToken = 'token';
+  gateway.organizationId = 'org-1';
+
+  await gateway.collectCompetitor({ id: 'profile-1', kind: 'direct' });
+
+  assert.equal(calls[0].url, '/api/competitors/profile-1/collect/');
+  assert.deepEqual(JSON.parse(calls[0].options.body), { provider: 'auto' });
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer token');
+});
+
 test('replenishment recommendations are requested for the selected warehouse', async () => {
   const calls = [];
   const Team = await loadTeam(async (url, options) => {

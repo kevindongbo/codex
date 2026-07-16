@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -43,7 +44,7 @@ from .serializers import (
 )
 from .services import (
     adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
-    confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
+    collect_tiktok_competitor_snapshot, confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
     dispatch_stock_transfer, receive_purchase, receive_return, receive_stock_transfer,
     reject_return, ship_order, start_picking, submit_purchase, verify_order, write_audit,
 )
@@ -949,6 +950,18 @@ class CompetitorProductViewSet(OrganizationScopedViewSet):
     queryset = CompetitorProduct.objects.order_by("name", "id")
     serializer_class = CompetitorProductSerializer
     capability = "catalog"
+
+    @action(detail=True, methods=["post"], url_path="collect")
+    def collect(self, request, pk=None):
+        snapshot = _service_call(
+            collect_tiktok_competitor_snapshot,
+            product=self.get_object(),
+            actor=request.user,
+            provider=request.data.get("provider", "auto"),
+            apify_timeout=settings.TIKTOK_MONITOR_WEB_APIFY_TIMEOUT_SECONDS,
+        )
+        serializer = CompetitorSnapshotSerializer(snapshot, context=self.get_serializer_context())
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class CompetitorSnapshotViewSet(viewsets.ModelViewSet):
