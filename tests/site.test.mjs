@@ -24,7 +24,7 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
   assert.match(html, /账号与权限/);
   assert.match(html, /主账号可统一管理所有内部成员/);
   assert.doesNotMatch(html, /DONGBO COMMERCE|PRODUCT MASTER|FULFILLMENT CENTER|REPLENISHMENT POLICY|DATA & TEAM/);
-  assert.match(html, /assets\/og-dongbo-crossborder\.png/);
+  assert.match(html, /assets\/dongbo-erp-mark\.png/);
   assert.match(html, /data-warehouse-tab="purchase"/);
   assert.match(html, /data-warehouse-tab="inventory"/);
   assert.match(html, /data-warehouse-tab="transfers"/);
