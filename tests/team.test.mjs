@@ -132,7 +132,8 @@ test('saving one product writes every requested SKU and retires removed SKUs saf
   await gateway.saveProduct({
     kind: 'own', apiProductId: 'product-1', name: '多 SKU 商品', seller: '', market: 'MY',
     salesCurrency: 'MYR', costCurrency: 'MYR', standardCost: 1, safetyStock: 0,
-    defaultSupplier: '', productUrl: 'https://example.com/p', purchaseUrl: '', image: '',
+    defaultSupplier: '', productUrl: 'https://example.com/p', purchaseUrl: '',
+    image: 'data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAABwAQCdASoBAAEAAUAmJaQAA3AA',
     monitoringEnabled: false, status: 'active',
     skus: [
       { id: 'sku-keep', code: 'KEEP', cost: 12, safetyStock: 3, attributes: { color: 'pink' } },
@@ -140,11 +141,12 @@ test('saving one product writes every requested SKU and retires removed SKUs saf
     ],
   });
   assert.deepEqual(calls.map((call) => call.path), [
-    '/products/product-1/', '/skus/sku-keep/', '/skus/', '/skus/sku-old/', '/products/product-1/activate/',
+    '/products/product-1/', '/skus/sku-keep/', '/skus/', '/skus/sku-old/', '/product-images/', '/products/product-1/activate/',
   ]);
   assert.equal(calls[1].options.body.code, 'KEEP');
   assert.equal(calls[2].options.body.code, 'NEW');
   assert.equal(calls[3].options.body.active, false);
+  assert.match(calls[4].options.body.url, /^data:image\/webp;base64,/);
 });
 
 test('unknown network outcome reuses the same inventory idempotency key', async () => {

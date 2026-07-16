@@ -38,7 +38,7 @@ DJANGO_TIME_ZONE=Asia/Shanghai
 DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE=26214400
 ```
 
-容器监听 `8000`，健康检查为 `GET /api/health/`；静态文件与媒体目录分别是 `/app/staticfiles`、`/app/media`。当前 `ProductImage` 只保存外部图片 URL，没有文件上传端点或对象存储依赖；媒体目录是后续本地文件字段的预留位置。
+容器监听 `8000`，健康检查为 `GET /api/health/`；静态文件与媒体目录分别是 `/app/staticfiles`、`/app/media`。商品图片可使用 HTTPS 网址，也可由前端压缩后以受限大小的 JPG、PNG、WebP 数据图片同步到团队数据库；媒体目录仍为后续文件对象存储预留。
 
 ## API 约定
 

@@ -2209,7 +2209,7 @@ function productMissingFields(product, rawCost) {
   const missing = [];
   if (!product.name) missing.push('商品名称');
   if (!validUrl(product.productUrl)) missing.push('商品链接');
-  if (!product.image || (TEAM_MODE && !/^https:\/\//i.test(product.image))) missing.push(TEAM_MODE ? 'HTTPS 商品图片' : '商品图片');
+  if (!product.image) missing.push('商品图片');
   if (product.kind === 'own') {
     const skus = Array.isArray(product.skus) ? product.skus : [{ code: product.sku, cost: rawCost }];
     if (!skus.length || skus.some(function (sku) { return !String(sku.code || '').trim(); })) missing.push('SKU 编码');
@@ -3404,16 +3404,14 @@ function bindEvents() {
   });
   $('#productImageUrl').addEventListener('input', function () { pendingProductImage = $('#productImageUrl').value; updateProductImagePreview(); });
   $('#chooseProductImage').addEventListener('click', function () {
-    if (TEAM_MODE) return showToast('团队模式请填写可共享的 HTTPS 图片网址。');
     $('#productImageFile').click();
   });
   $('#productImageFile').addEventListener('change', async function (event) {
-    if (TEAM_MODE) { event.target.value = ''; return showToast('团队模式暂不接收浏览器本地图片，请填写 HTTPS 图片网址。'); }
     try {
       pendingProductImage = await compressProductImage(event.target.files[0]);
       $('#productImageUrl').value = '';
       updateProductImagePreview();
-      showToast('图片已压缩并保存到本机数据中。');
+      showToast(TEAM_MODE ? '图片已压缩，保存商品时会同步给团队。' : '图片已压缩并保存到本机数据中。');
     } catch (error) {
       showToast(error.message);
     } finally {

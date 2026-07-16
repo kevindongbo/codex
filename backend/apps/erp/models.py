@@ -186,7 +186,10 @@ class SKU(OrganizationScopedModel):
 
 class ProductImage(TimeStampedModel):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="images")
-    url = models.URLField(max_length=1000)
+    # Besides externally hosted HTTPS URLs, team members can upload a compressed
+    # image from their computer.  The client stores that image as a data URL so it
+    # is available to every logged-in member without depending on a browser cache.
+    url = models.TextField(max_length=560000)
     alt = models.CharField(max_length=200, blank=True)
     position = models.PositiveSmallIntegerField(default=0)
 

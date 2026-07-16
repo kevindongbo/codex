@@ -618,7 +618,7 @@
       const body = {
         linked_product: product.apiProductId || product.id,
         name: product.name, kind: 'direct', platform: 'own', market: product.market || '',
-        url: product.productUrl, image_url: product.image, seller: product.seller || '',
+        url: product.productUrl, image_url: /^https:\/\//i.test(product.image || '') ? product.image : '', seller: product.seller || '',
         currency: product.salesCurrency || 'CNY', active: true
       };
       const raw = product.apiCompetitorId
@@ -642,7 +642,6 @@
         if (initialSnapshot) await this.saveSnapshot(product, initialSnapshot);
         return saved;
       }
-      if (/^data:/i.test(product.image || '')) throw new ApiError('团队模式只接受可共享的 HTTPS 图片网址。', 400, null);
       const supplier = await this.ensureSupplier(product.defaultSupplier);
       const payload = {
         name: product.name, description: '', seller: product.seller || '', market: product.market || '',

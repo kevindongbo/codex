@@ -1,3 +1,4 @@
+import re
 import uuid
 from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -144,6 +145,8 @@ class WarehouseSerializer(ScopedSerializer):
 
 
 class ProductImageSerializer(OrganizationValidationMixin, serializers.ModelSerializer):
+    url = serializers.CharField(max_length=560000)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.scope_relation("product", Product)
@@ -151,8 +154,12 @@ class ProductImageSerializer(OrganizationValidationMixin, serializers.ModelSeria
     def validate(self, attrs):
         self.require_same_organization(attrs.get("product", getattr(self.instance, "product", None)), "product")
         url = attrs.get("url", getattr(self.instance, "url", ""))
-        if url and not url.lower().startswith("https://"):
-            raise serializers.ValidationError({"url": "商品图片必须使用 HTTPS 地址"})
+        is_https_url = isinstance(url, str) and url.lower().startswith("https://")
+        is_uploaded_image = isinstance(url, str) and re.match(
+            r"^data:image/(?:png|jpe?g|webp);base64,[A-Za-z0-9+/=\s]+$", url, re.IGNORECASE
+        )
+        if not (is_https_url or is_uploaded_image):
+            raise serializers.ValidationError({"url": "商品图片必须使用 HTTPS 地址或本地上传的 JPG、PNG、WebP 图片"})
         return attrs
 
     class Meta:

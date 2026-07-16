@@ -142,6 +142,31 @@ class ApiTests(TestCase):
         self.assertEqual(saved_profile.linked_product, saved_product)
         self.assertEqual(saved_profile.market, "MY")
 
+    def test_product_image_accepts_compressed_local_upload_for_team_sync(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        product = self.client.post(
+            "/api/products/",
+            {"name": "本地图片商品", "source_url": "https://example.com/product"},
+            format="json", **headers,
+        )
+        self.assertEqual(product.status_code, 201, product.data)
+        data_url = "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAABwAQCdASoBAAEAAUAmJaQAA3AA"
+        uploaded = self.client.post(
+            "/api/product-images/",
+            {"product": product.data["id"], "url": data_url, "alt": "本地图片", "position": 0},
+            format="json", **headers,
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.data)
+        self.assertEqual(uploaded.data["url"], data_url)
+
+        rejected = self.client.post(
+            "/api/product-images/",
+            {"product": product.data["id"], "url": "http://example.com/image.jpg", "position": 1},
+            format="json", **headers,
+        )
+        self.assertEqual(rejected.status_code, 400)
+
     def test_viewer_cannot_modify_or_delete_organization(self):
         viewer = get_user_model().objects.create_user(username="viewer", password="test-pass-123")
         Membership.objects.create(
