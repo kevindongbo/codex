@@ -36,16 +36,17 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260718-purchase-replenishment-2/);
-  assert.match(html, /team\.js\?v=20260718-purchase-replenishment-2/);
-  assert.match(html, /app\.js\?v=20260718-purchase-replenishment-2/);
+  assert.match(html, /styles\.css\?v=20260718-purchase-card-picker-3/);
+  assert.match(html, /team\.js\?v=20260718-purchase-card-picker-3/);
+  assert.match(html, /app\.js\?v=20260718-purchase-card-picker-3/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
 
 test("contains product, warehouse, order and monitoring workflows", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /id="purchaseLineProduct" multiple size="5"/);
+  assert.match(html, /id="purchaseSkuSearch"/);
+  assert.match(html, /id="purchaseSkuPicker"/);
   assert.match(html, /id="openReceiveModal"/);
   const requiredIds = [
     "productRows", "productSkuEditor", "productSkuList", "addProductSku", "productImageUrl", "productImageFile",
@@ -96,6 +97,7 @@ test("keeps multi-line purchase creation and batch receiving usable for long ord
     (await fetchPath("/styles.css")).text(),
   ]);
   assert.match(html, /id="purchaseLineList"/);
+  assert.match(css, /\.purchase-sku-picker \{ max-height: 340px; overflow-y: auto;/);
   assert.match(html, /id="receivePurchaseId"/);
   assert.match(html, /id="receiveLineList"/);
   assert.match(html, /只填写实际到货的数量/);

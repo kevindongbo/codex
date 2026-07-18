@@ -2111,7 +2111,7 @@ function renderSelects() {
   const productOptions = warehouseProducts.map(function (product) {
     return '<option value="' + escapeHtml(product.id) + '">' + escapeHtml((product.sku || '无 SKU') + ' · ' + product.name) + '</option>';
   }).join('');
-  ['#purchaseLineProduct', '#stockProduct', '#orderLineProduct', '#transferLineProduct'].forEach(function (selector) {
+  ['#stockProduct', '#orderLineProduct', '#transferLineProduct'].forEach(function (selector) {
     const select = $(selector);
     if (!select) return;
     const previous = select.value;
@@ -2671,11 +2671,38 @@ async function compressProductImage(file) {
 function renderPurchaseDraft() {
   $('#purchaseLineList').innerHTML = draftPurchaseLines.length ? draftPurchaseLines.map(function (line) {
     const product = productById(line.productId);
-    return '<div class="line-list-item"><strong>' + escapeHtml(product ? product.sku + ' · ' + product.name : '未知商品') + '</strong>' +
+    return '<div class="line-list-item">' + (product ? productMedia(product) : '<strong>未知商品</strong>') +
       '<label>数量<input data-purchase-line-quantity="' + escapeHtml(line.productId) + '" type="number" min="1" step="1" value="' + integer(line.quantity) + '"></label>' +
       '<label>单价<input data-purchase-line-cost="' + escapeHtml(line.productId) + '" type="number" min="0" step="0.01" value="' + escapeHtml(String(line.unitCost)) + '"></label>' +
       '<button class="line-remove" data-remove-purchase-line="' + escapeHtml(line.productId) + '" type="button">移除</button></div>';
   }).join('') : '<div class="last-value">请至少加入一条采购明细。</div>';
+  renderPurchaseSkuPicker();
+}
+function renderPurchaseSkuPicker() {
+  const container = $('#purchaseSkuPicker');
+  if (!container) return;
+  const term = String($('#purchaseSkuSearch') ? $('#purchaseSkuSearch').value : '').trim().toLowerCase();
+  const products = ownProducts(state).filter(function (product) {
+    if (product.needsReview || product.status === 'draft' || product.status === 'inactive') return false;
+    if (!term) return true;
+    return [product.sku, product.name, product.seller, product.defaultSupplier].join(' ').toLowerCase().includes(term);
+  });
+  setText('#purchaseSkuPickerHint', products.length ? '显示 ' + products.length + ' 个 SKU' : (term ? '未找到匹配 SKU' : '暂无可采购 SKU'));
+  container.innerHTML = products.map(function (product) {
+    const image = safeImageUrl(product.image);
+    const inDraft = draftPurchaseLines.some(function (line) { return line.productId === product.id; });
+    const productLink = validUrl(product.productUrl)
+      ? '<a href="' + escapeHtml(product.productUrl) + '" target="_blank" rel="noopener noreferrer">商品链接</a>' : '';
+    const purchaseLink = validUrl(product.purchaseUrl)
+      ? '<a href="' + escapeHtml(product.purchaseUrl) + '" target="_blank" rel="noopener noreferrer">采购链接</a>' : '';
+    return '<article class="purchase-sku-card" data-purchase-sku-card="' + escapeHtml(product.id) + '">' +
+      '<div class="purchase-sku-image">' + (image ? '<img src="' + escapeHtml(image) + '" alt="' + escapeHtml(product.name) + '" loading="lazy" onerror="this.hidden=true">' : '暂无图片') + '</div>' +
+      '<div class="purchase-sku-copy"><strong title="' + escapeHtml(product.name) + '">' + escapeHtml(product.name) + '</strong><span class="sku-code">' + escapeHtml(product.sku || '无 SKU') + '</span>' +
+      '<div class="purchase-sku-links">' + (productLink || '<span>暂无商品链接</span>') + purchaseLink + '</div></div>' +
+      '<div class="purchase-sku-fields"><label>采购数量<input data-purchase-sku-quantity="' + escapeHtml(product.id) + '" type="number" min="1" step="1" value="' + (inDraft ? integer(draftPurchaseLines.find(function (line) { return line.productId === product.id; }).quantity) : '') + '" placeholder="数量"></label>' +
+      '<label>实际单价<input data-purchase-sku-cost="' + escapeHtml(product.id) + '" type="number" min="0" step="0.01" value="' + escapeHtml(String(inDraft ? draftPurchaseLines.find(function (line) { return line.productId === product.id; }).unitCost : nonNegative(product.standardCost))) + '"></label>' +
+      '<button class="button secondary" data-add-purchase-sku="' + escapeHtml(product.id) + '" type="button">' + (inDraft ? '更新明细' : '加入明细') + '</button></div></article>';
+  }).join('') || '<div class="last-value">没有符合条件的 SKU。请调整搜索条件或先完善商品资料。</div>';
 }
 function openPurchaseEditor() {
   if (!ownProducts(state).filter(function (item) { return !item.needsReview; }).length) {
@@ -2691,9 +2718,7 @@ function openPurchaseEditor() {
   const eta = new Date(); eta.setDate(eta.getDate() + 14);
   $('#purchaseEta').value = localDateTime(eta).slice(0, 10);
   $('#purchaseExtraCost').value = 0;
-  const first = productById($('#purchaseLineProduct').value);
-  $('#purchaseSupplier').value = first ? first.defaultSupplier : '';
-  $('#purchaseLineCost').value = first ? first.standardCost : '';
+  $('#purchaseSkuSearch').value = '';
   renderPurchaseDraft();
   openModal('purchaseModal');
 }
@@ -3420,8 +3445,6 @@ async function handleAction(action, id) {
     openPurchaseEditor();
     draftPurchaseLines = [{ productId: product.id, quantity: recommendation.suggestedQty, unitCost: product.standardCost }];
     $('#purchaseSupplier').value = product.defaultSupplier || $('#purchaseSupplier').value;
-    $('#purchaseLineProduct').value = product.id;
-    $('#purchaseLineCost').value = product.standardCost;
     renderPurchaseDraft();
     return;
   }
@@ -4049,28 +4072,24 @@ function bindEvents() {
   if ($('#saveProductDraft')) $('#saveProductDraft').addEventListener('click', function () { saveProductFromForm(true); });
   $('#openPurchaseModal').addEventListener('click', openPurchaseEditor);
   $('#openReceiveModal').addEventListener('click', function () { openReceiveEditor(); });
-  $('#purchaseLineProduct').addEventListener('change', function () {
-    const selected = Array.from(this.selectedOptions || []);
-    const product = selected.length === 1 ? productById(selected[0].value) : null;
-    if (product) {
-      $('#purchaseLineCost').value = product.standardCost;
-      if (!$('#purchaseSupplier').value) $('#purchaseSupplier').value = product.defaultSupplier;
-    }
-  });
-  $('#addPurchaseLine').addEventListener('click', function () {
-    const productIds = Array.from($('#purchaseLineProduct').selectedOptions || []).map(function (option) { return option.value; });
-    const products = productIds.map(productById).filter(Boolean);
-    const quantity = integer($('#purchaseLineQty').value);
-    const unitCost = nonNegative($('#purchaseLineCost').value);
-    if (!products.length || products.some(function (product) { return product.kind !== 'own' || product.needsReview; })) return showToast('请选择已完善的本店 SKU。');
+  $('#purchaseSkuSearch').addEventListener('input', renderPurchaseSkuPicker);
+  $('#purchaseSkuPicker').addEventListener('click', function (event) {
+    const button = event.target.closest('[data-add-purchase-sku]');
+    if (!button) return;
+    const productId = button.dataset.addPurchaseSku;
+    const product = productById(productId);
+    const card = event.target.closest('[data-purchase-sku-card]');
+    const quantityInput = card && card.querySelector('[data-purchase-sku-quantity]');
+    const costInput = card && card.querySelector('[data-purchase-sku-cost]');
+    const quantity = integer(quantityInput && quantityInput.value);
+    const unitCost = nonNegative(costInput && costInput.value);
+    if (!product || product.kind !== 'own' || product.needsReview) return showToast('请选择已完善的本店 SKU。');
     if (!quantity) return showToast('采购数量必须大于 0。');
-    products.forEach(function (product) {
-      const existing = draftPurchaseLines.find(function (line) { return line.productId === product.id; });
-      const lineCost = products.length === 1 ? unitCost : nonNegative(product.standardCost);
-      if (existing) { existing.quantity += quantity; existing.unitCost = lineCost; }
-      else draftPurchaseLines.push({ productId: product.id, quantity: quantity, unitCost: lineCost });
-    });
-    $('#purchaseLineQty').value = '';
+    if (unitCost <= 0) return showToast('实际采购单价必须大于 0。');
+    const existing = draftPurchaseLines.find(function (line) { return line.productId === productId; });
+    if (existing) { existing.quantity = quantity; existing.unitCost = unitCost; }
+    else draftPurchaseLines.push({ productId: productId, quantity: quantity, unitCost: unitCost });
+    if (!$('#purchaseSupplier').value && product.defaultSupplier) $('#purchaseSupplier').value = product.defaultSupplier;
     renderPurchaseDraft();
   });
   $('#purchaseForm').addEventListener('submit', handlePurchaseSubmit);

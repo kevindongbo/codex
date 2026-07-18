@@ -20,7 +20,7 @@
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260718-purchase-replenishment-2" />
+  <link rel="stylesheet" href="styles.css?v=20260718-purchase-card-picker-3" />
 </head>
 <body>
   <header class="app-header">
@@ -571,8 +571,9 @@
           <label class="full">备注<input id="purchaseNote" maxlength="120" placeholder="例如：海运第一批，分两次到货" /></label>
         </div>
         <div class="line-builder">
-          <div class="form-section-title"><strong>采购商品明细</strong><span>可一次选择多个 SKU；加入后在下方连续填写每个商品的数量和单价。</span></div>
-          <div class="line-entry four"><label>本店 SKU（可多选）<select id="purchaseLineProduct" multiple size="5"></select></label><label>采购数量<input id="purchaseLineQty" type="number" min="1" step="1" /></label><label>实际单价（单选时可覆盖）<input id="purchaseLineCost" type="number" min="0" step="0.01" /></label><button class="button secondary" id="addPurchaseLine" type="button">＋ 加入明细</button></div>
+          <div class="form-section-title"><strong>采购商品明细</strong><span>搜索 SKU 或商品名称；每个商品可直接填写采购数量和实际单价后加入明细。</span></div>
+          <div class="purchase-picker-toolbar"><label>搜索 SKU / 商品<input id="purchaseSkuSearch" type="search" autocomplete="off" placeholder="例如：AI-BAG-08、帆布包" /></label><span id="purchaseSkuPickerHint"></span></div>
+          <div class="purchase-sku-picker" id="purchaseSkuPicker" aria-live="polite"></div>
           <div class="line-list purchase-line-list" id="purchaseLineList"></div>
         </div>
         <div class="modal-actions"><button class="button secondary" type="button" data-close="purchaseModal">取消</button><button class="button primary" type="submit">保存采购单</button></div>
@@ -779,7 +780,7 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js"></script>
-  <script src="team.js?v=20260718-purchase-replenishment-2"></script>
-  <script src="app.js?v=20260718-purchase-replenishment-2"></script>
+  <script src="team.js?v=20260718-purchase-card-picker-3"></script>
+  <script src="app.js?v=20260718-purchase-card-picker-3"></script>
 </body>
 </html>
