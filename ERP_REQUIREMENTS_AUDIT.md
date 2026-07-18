@@ -1,0 +1,47 @@
+# ERP requirements implementation audit
+
+This document is the implementation and acceptance record for the ERP operations release. It is intentionally written against the checked-in source, not a screenshot or a planned design.
+
+## Release and validation baseline
+
+- Release branch: `main`
+- Release commit: `77204a3` (includes `6b4adb5` and `adda3c8`)
+- Local migration validation: `python manage.py makemigrations --check --dry-run` — no changes detected
+- Backend regression: `python manage.py test apps.erp.tests --verbosity 1` — 74 tests passed
+- Browser/static regression: `node scripts/build-site.mjs && node --test tests/*.test.mjs` — 38 tests passed
+- JavaScript syntax: `node --check app.js && node --check team.js` — passed
+
+Production verification remains a separate gate: back up the production code and PostgreSQL database, deploy the exact release commit, run migrations, check `/api/health/`, then perform the browser checks below.
+
+## Requirement-by-requirement evidence
+
+| Requirement | User-visible behavior | Source and API evidence | Data / validation evidence | Acceptance test |
+| --- | --- | --- | --- | --- |
+| Batch purchase receiving | The receipt dialog has a purchase-order selector. Selecting an open order renders every unreceived line, each with only a current-receipt quantity. The line area scrolls. | `index.html` `#receivePurchaseId` and `#receiveLineList`; `app.js` `openReceiveEditor`, `renderReceiveLines`, `handleReceiveSubmit`; `POST /api/receipts/` in `ReceiptViewSet`. | `PurchaseOrder`, `PurchaseOrderLine`, `Receipt`, `ReceiptLine`; `services.receive_purchase` performs the line update atomically and uses the idempotency key. | Create a PO with at least two lines, receive both in one receipt, then retry the same request; quantities must not be posted twice. |
+| Editable multi-line purchase orders | The create/edit purchase dialog uses `#purchaseLineList`; all lines remain in the dialog and the list scrolls rather than truncating. | `index.html` `#purchaseLineList`; `app.js` purchase line renderer and handlers; `POST /api/purchase-orders/`. | `PurchaseOrderLine` validates SKU, quantity, and cost. | Add enough lines to overflow the panel, edit a middle line, save and reopen it. |
+| Product first-save activation | A complete product saved as active is activated on its first save; incomplete data receives a specific validation error instead of a misleading “continue completing” state. | `team.js` saves product/SKUs/image before `POST /api/products/{id}/activate/`; `ProductViewSet.activate`. | Product activation checks source URL, image, active SKU, and positive cost. | `test_product_activation_requires_link_image_sku_and_cost`; create a complete product as active in the browser and verify its status is active immediately. |
+| Safe zero-stock deletion | A destructive confirmation appears only for a zero inventory balance. Product and ledger history remain. | `app.js` `delete-stock-balance` action and confirmation; `DELETE /api/stock-balances/{id}/`. | `StockBalanceViewSet.perform_destroy` locks the row and rejects any non-zero `on_hand` or `reserved` balance. This is deliberately stricter than “available is zero”, preventing deletion of physically held/reserved stock. | `test_manual_stock_movement_revoke_and_zero_balance_delete`; delete a zero/zero balance and verify a reserved or non-zero balance is rejected. |
+| Intelligent safety stock | Initial safety stock is a fallback only. The replenishment screen explains the formula and exposes editable organization defaults and SKU/warehouse overrides. It produces reorder alerts and quantities. | `ReplenishmentSettingsViewSet`, `ReplenishmentPolicyViewSet`, replenishment recommendation endpoint; `app.js` replenishment settings modal and recommendation renderer. | `ReplenishmentSettings`, `ReplenishmentPolicy`, `StockBalance`, purchase in-transit quantity, outbound ledger history. The calculation uses weighted 7/14/30-day velocity, variation, lead time, service level, review cycle, inbound position, MOQ and pack rounding. | `test_replenishment_recommendations_apply_policy_and_scope_warehouse` and `test_replenishment_settings_are_saved_per_organization_and_validate_weights`. |
+| TikTok Shop authorization | Owner can start authorization by region, see each authorized shop, refresh one shop token, disconnect it, and inspect its status. | `POST /api/tiktok-shop-connections/authorize/`, `/{id}/refresh/`, `/{id}/disconnect/`, `/{id}/sync/`; callback `/api/integrations/tiktok-shop/callback/`; UI in `#tiktokConnectionRows`. | `TikTokShopOAuthState`, `TikTokShopConnection`, `TikTokShopSyncRun`; access/refresh tokens and shop cipher are Fernet-encrypted. Runtime values are only `TIKTOK_SHOP_*` environment variables. Sync is an explicit reserved run interface; production product/order/inventory synchronizers can be attached without exposing credentials. | `test_tiktok_signature_uses_current_us_host_and_seller_shop_rows`, `test_tiktok_authorization_creates_one_encrypted_connection_per_shop`; complete OAuth in Partner Center after registering the callback and scopes. |
+| Manual inbound/outbound | Warehouse UI supports both directions; notes are optional. Outbound cannot make inventory negative. | `POST /api/stock-balances/manual-inbound/` and `/manual-outbound/`; `team.js` movement path mapping. | `services.post_stock` locks the balance and rejects negative stock; `StockLedger` records the movement. | `test_manual_stock_movement_revoke_and_zero_balance_delete`; submit blank notes and attempt outbound above availability. |
+| Ledger reversal | A reversible manual/adjustment row has a confirmation-based withdraw action. Reversal is a new inverse ledger row; original data is retained. | `POST /api/stock-ledger/{id}/revoke/`; `StockLedgerViewSet.revoke`; `app.js` `revoke-movement`. | `StockLedgerReversal` stores original/reversal, operator, time and reason. Already reversed rows are refused. Business-document movement types are refused with an explanation so their source document must be reversed instead. | `test_manual_stock_movement_revoke_and_zero_balance_delete`; reverse once, inspect both rows, then try a second reversal. |
+| Competitor local image | Local JPG/PNG/WebP is uploaded before product save. Only a formal media URL is stored, never a Base64 data URL. | `POST /api/media-assets/`, `GET /api/media-assets/{id}/content/`; `UploadedMediaAssetViewSet`; `team.js.uploadDataImage`; file chooser `#productImageFile`. | `UploadedMediaAsset`; competitor URL fields accept HTTPS URLs up to 4096 characters and reject `data:` input. | `test_product_image_accepts_compressed_local_upload_for_team_sync`, `test_competitor_local_image_upload_uses_formal_media_url`. |
+| External LLM integration | Owner configures endpoint, key, model, timeout, retry and safe JSON parameters. The page tests the connection, shows aggregate/individual invocation logs, and creates four proposal kinds. Proposal confirmation/rejection is explicit. | `/api/ai-providers/`, `/{id}/test/`, `/api/ai-invocations/`, `/api/ai-recommendations/`, `/{id}/confirm/`, `/{id}/reject/`; `app.js` AI workbench; `team.js` gateway methods. | `AIProviderConfig`, `AIInvocationLog`, `AIRecommendation`. API keys use Fernet ciphertext and are write-only. Failures redact raw provider bodies, API keys and bearer tokens. Confirm/reject writes audit records only and never posts stock. | `test_ai_provider_reports_deepseek_format_and_missing_encryption_key`, `test_ai_provider_accepts_safe_request_parameters_and_rejects_reserved_fields`, `test_ai_recommendation_decisions_are_audited_and_never_post_inventory`, `test_ai_error_redaction_removes_provider_credentials`. |
+
+## Database migrations and recovery
+
+The release migration chain is in `backend/apps/erp/migrations/`:
+
+- `0017_erp_operations_platform`: replenishment, reversals, TikTok OAuth/sync, AI provider/log/recommendation tables and supporting model changes.
+- `0018_uploadedmediaasset`: formal uploaded-media table.
+- `0019_alphashopconfig`: encrypted, organization-scoped AlphaShop configuration.
+- `0020_tiktok_shop_connections_per_shop`: one connection per authorized TikTok shop while preserving legacy sync history.
+
+Before every production migration, create a PostgreSQL custom-format dump and a code archive that excludes `.env`. Recovery scripts are `backend/scripts/rollback_erp_operations.sh` and `backend/scripts/rollback_tiktok_multishop.sh`; restore the matching database backup before a schema rollback. See `DEPLOYMENT_ERP_OPERATIONS.md` for exact commands and environment requirements.
+
+## Security boundaries
+
+- API keys, TikTok token material, OAuth ciphers, AlphaShop secrets and the encryption key must never be committed, placed in browser storage, returned by serializers, or emitted to logs.
+- Production secrets belong only in `/opt/dongbo/app/.env`; the service account and backup permissions must protect that file.
+- The owner-only interface is required for AI configuration, AlphaShop configuration and TikTok authorization. Internal users do not receive those API capabilities.
+- AI proposals are advisory. A confirmation produces an audit event with `inventory_posted: false`; stock remains unchanged until a separate, normal inventory operation is performed.
