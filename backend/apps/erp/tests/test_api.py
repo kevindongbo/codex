@@ -256,6 +256,33 @@ class ApiTests(TestCase):
         self.assertEqual(no_key.status_code, 400, no_key.data)
         self.assertIn("api_key", no_key.data)
 
+    def test_ai_provider_accepts_safe_request_parameters_and_rejects_reserved_fields(self):
+        owner = get_user_model().objects.create_superuser(
+            username="owner-ai-parameters", password="test-pass-123", email="owner@example.com"
+        )
+        self.client.force_authenticate(owner)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        saved = self.client.post(
+            "/api/ai-providers/",
+            {
+                "name": "parameterized-model", "api_base_url": "https://llm.example.com/v1",
+                "model_name": "example-model", "api_key": "test-api-key",
+                "default_parameters": {"temperature": 0.2, "max_tokens": 800},
+            }, format="json", **headers,
+        )
+        self.assertEqual(saved.status_code, 201, saved.data)
+        self.assertEqual(saved.data["default_parameters"], {"temperature": 0.2, "max_tokens": 800})
+        unsafe = self.client.post(
+            "/api/ai-providers/",
+            {
+                "name": "unsafe-model", "api_base_url": "https://llm.example.com/v1",
+                "model_name": "example-model", "api_key": "test-api-key",
+                "default_parameters": {"messages": [{"role": "user", "content": "override"}]},
+            }, format="json", **headers,
+        )
+        self.assertEqual(unsafe.status_code, 400, unsafe.data)
+        self.assertIn("default_parameters", unsafe.data)
+
     def test_viewer_cannot_modify_or_delete_organization(self):
         viewer = get_user_model().objects.create_user(username="viewer", password="test-pass-123")
         Membership.objects.create(

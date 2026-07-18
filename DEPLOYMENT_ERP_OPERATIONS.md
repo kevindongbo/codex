@@ -33,7 +33,13 @@ Generate the encryption key once on the server with the production virtual envir
 
 The TikTok redirect URL must also be registered in TikTok Shop Partner Center. The app must have the relevant Shop authorization scopes approved before a real store can complete OAuth.
 
-For DeepSeek, this application uses the OpenAI-compatible Chat Completions route: set API address to `https://api.deepseek.com` and use `deepseek-v4-flash` or `deepseek-v4-pro`. Do not use DeepSeek's `/anthropic` address in this form.
+For DeepSeek, this application uses the OpenAI-compatible Chat Completions route: set API address to `https://api.deepseek.com` and use a model name enabled for the account. Do not use DeepSeek's `/anthropic` address in this form.
+
+## AI provider administration
+
+The owner can configure providers in **店铺与 AI 接口**. The configuration screen supports create and edit, enabled/disabled state, timeout, retry count, and an optional JSON object of OpenAI-compatible request parameters such as `temperature` and `max_tokens`. Credentials remain write-only: a blank API Key leaves an existing encrypted key unchanged, and the API never returns the saved key. `model`, `messages`, `api_key`, and `authorization` are reserved and cannot be supplied through request parameters.
+
+The same screen shows aggregate successful-call count and token totals from the invocation log. A test call records its result in that log; credentials and response secrets are not displayed there.
 
 ## AlphaShop system configuration
 
@@ -88,7 +94,7 @@ The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables 
 - Upload a local JPG/PNG/WebP for a competitor and save; confirm the URL is `/api/media-assets/.../content/`, not `data:`.
 - Confirm a replenishment recommendation exposes velocity, lead time, safety calculation, inbound position, and alert level.
 - In **店铺与 AI 接口**, start TikTok seller authorization, complete Partner Center OAuth, and verify every authorized shop appears separately with its shop name. Refresh/disconnect one shop and confirm neither token nor shop cipher is returned in API responses.
-- Add an AI provider, test it, inspect its log, and create a recommendation. Confirm the recommendation remains pending until explicitly confirmed and does not alter stock.
+- Add an AI provider with `temperature` and `max_tokens` JSON parameters, edit it with a blank API Key, test it, and inspect the usage summary/log. Confirm a malformed parameter object or a reserved key is rejected. Create a recommendation and confirm it remains pending until explicitly confirmed and does not alter stock.
 
 ## API additions
 
@@ -98,6 +104,6 @@ The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables 
 - `POST /api/stock-ledger/{id}/revoke/`.
 - `GET/POST/PATCH /api/replenishment-settings/` (organization defaults, editable in **仓库中心 → 智能补货 → 全局补货参数**).
 - TikTok: `/api/tiktok-shop-connections/`, `authorize/`, `{id}/refresh/`, `{id}/disconnect/`, `{id}/sync/`, callback `/api/integrations/tiktok-shop/callback/`.
-- AI: `/api/ai-providers/`, `{id}/test/`, `/api/ai-invocations/`, `/api/ai-recommendations/`, `{id}/confirm/`.
+- AI: `GET/POST /api/ai-providers/`, `PATCH /api/ai-providers/{id}/`, `{id}/test/`, `GET /api/ai-invocations/`, `/api/ai-recommendations/`, `{id}/confirm/`.
 - Media: `POST /api/media-assets/`, `GET /api/media-assets/{id}/content/`.
 - AlphaShop: `GET/PUT /api/alphashop-config/` (main account only; credentials are write-only and encrypted at rest).

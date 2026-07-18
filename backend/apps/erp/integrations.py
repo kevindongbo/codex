@@ -242,7 +242,10 @@ def invoke_ai(*, provider, feature: str, messages: list[dict], actor=None, respo
     endpoint = provider.api_base_url.rstrip("/")
     if not endpoint.endswith("/chat/completions"):
         endpoint = f"{endpoint}/chat/completions"
-    body = {"model": provider.model_name, "messages": messages, **(provider.default_parameters or {})}
+    # Provider parameters (for example temperature or max_tokens) are configurable,
+    # but they must never be able to replace the server-selected model/messages.
+    body = dict(provider.default_parameters or {})
+    body.update({"model": provider.model_name, "messages": messages})
     if response_format:
         body["response_format"] = response_format
     api_key = decrypt_secret(provider.api_key_encrypted)

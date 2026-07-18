@@ -351,7 +351,9 @@
 
     async listAIProviders() { return this.listAll('/ai-providers/'); }
     async saveAIProvider(payload) { return this.request('/ai-providers/', { method: 'POST', body: payload }); }
+    async updateAIProvider(id, payload) { return this.request('/ai-providers/' + id + '/', { method: 'PATCH', body: payload }); }
     async testAIProvider(id) { return this.request('/ai-providers/' + id + '/test/', { method: 'POST', body: {} }); }
+    async listAIInvocations() { return this.listAll('/ai-invocations/'); }
 
     async confirmOwnerPasswordChange(challengeId, code, password) {
       return this.request('/auth/owner/password/change/confirm/', {

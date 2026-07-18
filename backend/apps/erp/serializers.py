@@ -755,6 +755,16 @@ class AIProviderConfigSerializer(ScopedSerializer):
             raise serializers.ValidationError({
                 "model_name": "DeepSeek 模型请填写 deepseek-v4-flash 或 deepseek-v4-pro。"
             })
+        parameters = attrs.get("default_parameters", getattr(self.instance, "default_parameters", {})) or {}
+        if not isinstance(parameters, dict):
+            raise serializers.ValidationError({"default_parameters": "请求参数必须是 JSON 对象。"})
+        reserved = {"model", "messages", "api_key", "authorization"}.intersection(
+            {str(key).lower() for key in parameters}
+        )
+        if reserved:
+            raise serializers.ValidationError({
+                "default_parameters": "请求参数不能覆盖系统管理的字段：" + "、".join(sorted(reserved))
+            })
         return attrs
 
     def create(self, validated_data):

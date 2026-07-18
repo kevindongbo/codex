@@ -100,6 +100,7 @@ let pendingConfirm = null;
 let pendingProductImage = '';
 let tiktokConnections = [];
 let aiProviderConfigs = [];
+let aiInvocationLogs = [];
 let alphashopConfig = null;
 let draftProductSkus = [];
 let draftPurchaseLines = [];
@@ -1061,19 +1062,55 @@ function renderIntegrationManager() {
       (connection.status === 'connected' ? '<button class="button tiny secondary" type="button" data-tiktok-action="refresh" data-tiktok-id="' + escapeHtml(connection.id) + '">刷新令牌</button><button class="button tiny danger-outline" type="button" data-tiktok-action="disconnect" data-tiktok-id="' + escapeHtml(connection.id) + '">解绑</button>' : '') + '</div></div>';
   }).join('') : '<p class="session-help">尚未授权 TikTok Shop 店铺。</p>';
   $('#aiProviderRows').innerHTML = aiProviderConfigs.length ? aiProviderConfigs.map(function (provider) {
-    return '<div class="account-row"><div><strong>' + escapeHtml(provider.name) + '</strong><small>' + escapeHtml(provider.model_name + ' · ' + (provider.enabled ? '已启用' : '已停用') + ' · 密钥' + (provider.has_api_key ? '已加密保存' : '未配置')) + '</small></div><div class="inline-actions"><button class="button tiny secondary" type="button" data-ai-test-id="' + escapeHtml(provider.id) + '">测试连接</button></div></div>';
+    return '<div class="account-row"><div><strong>' + escapeHtml(provider.name) + '</strong><small>' + escapeHtml(provider.model_name + ' · ' + (provider.enabled ? '已启用' : '已停用') + ' · 密钥' + (provider.has_api_key ? '已加密保存' : '未配置')) + '</small></div><div class="inline-actions"><button class="button tiny secondary" type="button" data-ai-edit-id="' + escapeHtml(provider.id) + '">编辑</button><button class="button tiny secondary" type="button" data-ai-test-id="' + escapeHtml(provider.id) + '">测试连接</button></div></div>';
   }).join('') : '<p class="session-help">尚未配置外部大模型 API。</p>';
+  const successful = aiInvocationLogs.filter(function (item) { return item.status === 'success'; });
+  const inputTokens = successful.reduce(function (sum, item) { return sum + Number(item.input_tokens || 0); }, 0);
+  const outputTokens = successful.reduce(function (sum, item) { return sum + Number(item.output_tokens || 0); }, 0);
+  $('#aiUsageSummary').textContent = aiInvocationLogs.length
+    ? '调用记录 ' + aiInvocationLogs.length + ' 条，其中成功 ' + successful.length + ' 条；输入 Tokens ' + inputTokens + '，输出 Tokens ' + outputTokens + '。'
+    : '尚无大模型调用记录。保存并测试后会在这里汇总用量。';
+}
+
+function resetAIProviderForm() {
+  $('#aiProviderForm').reset();
+  $('#aiProviderId').value = '';
+  $('#aiProviderParameters').value = '{}';
+  $('#aiProviderEnabled').checked = true;
+  $('#aiProviderKey').required = true;
+  $('#aiProviderKeyRequired').hidden = false;
+  $('#saveAIProvider').textContent = '加密保存并测试';
+}
+
+function editAIProviderConfig(id) {
+  const provider = aiProviderConfigs.find(function (item) { return String(item.id) === String(id); });
+  if (!provider) return;
+  $('#aiProviderId').value = provider.id;
+  $('#aiProviderName').value = provider.name || '';
+  $('#aiProviderBaseUrl').value = provider.api_base_url || '';
+  $('#aiProviderModel').value = provider.model_name || '';
+  $('#aiProviderKey').value = '';
+  $('#aiProviderKey').required = false;
+  $('#aiProviderKeyRequired').hidden = true;
+  $('#aiProviderTimeout').value = provider.timeout_seconds || 30;
+  $('#aiProviderRetries').value = provider.max_retries == null ? 2 : provider.max_retries;
+  $('#aiProviderEnabled').checked = provider.enabled !== false;
+  $('#aiProviderParameters').value = JSON.stringify(provider.default_parameters || {}, null, 2);
+  $('#saveAIProvider').textContent = '保存修改并测试';
+  $('#aiProviderForm').scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
 async function openIntegrationManager() {
   if (!teamGateway || !teamGateway.user || !teamGateway.user.is_owner) return;
-  const results = await Promise.all([teamGateway.listTikTokConnections(), teamGateway.listAIProviders(), teamGateway.getAlphaShopConfig()]);
+  const results = await Promise.all([teamGateway.listTikTokConnections(), teamGateway.listAIProviders(), teamGateway.getAlphaShopConfig(), teamGateway.listAIInvocations()]);
   tiktokConnections = results[0] || [];
   aiProviderConfigs = results[1] || [];
   alphashopConfig = results[2] || null;
+  aiInvocationLogs = results[3] || [];
   $('#accountManagerPanel').hidden = true;
   $('#ownerPasswordPanel').hidden = true;
   $('#integrationsPanel').hidden = false;
+  resetAIProviderForm();
   renderIntegrationManager();
 }
 
@@ -3784,18 +3821,32 @@ function bindEvents() {
   $('#aiProviderForm').addEventListener('submit', async function (event) {
     event.preventDefault();
     try {
-      const provider = await teamGateway.saveAIProvider({
+      let defaultParameters = {};
+      try {
+        defaultParameters = JSON.parse($('#aiProviderParameters').value || '{}');
+      } catch (_) { return showToast('请求参数必须是合法的 JSON 对象。'); }
+      if (!defaultParameters || Array.isArray(defaultParameters) || typeof defaultParameters !== 'object') {
+        return showToast('请求参数必须是 JSON 对象。');
+      }
+      const id = $('#aiProviderId').value;
+      const payload = {
         name: $('#aiProviderName').value.trim(), api_base_url: $('#aiProviderBaseUrl').value.trim(),
-        model_name: $('#aiProviderModel').value.trim(), api_key: $('#aiProviderKey').value,
-        timeout_seconds: integer($('#aiProviderTimeout').value) || 30, max_retries: integer($('#aiProviderRetries').value)
-      });
+        model_name: $('#aiProviderModel').value.trim(), default_parameters: defaultParameters,
+        timeout_seconds: integer($('#aiProviderTimeout').value) || 30,
+        max_retries: integer($('#aiProviderRetries').value), enabled: $('#aiProviderEnabled').checked
+      };
+      if ($('#aiProviderKey').value) payload.api_key = $('#aiProviderKey').value;
+      if (!id && !payload.api_key) return showToast('首次保存必须填写 API Key。');
+      const provider = id ? await teamGateway.updateAIProvider(id, payload) : await teamGateway.saveAIProvider(payload);
       await teamGateway.testAIProvider(provider.id);
-      $('#aiProviderForm').reset();
       await openIntegrationManager();
-      showToast('大模型 API 已加密保存并通过连接测试。');
+      showToast(id ? '大模型配置已保存并通过连接测试。' : '大模型 API 已加密保存并通过连接测试。');
     } catch (error) { handleTeamError(error); }
   });
+  $('#resetAIProvider').addEventListener('click', resetAIProviderForm);
   $('#aiProviderRows').addEventListener('click', async function (event) {
+    const edit = event.target.closest('[data-ai-edit-id]');
+    if (edit) return editAIProviderConfig(edit.dataset.aiEditId);
     const button = event.target.closest('[data-ai-test-id]');
     if (!button) return;
     try {

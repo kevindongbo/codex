@@ -341,6 +341,23 @@ test('organization replenishment settings can be loaded and saved independently 
   assert.equal(JSON.parse(calls[1].options.body).safety_days, 9);
 });
 
+test('AI provider settings support edit, request parameters, and usage log queries', async () => {
+  const calls = [];
+  const Team = await loadTeam(async (url, options) => {
+    calls.push({ url, options });
+    return response(200, []);
+  });
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.accessToken = 'token';
+  gateway.organizationId = 'org-1';
+  await gateway.updateAIProvider('provider-1', { default_parameters: { temperature: 0.2 } });
+  await gateway.listAIInvocations();
+  assert.equal(calls[0].url, '/api/ai-providers/provider-1/');
+  assert.equal(calls[0].options.method, 'PATCH');
+  assert.deepEqual(JSON.parse(calls[0].options.body), { default_parameters: { temperature: 0.2 } });
+  assert.equal(calls[1].url, '/api/ai-invocations/');
+});
+
 test('draft transfers and replenishment overrides have explicit recovery endpoints', async () => {
   const calls = [];
   const Team = await loadTeam(async (url, options) => { calls.push({ url, options }); return response(204, null); });
