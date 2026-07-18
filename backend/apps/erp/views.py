@@ -23,7 +23,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge,
-    LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, Receipt, ReceiptLine, ReplenishmentPolicy, ReplenishmentSettings,
+    LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
@@ -62,6 +62,7 @@ from .replenishment import (
     ReplenishmentPolicy as ForecastPolicy,
     build_replenishment_forecast,
 )
+from .replenishment_automation import schedule_replenishment_ai_analysis
 from .single_tenant import active_internal_membership, ensure_internal_organization, internal_organization
 from .sync import bump_sync_revision
 
@@ -508,7 +509,7 @@ def replenishment_recommendations(request):
         safety_margin_ratio=settings.safety_margin_ratio,
         initial_reference_shipment_count=settings.initial_reference_shipment_count,
     )
-    weights = (settings.velocity_weight_7, settings.velocity_weight_15, settings.velocity_weight_30)
+    weights = (settings.velocity_weight_3, settings.velocity_weight_7, settings.velocity_weight_15, settings.velocity_weight_30)
     recommendations = []
     skus = SKU.objects.filter(
         organization=organization,
@@ -553,6 +554,84 @@ def replenishment_recommendations(request):
             **asdict(forecast),
         })
     return Response(recommendations)
+
+
+def _require_replenishment_write(request):
+    organization = request_organization(request)
+    membership = active_internal_membership(request.user)
+    if not is_owner(request.user) and (membership is None or "replenishment" not in membership_permissions(membership)):
+        raise PermissionDenied("当前账号没有补货管理权限")
+    return organization
+
+
+@api_view(["POST"])
+def replenishment_batch_policy(request):
+    """Apply only explicitly supplied fields to selected SKUs in the selected warehouse."""
+    organization = _require_replenishment_write(request)
+    payload = request.data if isinstance(request.data, dict) else {}
+    warehouse_id = payload.get("warehouse")
+    sku_ids = list(dict.fromkeys(str(value) for value in (payload.get("sku_ids") or []) if value))
+    fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+    allowed = {"lead_time_override", "review_cycle_days", "target_days", "min_order_qty", "pack_size", "safety_stock_override"}
+    fields = {key: value for key, value in fields.items() if key in allowed}
+    if not warehouse_id or not sku_ids or not fields:
+        raise ValidationError("请选择仓库、至少一个 SKU 和至少一个需要修改的参数")
+    warehouse = Warehouse.objects.filter(pk=warehouse_id, organization=organization, active=True).first()
+    if warehouse is None:
+        raise ValidationError({"warehouse": "仓库不存在或已停用"})
+    skus = list(SKU.objects.filter(pk__in=sku_ids, organization=organization, active=True, product__status=Product.Status.ACTIVE))
+    if len(skus) != len(sku_ids):
+        raise ValidationError({"sku_ids": "包含无效或不属于当前组织的 SKU"})
+    integer_fields = {"lead_time_override", "review_cycle_days", "target_days"}
+    decimal_fields = {"min_order_qty", "pack_size", "safety_stock_override"}
+    cleaned = {}
+    for key, value in fields.items():
+        if value in (None, "") and key in {"lead_time_override", "safety_stock_override"}:
+            cleaned[key] = None
+            continue
+        try:
+            cleaned[key] = int(value) if key in integer_fields else Decimal(str(value))
+        except (ValueError, TypeError, InvalidOperation) as exc:
+            raise ValidationError({key: "请输入有效数值"}) from exc
+        if cleaned[key] < 0 or (key not in {"safety_stock_override"} and cleaned[key] <= 0):
+            raise ValidationError({key: "该参数必须为正数（安全库存可为 0）"})
+    settings, _ = ReplenishmentSettings.objects.get_or_create(organization=organization)
+    saved = []
+    with transaction.atomic():
+        for sku in skus:
+            policy, _ = ReplenishmentPolicy.objects.get_or_create(
+                organization=organization, warehouse=warehouse, sku=sku,
+                defaults={
+                    "review_cycle_days": settings.review_cycle_days, "target_days": settings.target_days,
+                    "min_order_qty": Decimal("1"), "pack_size": Decimal("1"),
+                },
+            )
+            for key, value in cleaned.items():
+                setattr(policy, key, value)
+            policy.full_clean()
+            policy.save()
+            saved.append(str(policy.pk))
+            schedule_replenishment_ai_analysis(organization=organization, warehouse=warehouse, sku_id=sku.pk, reason="policy_changed")
+    return Response({"updated": len(saved), "policy_ids": saved})
+
+
+@api_view(["POST"])
+def replenishment_recompute(request):
+    organization = _require_replenishment_write(request)
+    payload = request.data if isinstance(request.data, dict) else {}
+    warehouse = Warehouse.objects.filter(pk=payload.get("warehouse"), organization=organization, active=True).first()
+    if warehouse is None:
+        raise ValidationError({"warehouse": "仓库不存在或已停用"})
+    sku_ids = [str(value) for value in (payload.get("sku_ids") or []) if value]
+    skus = SKU.objects.filter(organization=organization, active=True, product__status=Product.Status.ACTIVE)
+    if sku_ids:
+        skus = skus.filter(pk__in=sku_ids)
+    count = 0
+    for sku_id in skus.values_list("pk", flat=True):
+        schedule_replenishment_ai_analysis(organization=organization, warehouse=warehouse, sku_id=sku_id, reason="manual_recompute")
+        count += 1
+    job = ReplenishmentAIJob.objects.filter(organization=organization, warehouse=warehouse).values("status", "due_at", "last_error").first()
+    return Response({"queued_skus": count, "ai_job": job})
 
 
 class OrganizationViewSet(viewsets.ModelViewSet):

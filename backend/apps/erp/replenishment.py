@@ -24,8 +24,7 @@ from .models import (
     PurchaseOrderLine,
     Receipt,
     ReceiptLine,
-    Shipment,
-    ShipmentLine,
+    StockLedger,
     StockBalance,
     StockTransfer,
     StockTransferLine,
@@ -311,6 +310,8 @@ class DemandVelocity:
     confidence: str
     reasons: tuple[str, ...]
     daily_stddev: Decimal = ZERO
+    daily_3: Decimal = ZERO
+    quantity_3: Decimal = ZERO
 
 
 def estimate_demand_velocity(
@@ -320,15 +321,19 @@ def estimate_demand_velocity(
     warehouse,
     as_of: datetime | None = None,
     weights: Sequence[Decimal | int | float] = (
-        Decimal("0.50"),
-        Decimal("0.30"),
-        Decimal("0.20"),
+        Decimal("0.40"), Decimal("0.30"), Decimal("0.20"), Decimal("0.10"),
     ),
 ) -> DemandVelocity:
-    """Calculate weighted 7/15/30-day velocity from completed shipment lines."""
+    """Calculate warehouse-local weighted demand from final outbound ledgers.
 
-    if len(weights) != 3:
-        raise ValueError("weights must contain values for 7, 15 and 30 days")
+    ``shipment`` and ``manual_outbound`` are intentionally the only demand facts.
+    Reservations are not deliveries; returns/inbound/adjustments do not represent sales.
+    Reversed source rows are excluded, so a cancelled outbound is never counted twice.
+    """
+
+    if len(weights) not in (3, 4):
+        raise ValueError("weights must contain values for 3/7/15/30 days")
+    windows = (7, 15, 30) if len(weights) == 3 else (3, 7, 15, 30)
     normalized_weights = tuple(
         _nonnegative("weight", _decimal(value)) for value in weights
     )
@@ -338,61 +343,59 @@ def estimate_demand_velocity(
     normalized_weights = tuple(value / weight_total for value in normalized_weights)
 
     current_time = _as_aware(as_of)
-    oldest = current_time - timedelta(days=30)
+    oldest = current_time - timedelta(days=max(windows))
     lines = list(
-        ShipmentLine.objects.filter(
-            shipment__organization=organization,
-            shipment__warehouse=warehouse,
-            shipment__status=Shipment.Status.COMPLETED,
-            shipment__shipped_at__gte=oldest,
-            shipment__shipped_at__lte=current_time,
+        StockLedger.objects.filter(
+            organization=organization,
+            warehouse=warehouse,
             sku=sku,
-        )
-        .select_related("shipment")
-        .order_by("shipment__shipped_at")
+            event_type__in=[StockLedger.Type.SHIPMENT, StockLedger.Type.MANUAL_OUTBOUND],
+            on_hand_delta__lt=0,
+            occurred_at__gte=oldest,
+            occurred_at__lte=current_time,
+            reversal__isnull=True,
+        ).order_by("occurred_at")
     )
 
     quantities: dict[int, Decimal] = {}
-    for days in (7, 15, 30):
+    for days in windows:
         threshold = current_time - timedelta(days=days)
         quantities[days] = sum(
             (
-                _decimal(line.quantity)
+                -_decimal(line.on_hand_delta)
                 for line in lines
-                if line.shipment.shipped_at >= threshold
+                if line.occurred_at >= threshold
             ),
             ZERO,
         )
-    daily_7 = quantities[7] / Decimal("7")
-    daily_15 = quantities[15] / Decimal("15")
-    daily_30 = quantities[30] / Decimal("30")
-    velocity = (
-        daily_7 * normalized_weights[0]
-        + daily_15 * normalized_weights[1]
-        + daily_30 * normalized_weights[2]
-    )
+    daily = {days: quantities[days] / Decimal(days) for days in windows}
+    velocity = sum((daily[days] * normalized_weights[index] for index, days in enumerate(windows)), ZERO)
+    daily_3 = daily.get(3, ZERO)
+    daily_7 = daily[7]
+    daily_15 = daily[15]
+    daily_30 = daily[30]
 
-    shipment_ids = {line.shipment_id for line in lines}
+    outbound_ids = {line.pk for line in lines}
     active_dates = {
-        timezone.localtime(line.shipment.shipped_at).date() for line in lines
+        timezone.localtime(line.occurred_at).date() for line in lines
     }
     daily_quantities = {current_time.date() - timedelta(days=offset): ZERO for offset in range(30)}
     for line in lines:
-        day = timezone.localtime(line.shipment.shipped_at).date()
+        day = timezone.localtime(line.occurred_at).date()
         if day in daily_quantities:
-            daily_quantities[day] += _decimal(line.quantity)
+            daily_quantities[day] += -_decimal(line.on_hand_delta)
     daily_values = list(daily_quantities.values())
     daily_average = sum(daily_values, ZERO) / Decimal(len(daily_values))
     variance = sum(((value - daily_average) ** 2 for value in daily_values), ZERO) / Decimal(len(daily_values))
     daily_stddev = _rate(Decimal(str(math.sqrt(float(variance)))))
     reasons: list[str] = [
-        "日速度按近 7/15/30 日实际出库加权计算（默认权重 50%/30%/20%）"
+        "日速度按近 3/7/15/30 日最终出库流水加权计算；包含订单实际出库和手动出库，不含锁库或已撤回流水"
     ]
     if not lines:
         confidence = "low"
         reasons.append("近 30 天没有实际出库记录，无法从历史判断需求")
     else:
-        history_days = (current_time - lines[0].shipment.shipped_at).days
+        history_days = (current_time - lines[0].occurred_at).days
         if history_days >= 28 and len(active_dates) >= 10:
             confidence = "high"
         elif history_days >= 13 and len(active_dates) >= 3:
@@ -409,11 +412,13 @@ def estimate_demand_velocity(
         quantity_7=_quantity(quantities[7]),
         quantity_15=_quantity(quantities[15]),
         quantity_30=_quantity(quantities[30]),
-        shipment_count=len(shipment_ids),
+        shipment_count=len(outbound_ids),
         active_days=len(active_dates),
         daily_stddev=daily_stddev,
         confidence=confidence,
         reasons=tuple(reasons),
+        daily_3=_rate(daily_3),
+        quantity_3=_quantity(quantities.get(3, ZERO)),
     )
 
 
@@ -683,7 +688,7 @@ def build_replenishment_forecast(
     route_resolver: Callable[[PurchaseOrder], object] | None = None,
     policy: ReplenishmentPolicy | None = None,
     as_of: datetime | None = None,
-    weights: Sequence[Decimal | int | float] = (Decimal("0.50"), Decimal("0.30"), Decimal("0.20")),
+    weights: Sequence[Decimal | int | float] = (Decimal("0.40"), Decimal("0.30"), Decimal("0.20"), Decimal("0.10")),
 ) -> ReplenishmentForecast:
     """Build a complete, explainable forecast from current ERP records."""
 
@@ -720,6 +725,7 @@ def build_replenishment_forecast(
         manual_lead_days=policy.manual_lead_days,
         safety_stock_units=policy.safety_stock_units,
         service_level_factor=policy.service_level_factor,
+        safety_margin_ratio=policy.safety_margin_ratio,
         initial_safety_reference=policy.initial_safety_reference or _decimal(getattr(sku, "safety_stock", ZERO)),
         initial_reference_shipment_count=policy.initial_reference_shipment_count,
     )

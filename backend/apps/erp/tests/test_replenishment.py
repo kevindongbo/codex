@@ -2,6 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.test import TestCase
+from django.db import connection
 from django.utils import timezone
 
 from apps.erp.models import (
@@ -15,11 +16,13 @@ from apps.erp.models import (
     SalesOrderLine,
     Shipment,
     ShipmentLine,
+    StockLedger,
     SKU,
     StockBalance,
     Supplier,
     Warehouse,
 )
+from apps.erp.services import post_stock
 from apps.erp.replenishment import (
     DemandVelocity,
     InventoryPosition,
@@ -134,6 +137,35 @@ class ReplenishmentTests(TestCase):
             sku=self.sku,
             quantity=quantity,
         )
+        post_stock(
+            organization=self.organization,
+            warehouse=warehouse,
+            sku=self.sku,
+            event_type=StockLedger.Type.MANUAL_INBOUND,
+            on_hand_delta=Decimal(quantity),
+            reserved_delta=Decimal("0"),
+            reference_type="test_setup",
+            reference_id=shipment.pk,
+            idempotency_key=f"shipment-ledger-stock-{sequence}",
+        )
+        ledger = post_stock(
+            organization=self.organization,
+            warehouse=warehouse,
+            sku=self.sku,
+            event_type=StockLedger.Type.SHIPMENT,
+            on_hand_delta=-Decimal(quantity),
+            reserved_delta=Decimal("0"),
+            reference_type="shipment",
+            reference_id=shipment.pk,
+            idempotency_key=f"shipment-ledger-outbound-{sequence}",
+        )
+        self.set_ledger_time(ledger, self.as_of - timedelta(days=days_ago))
+
+    def set_ledger_time(self, ledger, occurred_at):
+        """Set historical fixtures without weakening the append-only model API."""
+        table = connection.ops.quote_name(StockLedger._meta.db_table)
+        with connection.cursor() as cursor:
+            cursor.execute(f"UPDATE {table} SET occurred_at = %s WHERE id = %s", [occurred_at, ledger.pk.hex])
 
     def test_lead_time_uses_robust_full_receipt_p80(self):
         for sequence, days in enumerate((8, 10, 12, 200), start=1):
@@ -283,8 +315,43 @@ class ReplenishmentTests(TestCase):
         self.assertEqual(demand.daily_7, Decimal("2.0000"))
         self.assertEqual(demand.daily_15, Decimal("1.8667"))
         self.assertEqual(demand.daily_30, Decimal("1.9333"))
-        self.assertEqual(demand.daily_velocity, Decimal("1.9467"))
+        self.assertEqual(demand.quantity_3, Decimal("14.000"))
+        self.assertEqual(demand.daily_3, Decimal("4.6667"))
+        self.assertEqual(demand.daily_velocity, Decimal("3.0333"))
         self.assertEqual(demand.shipment_count, 3)
+
+    def test_weighted_velocity_counts_manual_outbound_but_not_inbound_or_reversed_rows(self):
+        manual = post_stock(
+            organization=self.organization,
+            warehouse=self.warehouse,
+            sku=self.sku,
+            event_type=StockLedger.Type.MANUAL_INBOUND,
+            on_hand_delta=Decimal("10"),
+            reserved_delta=Decimal("0"),
+            reference_type="manual_stock_movement",
+            reference_id="manual-inbound",
+            idempotency_key="manual-inbound-ledger",
+        )
+        self.set_ledger_time(manual, self.as_of - timedelta(days=1))
+        outbound = post_stock(
+            organization=self.organization,
+            warehouse=self.warehouse,
+            sku=self.sku,
+            event_type=StockLedger.Type.MANUAL_OUTBOUND,
+            on_hand_delta=Decimal("-6"),
+            reserved_delta=Decimal("0"),
+            reference_type="manual_stock_movement",
+            reference_id="manual-outbound",
+            idempotency_key="manual-outbound-ledger",
+        )
+        self.set_ledger_time(outbound, self.as_of - timedelta(days=1))
+
+        demand = estimate_demand_velocity(
+            organization=self.organization, sku=self.sku, warehouse=self.warehouse, as_of=self.as_of
+        )
+
+        self.assertEqual(demand.quantity_3, Decimal("6.000"))
+        self.assertEqual(demand.shipment_count, 1)
 
     def test_inventory_position_counts_only_target_warehouse_open_inbound(self):
         StockBalance.objects.create(

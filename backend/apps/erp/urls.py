@@ -52,5 +52,7 @@ urlpatterns = [
         views.replenishment_recommendations,
         name="replenishment-recommendations",
     ),
+    path("replenishment/batch-policy/", views.replenishment_batch_policy, name="replenishment-batch-policy"),
+    path("replenishment/recompute/", views.replenishment_recompute, name="replenishment-recompute"),
     path("", include(router.urls)),
 ]

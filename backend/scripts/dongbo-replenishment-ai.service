@@ -1,0 +1,12 @@
+[Unit]
+Description=Dongbo ERP replenishment AI analysis worker
+After=network-online.target dongbo-erp.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/dongbo/app/backend
+EnvironmentFile=/opt/dongbo/app/.env
+ExecStart=/opt/dongbo/venv/bin/python manage.py process_replenishment_ai --limit 20
+

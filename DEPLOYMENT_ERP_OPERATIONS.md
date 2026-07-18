@@ -2,7 +2,7 @@
 
 ## Scope
 
-This release adds batch purchase receiving, manual inbound/outbound and reversible stock ledger entries, safe zero-stock balance deletion, data-backed replenishment settings, TikTok Shop OAuth, encrypted OpenAI-compatible AI providers, and formal uploaded-media URLs for competitor images.
+This release adds batch purchase receiving, manual inbound/outbound and reversible stock ledger entries, safe zero-stock balance deletion, data-backed replenishment settings, TikTok Shop OAuth, encrypted OpenAI-compatible AI providers, and formal uploaded-media URLs for competitor images. It also upgrades replenishment to use only final warehouse-local outbound ledger facts (`shipment` and `manual_outbound`) with 3/7/15/30-day recency weighting, optional debounced AI review, SKU multi-select, and one editable purchase draft.
 
 ## Database migrations
 
@@ -11,6 +11,7 @@ This release adds batch purchase receiving, manual inbound/outbound and reversib
 - `0019_alphashopconfig` creates the organization-scoped `AlphaShopConfig` table. It stores Access Key and Secret Key only as Fernet ciphertext, with a one-row-per-organization constraint.
 - `0020_tiktok_shop_connections_per_shop` adds shop name/cipher/type metadata and changes TikTok Shop uniqueness from one seller authorization to one row per authorized shop. Existing legacy authorization rows are reused for the first discovered shop, preserving prior sync history.
 - `0021_replenishment_velocity_window_15_days` renames the 14-day velocity parameter to 15 days and adds the organization-level `safety_margin_ratio` (default `0.200`, constrained to 0–1). Its rollback helper is `backend/scripts/rollback_replenishment_window_0021.sh`; restore the verified PostgreSQL backup before using it.
+- `0022_replenishment_ai_automation` adds the 3-day velocity weight, encrypted-provider selection and debounce settings, plus the per-warehouse `ReplenishmentAIJob` queue. Its rollback helper is `backend/scripts/rollback_replenishment_ai_0022.sh`; it removes queued-job history and should only be used after a verified backup restore.
 
 All migrations are reversible through Django. Use `backend/scripts/rollback_erp_operations.sh` only after restoring the pre-deployment database backup; rolling schema back without restoring a backup discards the newly introduced records. For only this release, use `backend/scripts/rollback_tiktok_multishop.sh` with `CONFIRM_TIKTOK_MULTISHOP_ROLLBACK=YES` after the backup restore.
 
@@ -41,6 +42,22 @@ For DeepSeek, this application uses the OpenAI-compatible Chat Completions route
 The owner can configure providers in **店铺与 AI 接口**. The configuration screen supports create and edit, enabled/disabled state, timeout, retry count, and an optional JSON object of OpenAI-compatible request parameters such as `temperature` and `max_tokens`. Credentials remain write-only: a blank API Key leaves an existing encrypted key unchanged, and the API never returns the saved key. `model`, `messages`, `api_key`, and `authorization` are reserved and cannot be supplied through request parameters. The same page provides four proposal types (inventory forecast, replenishment, product analysis, and copywriting), the latest invocation logs, and confirm/reject actions. Confirming a proposal only writes the operator decision and audit event; it never changes stock automatically. Provider failures are recorded without raw response bodies or credentials.
 
 The same screen shows aggregate successful-call count and token totals from the invocation log. A test call records its result in that log; credentials and response secrets are not displayed there.
+
+## Replenishment automation
+
+The rule forecast is immediate and read-only: it calculates each warehouse/SKU from final `shipment` and `manual_outbound` ledger rows, ignores reservations, inbound rows and reversed originals, and never changes inventory. The default 3/7/15/30-day weights are `0.40/0.30/0.20/0.10`; all four remain owner-editable. Lead time uses completed purchase order date-to-receipt history for that warehouse/SKU first, then the editable default. Sparse history is deliberately marked low-confidence and keeps a conservative safety recommendation.
+
+AI is optional. When enabled in **仓配中心 → 智能补货 → 全局补货参数**, stock events are batched per warehouse for the configured 1–60 minute debounce period. The worker creates explanatory AI recommendations only for low-confidence, volatile, or reorder-needed cases. It never writes stock and never confirms a purchase order. If the provider is unavailable, the rule results remain available and the queue records an error without exposing credentials.
+
+After normal deployment commands, install the timer as root to run the queue automatically:
+
+```bash
+install -m 0644 /opt/dongbo/app/backend/scripts/dongbo-replenishment-ai.service /etc/systemd/system/dongbo-replenishment-ai.service
+install -m 0644 /opt/dongbo/app/backend/scripts/dongbo-replenishment-ai.timer /etc/systemd/system/dongbo-replenishment-ai.timer
+systemctl daemon-reload
+systemctl enable --now dongbo-replenishment-ai.timer
+systemctl list-timers dongbo-replenishment-ai.timer
+```
 
 ## AlphaShop system configuration
 
@@ -94,7 +111,7 @@ The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables 
 - Revoke a manual/adjustment ledger record and verify a separate reversal record appears; attempt a second revoke and confirm it is denied.
 - Set a balance to zero with no reservation or pending outbound order; confirm delete requires the browser confirmation and leaves product/history intact. Confirm non-zero balance or an associated pending order is denied.
 - Upload a local JPG/PNG/WebP for a competitor and save; confirm the URL is `/api/media-assets/.../content/`, not `data:`.
-- Confirm a replenishment recommendation exposes 7/15/30-day velocity, lead time, safety calculation, configurable safety margin, inbound position, alert level, and calculation basis.
+- Confirm a replenishment recommendation exposes 3/7/15/30-day velocity, lead time, safety calculation, configurable safety margin, inbound position, alert level, and calculation basis. Add one manual outbound and one actual shipped order in different warehouses and confirm only the matching warehouse changes. Then select filtered SKU rows, batch-edit only one checked parameter, recompute them, and generate an editable draft purchase order. If AI is enabled, confirm a complex case creates an analysis record after the debounce period without changing stock or confirming the draft.
 - In **店铺与 AI 接口**, start TikTok seller authorization, complete Partner Center OAuth, and verify every authorized shop appears separately with its shop name. Refresh/disconnect one shop and confirm neither token nor shop cipher is returned in API responses.
 - Add an AI provider with `temperature` and `max_tokens` JSON parameters, edit it with a blank API Key, test it, and inspect the usage summary plus the latest invocation rows. Confirm a malformed parameter object or a reserved key is rejected. Create one proposal, confirm it, create another and reject it; verify the stock ledger has no extra entry and both decisions appear in the audit log.
 
@@ -105,6 +122,8 @@ The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables 
 - `POST /api/stock-balances/manual-inbound/`, `POST /api/stock-balances/manual-outbound/`.
 - `POST /api/stock-ledger/{id}/revoke/`.
 - `GET/POST/PATCH /api/replenishment-settings/` (organization defaults, editable in **仓库中心 → 智能补货 → 全局补货参数**).
+- `POST /api/replenishment/batch-policy/` applies only explicitly supplied policy fields to selected SKU rows in one warehouse.
+- `POST /api/replenishment/recompute/` queues selected (or all) warehouse SKUs for debounced optional AI review; the normal rule forecast stays synchronous and read-only.
 - TikTok: `/api/tiktok-shop-connections/`, `authorize/`, `{id}/refresh/`, `{id}/disconnect/`, `{id}/sync/`, callback `/api/integrations/tiktok-shop/callback/`.
 - AI: `GET/POST /api/ai-providers/`, `PATCH /api/ai-providers/{id}/`, `{id}/test/`, `GET /api/ai-invocations/`, `GET/POST /api/ai-recommendations/`, `{id}/confirm/`, `{id}/reject/`.
 - Media: `POST /api/media-assets/`, `GET /api/media-assets/{id}/content/`.

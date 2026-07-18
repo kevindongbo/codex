@@ -307,14 +307,15 @@
 
       <section class="subpage" data-warehouse-page="replenishment" hidden>
         <div class="subpage-heading">
-          <div><h2>智能补货</h2><p>结合历史采购到货时间、7/15/30 天出库速度、在途与安全库存给出建议。</p></div>
+          <div><h2>智能补货</h2><p>按仓库独立汇总订单实际出库和手动出库，使用 3/7/15/30 天近因加权、在途与安全库存给出建议。</p></div>
           <div class="inline-actions"><button class="button secondary" id="openReplenishmentSettings" type="button">全局补货参数</button><button class="button secondary" id="refreshReplenishment" type="button">重新计算</button></div>
         </div>
         <div class="recommendation-note" id="replenishmentMethodNote">预测会显示数据信心度；样本不足时使用保守默认值，不会冒充精确结果。</div>
+        <div class="inline-actions replenishment-batch-toolbar"><span id="replenishmentSelectionCount">未选择 SKU</span><button class="button secondary" id="batchReplenishmentPolicy" type="button">批量调整参数</button><button class="button secondary" id="batchReplenishmentRecompute" type="button">重新计算所选</button><button class="button primary" id="batchReplenishmentPurchase" type="button">生成采购草稿</button></div>
         <section class="panel">
           <div class="table-wrap">
             <table>
-              <thead><tr><th>商品</th><th>日均出库</th><th>预测到货周期</th><th>可用 / 在途</th><th>可售天数</th><th>最迟下单</th><th>建议补货量</th><th>紧急度</th><th>操作</th></tr></thead>
+              <thead><tr><th><input id="replenishmentSelectAll" type="checkbox" aria-label="选择当前筛选结果中的全部 SKU" /></th><th>商品</th><th>日均出库</th><th>预测到货周期</th><th>可用 / 在途</th><th>可售天数</th><th>最迟下单</th><th>建议补货量</th><th>紧急度</th><th>操作</th></tr></thead>
               <tbody id="replenishmentRows"></tbody>
             </table>
             <div class="empty-state compact" id="replenishmentEmpty"><p>还没有可计算的本店 SKU。</p></div>
@@ -546,12 +547,34 @@
           <label>销售波动服务系数<input id="settingServiceLevel" type="number" min="0" step="0.01" required /></label>
           <label>建议安全余量比例<input id="settingSafetyMargin" type="number" min="0" max="1" step="0.01" required /><small>例如 0.20 表示在目标需求上增加 20%；销量波动更大时系统自动提高。</small></label>
           <label>使用初始参考库存的最少出库单数<input id="settingInitialShipments" type="number" min="0" step="1" required /></label>
+          <label>近 3 天销量权重<input id="settingWeight3" type="number" min="0" step="0.001" required /></label>
           <label>近 7 天销量权重<input id="settingWeight7" type="number" min="0" step="0.001" required /></label>
           <label>近 15 天销量权重<input id="settingWeight15" type="number" min="0" step="0.001" required /></label>
           <label>近 30 天销量权重<input id="settingWeight30" type="number" min="0" step="0.001" required /></label>
+          <label>补货分析模型<select id="settingAIProvider"><option value="">不调用大模型（仅使用规则）</option></select></label>
+          <label>AI 合并等待（分钟）<input id="settingAIDebounce" type="number" min="1" max="60" step="1" value="5" required /></label>
+          <label class="check-label"><input id="settingAIEnabled" type="checkbox" /> 库存变动后自动调用 AI 分析复杂情况</label>
         </div>
-        <p class="session-help">三个销量权重之和必须大于 0。系统会结合近期出库、波动、采购到货周期和在途库存计算补货点与建议数量。</p>
+        <p class="session-help">四个销量权重之和必须大于 0。规则会立即计算；同仓库连续变动会在设定时间后合并为一次 AI 分析。AI 只生成建议，绝不会修改库存或自动确认采购单。</p>
         <div class="modal-actions"><button class="button secondary" type="button" data-close="replenishmentSettingsModal">取消</button><button class="button primary" type="submit">保存并重新计算</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="replenishmentBatchPolicyModal" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="replenishmentBatchPolicyTitle">
+      <button class="modal-close" data-close="replenishmentBatchPolicyModal" aria-label="关闭">×</button>
+      <p class="eyebrow">批量补货规则</p><h2 id="replenishmentBatchPolicyTitle">调整已选 SKU 参数</h2><p class="modal-intro">勾选要覆盖的字段并填写数值；没有勾选的字段保持每个 SKU 原有设置不变。</p>
+      <form id="replenishmentBatchPolicyForm">
+        <div class="form-grid two">
+          <label class="check-label"><input data-batch-policy-enable="lead_time_override" type="checkbox" /> 覆盖手工到货周期</label><label><input id="batchPolicyLeadDays" type="number" min="1" step="1" placeholder="天数" /></label>
+          <label class="check-label"><input data-batch-policy-enable="review_cycle_days" type="checkbox" /> 覆盖复核周期</label><label><input id="batchPolicyReviewDays" type="number" min="1" step="1" value="7" /></label>
+          <label class="check-label"><input data-batch-policy-enable="target_days" type="checkbox" /> 覆盖目标覆盖天数</label><label><input id="batchPolicyTargetDays" type="number" min="1" step="1" value="30" /></label>
+          <label class="check-label"><input data-batch-policy-enable="min_order_qty" type="checkbox" /> 覆盖 MOQ</label><label><input id="batchPolicyMoq" type="number" min="1" step="1" value="1" /></label>
+          <label class="check-label"><input data-batch-policy-enable="pack_size" type="checkbox" /> 覆盖整包数量</label><label><input id="batchPolicyPackSize" type="number" min="1" step="1" value="1" /></label>
+          <label class="check-label"><input data-batch-policy-enable="safety_stock_override" type="checkbox" /> 覆盖安全库存参考</label><label><input id="batchPolicySafetyStock" type="number" min="0" step="1" value="0" /></label>
+        </div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="replenishmentBatchPolicyModal">取消</button><button class="button primary" type="submit">保存所选字段</button></div>
       </form>
     </section>
   </div>

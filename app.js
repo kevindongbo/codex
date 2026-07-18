@@ -107,6 +107,7 @@ let draftProductSkus = [];
 let draftPurchaseLines = [];
 let draftOrderLines = [];
 let draftTransferLines = [];
+let replenishmentSelectedSkuIds = new Set();
 let toastTimer = null;
 let teamBusy = false;
 let teamLastSyncedAt = '';
@@ -1899,7 +1900,7 @@ function localReplenishmentRecommendation(product) {
   const urgency = insufficientData ? 'insufficient' : (inventoryPosition <= reorderPoint || latestInDays <= 0 ? 'urgent' : (latestInDays <= 7 ? 'soon' : 'healthy'));
   const confidence = leadSamples.length >= 3 && state.inventoryMovements.filter(function (item) { return item.productId === product.id && item.warehouseId === warehouseId && item.type === 'outbound'; }).length >= 3 ? 'high' : (leadSamples.length || velocity > 0 ? 'medium' : 'low');
   return {
-    productId: product.id, velocity: velocity, velocity7: velocity7, velocity15: velocity15, velocity30: velocity30,
+    productId: product.id, velocity: velocity, velocity3: 0, velocity7: velocity7, velocity15: velocity15, velocity30: velocity30,
     leadDays: leadDays, leadMedian: leadMedian, leadP80: leadP80, leadSource: leadSource,
     available: available, inbound: inbound, inventoryPosition: inventoryPosition, reorderPoint: reorderPoint,
     daysCover: daysCover, stockoutDate: velocity > 0 && Number.isFinite(daysCover) ? dateAfterDays(daysCover) : '',
@@ -1917,7 +1918,7 @@ function normalizeTeamRecommendation(item) {
     productId: String(item.product_id || item.productId || item.product || ''),
     skuId: String(item.sku_id || item.skuId || item.sku || ''),
     velocity: asNumber(demand.daily_velocity == null ? item.weighted_daily_velocity : demand.daily_velocity),
-    velocity7: asNumber(demand.daily_7), velocity15: asNumber(demand.daily_15), velocity30: asNumber(demand.daily_30),
+    velocity3: asNumber(demand.daily_3), velocity7: asNumber(demand.daily_7), velocity15: asNumber(demand.daily_15), velocity30: asNumber(demand.daily_30),
     leadDays: asNumber(lead.selected_days == null ? item.lead_days : lead.selected_days, 14),
     leadSource: lead.source || item.lead_source || 'fallback', available: integer(inventory.available == null ? item.available : inventory.available),
     inbound: integer(inventory.in_transit == null ? item.in_transit : inventory.in_transit),
@@ -1940,10 +1941,20 @@ function recommendationProduct(recommendation) {
   return productById(recommendation.productId) || state.products.find(function (item) { return recommendation.skuId && String(item.skuId) === recommendation.skuId; });
 }
 function renderReplenishment() {
-  const recommendations = replenishmentRecommendations().filter(function (item) { return Boolean(recommendationProduct(item)); })
+  const recommendations = replenishmentRecommendations().filter(function (item) {
+    const product = recommendationProduct(item);
+    return Boolean(product) && searchMatches(product, item.skuId || '');
+  })
     .sort(function (a, b) { return ({ urgent: 0, red: 0, soon: 1, yellow: 1, healthy: 2, green: 2 }[a.urgency] || 3) - ({ urgent: 0, red: 0, soon: 1, yellow: 1, healthy: 2, green: 2 }[b.urgency] || 3); });
   const rows = $('#replenishmentRows');
   if (!rows) return;
+  const visibleSkuIds = recommendations.map(function (item) { return String(item.skuId); });
+  const selectAll = $('#replenishmentSelectAll');
+  if (selectAll) {
+    selectAll.checked = visibleSkuIds.length > 0 && visibleSkuIds.every(function (skuId) { return replenishmentSelectedSkuIds.has(skuId); });
+    selectAll.indeterminate = !selectAll.checked && visibleSkuIds.some(function (skuId) { return replenishmentSelectedSkuIds.has(skuId); });
+  }
+  setText('#replenishmentSelectionCount', replenishmentSelectedSkuIds.size ? ('已选 ' + replenishmentSelectedSkuIds.size + ' 个 SKU') : '未选择 SKU');
   rows.innerHTML = recommendations.map(function (item) {
     const product = recommendationProduct(item);
     const urgency = item.urgency === 'red' ? 'urgent' : (item.urgency === 'yellow' ? 'soon' : (item.urgency === 'green' ? 'healthy' : item.urgency));
@@ -1959,7 +1970,8 @@ function renderReplenishment() {
     if (teamCapabilityAllowed('replenishment')) actions += rowButton('edit-replenishment', product.id, '调整参数');
     if (teamCapabilityAllowed('replenishment') && hasPolicy) actions += rowButton('reset-replenishment', product.id, '恢复默认', 'danger');
     const basis = (item.reasons || []).map(function (reason) { return '<li>' + escapeHtml(reason) + '</li>'; }).join('');
-    return '<tr><td>' + productMedia(product) + '<small class="confidence-copy">信心度：' + confidence + '</small></td><td><strong>' + item.velocity.toFixed(2) + '</strong><br><small>7/15/30：' + item.velocity7.toFixed(2) + ' / ' + item.velocity15.toFixed(2) + ' / ' + item.velocity30.toFixed(2) + '</small></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong><br><small>补货点 ' + item.reorderPoint + '；安全余量 ' + Math.round(item.safetyMarginUnits || 0) + '</small>' + (basis ? '<details class="calculation-basis"><summary>计算依据</summary><ul>' + basis + '</ul></details>' : '') + '</td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
+    const selected = replenishmentSelectedSkuIds.has(String(item.skuId));
+    return '<tr><td><input type="checkbox" data-replenishment-select="' + escapeHtml(item.skuId) + '"' + (selected ? ' checked' : '') + ' aria-label="选择 ' + escapeHtml(product.sku || product.name) + '"></td><td>' + productMedia(product) + '<small class="confidence-copy">信心度：' + confidence + '</small></td><td><strong>' + item.velocity.toFixed(2) + '</strong><br><small>3/7/15/30：' + item.velocity3.toFixed(2) + ' / ' + item.velocity7.toFixed(2) + ' / ' + item.velocity15.toFixed(2) + ' / ' + item.velocity30.toFixed(2) + '</small></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong><br><small>补货点 ' + item.reorderPoint + '；安全余量 ' + Math.round(item.safetyMarginUnits || 0) + '</small>' + (basis ? '<details class="calculation-basis"><summary>计算依据</summary><ul>' + basis + '</ul></details>' : '') + '</td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
   }).join('');
   toggleEmpty('#replenishmentEmpty', recommendations.length === 0);
   const needCount = recommendations.filter(function (item) { return ['urgent', 'soon', 'red', 'yellow'].includes(item.urgency); }).length;
@@ -2918,7 +2930,8 @@ async function openReplenishmentSettings() {
     const settings = await teamGateway.getReplenishmentSettings() || {
       safety_days: 7, default_lead_time_days: 14, review_cycle_days: 7, target_days: 30,
       service_level_factor: 1.65, safety_margin_ratio: 0.2, initial_reference_shipment_count: 3,
-      velocity_weight_7: 0.5, velocity_weight_15: 0.3, velocity_weight_30: 0.2
+      velocity_weight_3: 0.4, velocity_weight_7: 0.3, velocity_weight_15: 0.2, velocity_weight_30: 0.1,
+      ai_provider: null, ai_enabled: false, ai_debounce_minutes: 5
     };
     $('#settingSafetyDays').value = settings.safety_days;
     $('#settingLeadDays').value = settings.default_lead_time_days;
@@ -2927,9 +2940,18 @@ async function openReplenishmentSettings() {
     $('#settingServiceLevel').value = settings.service_level_factor;
     $('#settingSafetyMargin').value = settings.safety_margin_ratio;
     $('#settingInitialShipments').value = settings.initial_reference_shipment_count;
+    $('#settingWeight3').value = settings.velocity_weight_3;
     $('#settingWeight7').value = settings.velocity_weight_7;
     $('#settingWeight15').value = settings.velocity_weight_15;
     $('#settingWeight30').value = settings.velocity_weight_30;
+    if (!aiProviderConfigs.length) aiProviderConfigs = await teamGateway.listAIProviders();
+    const providerSelect = $('#settingAIProvider');
+    providerSelect.innerHTML = '<option value="">不调用大模型（仅使用规则）</option>' + aiProviderConfigs
+      .filter(function (provider) { return provider.enabled && provider.has_api_key; })
+      .map(function (provider) { return '<option value="' + escapeHtml(provider.id) + '">' + escapeHtml(provider.name + ' · ' + provider.model) + '</option>'; }).join('');
+    providerSelect.value = settings.ai_provider || '';
+    $('#settingAIEnabled').checked = Boolean(settings.ai_enabled);
+    $('#settingAIDebounce').value = settings.ai_debounce_minutes || 5;
     openModal('replenishmentSettingsModal');
   } catch (error) { handleTeamError(error); }
 }
@@ -2944,14 +2966,98 @@ async function handleReplenishmentSettingsSubmit(event) {
     service_level_factor: Number($('#settingServiceLevel').value),
     safety_margin_ratio: Number($('#settingSafetyMargin').value),
     initial_reference_shipment_count: integer($('#settingInitialShipments').value),
+    velocity_weight_3: Number($('#settingWeight3').value),
     velocity_weight_7: Number($('#settingWeight7').value),
     velocity_weight_15: Number($('#settingWeight15').value),
-    velocity_weight_30: Number($('#settingWeight30').value)
+    velocity_weight_30: Number($('#settingWeight30').value),
+    ai_provider: $('#settingAIProvider').value || null,
+    ai_enabled: $('#settingAIEnabled').checked,
+    ai_debounce_minutes: integer($('#settingAIDebounce').value)
   };
   try {
     await executeTeamCommand(function () { return teamGateway.saveReplenishmentSettings(payload); }, '全局补货参数已保存并重新计算。', 'replenishment');
     closeModal('replenishmentSettingsModal');
   } catch (error) { handleTeamError(error); }
+}
+
+function selectedReplenishmentItems() {
+  return replenishmentRecommendations().filter(function (item) {
+    return replenishmentSelectedSkuIds.has(String(item.skuId));
+  });
+}
+
+function visibleReplenishmentSkuIds() {
+  return $$('#replenishmentRows [data-replenishment-select]').map(function (input) {
+    return String(input.dataset.replenishmentSelect);
+  });
+}
+
+async function openBatchReplenishmentPolicy() {
+  if (!replenishmentSelectedSkuIds.size) return showToast('请先勾选至少一个 SKU。');
+  if (!TEAM_MODE || !teamGateway) return showToast('批量补货参数仅在团队在线模式下可配置。');
+  try {
+    const settings = await teamGateway.getReplenishmentSettings();
+    if (settings) {
+      $('#batchPolicyReviewDays').value = settings.review_cycle_days;
+      $('#batchPolicyTargetDays').value = settings.target_days;
+    }
+    $('#replenishmentBatchPolicyTitle').textContent = '调整已选 ' + replenishmentSelectedSkuIds.size + ' 个 SKU 参数';
+    openModal('replenishmentBatchPolicyModal');
+  } catch (error) { handleTeamError(error); }
+}
+
+async function handleBatchReplenishmentPolicySubmit(event) {
+  event.preventDefault();
+  const fieldInputs = {
+    lead_time_override: '#batchPolicyLeadDays',
+    review_cycle_days: '#batchPolicyReviewDays',
+    target_days: '#batchPolicyTargetDays',
+    min_order_qty: '#batchPolicyMoq',
+    pack_size: '#batchPolicyPackSize',
+    safety_stock_override: '#batchPolicySafetyStock'
+  };
+  const fields = {};
+  $$('[data-batch-policy-enable]').forEach(function (checkbox) {
+    if (!checkbox.checked) return;
+    const key = checkbox.dataset.batchPolicyEnable;
+    const input = $(fieldInputs[key]);
+    fields[key] = input ? input.value : '';
+  });
+  if (!Object.keys(fields).length) return showToast('请勾选至少一个需要覆盖的参数。');
+  const skuIds = Array.from(replenishmentSelectedSkuIds);
+  if (TEAM_MODE) {
+    const saved = await executeTeamCommand(function () {
+      return teamGateway.batchSaveReplenishmentPolicy(skuIds, fields);
+    }, '已保存所选 SKU 参数，并将在规则计算后合并进行 AI 分析。', 'replenishment');
+    if (saved) closeModal('replenishmentBatchPolicyModal');
+    return;
+  }
+  showToast('本地演示模式不保存批量补货参数。');
+}
+
+async function recomputeSelectedReplenishment() {
+  const skuIds = Array.from(replenishmentSelectedSkuIds);
+  if (!skuIds.length) return showToast('请先勾选需要重新计算的 SKU。');
+  if (TEAM_MODE) {
+    await executeTeamCommand(function () { return teamGateway.recomputeReplenishment(skuIds); }, '规则已按最新库存流水重新计算；复杂项目会在合并等待后自动请求 AI 分析。', 'replenishment');
+    return;
+  }
+  renderReplenishment();
+  showToast('已按当前数据重新计算所选 SKU。');
+}
+
+function openBatchPurchaseDraft() {
+  const rows = selectedReplenishmentItems().filter(function (item) { return integer(item.suggestedQty) > 0; });
+  if (!rows.length) return showToast('所选 SKU 当前没有需要采购的建议量。');
+  openPurchaseEditor();
+  draftPurchaseLines = rows.map(function (item) {
+    const product = recommendationProduct(item);
+    return { productId: product.id, quantity: integer(item.suggestedQty), unitCost: nonNegative(product.standardCost) };
+  });
+  $('#purchaseStatus').value = 'draft';
+  $('#purchaseSupplier').value = '';
+  renderPurchaseDraft();
+  showToast('已生成 ' + rows.length + ' 条采购草稿明细；请核对单价、数量和供应商后再人工确认。');
 }
 async function handleReplenishmentPolicySubmit(event) {
   event.preventDefault();
@@ -4145,9 +4251,25 @@ function bindEvents() {
   $('#transferForm').addEventListener('submit', handleTransferSubmit);
   $('#replenishmentPolicyForm').addEventListener('submit', handleReplenishmentPolicySubmit);
   $('#replenishmentSettingsForm').addEventListener('submit', handleReplenishmentSettingsSubmit);
+  $('#replenishmentBatchPolicyForm').addEventListener('submit', handleBatchReplenishmentPolicySubmit);
   $('#openReplenishmentSettings').addEventListener('click', openReplenishmentSettings);
+  $('#replenishmentRows').addEventListener('change', function (event) {
+    const input = event.target.closest('[data-replenishment-select]');
+    if (!input) return;
+    const skuId = String(input.dataset.replenishmentSelect);
+    if (input.checked) replenishmentSelectedSkuIds.add(skuId); else replenishmentSelectedSkuIds.delete(skuId);
+    renderReplenishment();
+  });
+  $('#replenishmentSelectAll').addEventListener('change', function () {
+    const visibleSkuIds = visibleReplenishmentSkuIds();
+    visibleSkuIds.forEach((skuId) => { if (this.checked) replenishmentSelectedSkuIds.add(skuId); else replenishmentSelectedSkuIds.delete(skuId); });
+    renderReplenishment();
+  });
+  $('#batchReplenishmentPolicy').addEventListener('click', openBatchReplenishmentPolicy);
+  $('#batchReplenishmentRecompute').addEventListener('click', recomputeSelectedReplenishment);
+  $('#batchReplenishmentPurchase').addEventListener('click', openBatchPurchaseDraft);
   $('#refreshReplenishment').addEventListener('click', function () {
-    if (TEAM_MODE) return refreshTeamState('补货建议已按最新库存和出库数据重新计算。');
+    if (TEAM_MODE) return executeTeamCommand(function () { return teamGateway.recomputeReplenishment([]); }, '补货建议已按最新库存流水重新计算；复杂项目会自动进入 AI 分析队列。', 'replenishment');
     renderReplenishment();
     showToast('补货建议已重新计算。');
   });

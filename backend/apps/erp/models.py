@@ -382,9 +382,16 @@ class ReplenishmentSettings(OrganizationScopedModel):
     safety_margin_ratio = models.DecimalField(
         "建议补货安全余量比例", max_digits=5, decimal_places=3, default=Decimal("0.200")
     )
-    velocity_weight_7 = models.DecimalField("近 7 天权重", max_digits=5, decimal_places=3, default=Decimal("0.500"))
-    velocity_weight_15 = models.DecimalField("近 15 天权重", max_digits=5, decimal_places=3, default=Decimal("0.300"))
-    velocity_weight_30 = models.DecimalField("近 30 天权重", max_digits=5, decimal_places=3, default=Decimal("0.200"))
+    velocity_weight_3 = models.DecimalField("近 3 天权重", max_digits=5, decimal_places=3, default=Decimal("0.400"))
+    velocity_weight_7 = models.DecimalField("近 7 天权重", max_digits=5, decimal_places=3, default=Decimal("0.300"))
+    velocity_weight_15 = models.DecimalField("近 15 天权重", max_digits=5, decimal_places=3, default=Decimal("0.200"))
+    velocity_weight_30 = models.DecimalField("近 30 天权重", max_digits=5, decimal_places=3, default=Decimal("0.100"))
+    ai_provider = models.ForeignKey(
+        "AIProviderConfig", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="replenishment_settings", verbose_name="补货分析模型"
+    )
+    ai_enabled = models.BooleanField("自动 AI 分析", default=False)
+    ai_debounce_minutes = models.PositiveSmallIntegerField("AI 合并分析等待分钟", default=5)
 
     class Meta:
         verbose_name = "智能补货全局参数"
@@ -400,6 +407,33 @@ class ReplenishmentSettings(OrganizationScopedModel):
                 condition=Q(safety_margin_ratio__gte=0) & Q(safety_margin_ratio__lte=1),
                 name="replenishment_settings_margin_between_zero_and_one",
             ),
+            models.CheckConstraint(
+                condition=Q(ai_debounce_minutes__gte=1) & Q(ai_debounce_minutes__lte=60),
+                name="replenishment_settings_ai_debounce_range",
+            ),
+        ]
+
+
+class ReplenishmentAIJob(OrganizationScopedModel):
+    """One debounced, warehouse-scoped background AI analysis request."""
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "等待执行"
+        RUNNING = "running", "执行中"
+        COMPLETED = "completed", "已完成"
+        FAILED = "failed", "失败"
+
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.CASCADE, related_name="replenishment_ai_jobs")
+    sku_ids = models.JSONField(default=list, blank=True)
+    reasons = models.JSONField(default=list, blank=True)
+    due_at = models.DateTimeField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=500, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "warehouse"], name="uniq_replenishment_ai_job_warehouse"),
         ]
 
 

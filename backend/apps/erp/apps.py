@@ -8,5 +8,6 @@ class ErpConfig(AppConfig):
 
     def ready(self):
         from .sync import register_sync_signals
+        from . import signals  # noqa: F401 - registers replenishment scheduling signals
 
         register_sync_signals()

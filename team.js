@@ -1032,6 +1032,14 @@
       return this.listAll('/replenishment/recommendations/?warehouse=' + encodeURIComponent(this.warehouseId));
     }
 
+    async recomputeReplenishment(skuIds) {
+      return this.request('/replenishment/recompute/', { method: 'POST', body: { warehouse: this.warehouseId, sku_ids: skuIds || [] } });
+    }
+
+    async batchSaveReplenishmentPolicy(skuIds, fields) {
+      return this.request('/replenishment/batch-policy/', { method: 'POST', body: { warehouse: this.warehouseId, sku_ids: skuIds, fields: fields } });
+    }
+
     async getReplenishmentSettings() {
       const settings = await this.listAll('/replenishment-settings/');
       return settings[0] || null;

@@ -625,6 +625,12 @@ class StockLedgerReversalInputSerializer(serializers.Serializer):
 
 
 class ReplenishmentSettingsSerializer(ScopedSerializer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        organization = _context_organization(self)
+        if organization is not None:
+            self.fields["ai_provider"].queryset = AIProviderConfig.objects.filter(organization=organization)
+
     class Meta(ScopedSerializer.Meta):
         model = ReplenishmentSettings
         fields = "__all__"
@@ -632,17 +638,22 @@ class ReplenishmentSettingsSerializer(ScopedSerializer):
 
     def validate(self, attrs):
         weights = [
+            attrs.get("velocity_weight_3", getattr(self.instance, "velocity_weight_3", Decimal("0.400"))),
             attrs.get("velocity_weight_7", getattr(self.instance, "velocity_weight_7", Decimal("0"))),
             attrs.get("velocity_weight_15", getattr(self.instance, "velocity_weight_15", Decimal("0"))),
             attrs.get("velocity_weight_30", getattr(self.instance, "velocity_weight_30", Decimal("0"))),
         ]
         if sum(weights) <= 0:
-            raise serializers.ValidationError("近 7/15/30 天销量权重之和必须大于 0")
+            raise serializers.ValidationError("近 3/7/15/30 天销量权重之和必须大于 0")
         safety_margin_ratio = attrs.get(
             "safety_margin_ratio", getattr(self.instance, "safety_margin_ratio", Decimal("0.200"))
         )
         if safety_margin_ratio < 0 or safety_margin_ratio > 1:
             raise serializers.ValidationError({"safety_margin_ratio": "建议安全余量比例必须在 0 到 1 之间"})
+        provider = attrs.get("ai_provider", getattr(self.instance, "ai_provider", None))
+        enabled = attrs.get("ai_enabled", getattr(self.instance, "ai_enabled", False))
+        if enabled and (provider is None or not provider.enabled or not provider.api_key_encrypted):
+            raise serializers.ValidationError({"ai_provider": "启用自动 AI 分析前，请选择一个已启用且已保存密钥的模型。"})
         return attrs
 
 

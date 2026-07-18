@@ -1617,7 +1617,7 @@ class ApiTests(TestCase):
         self.assertEqual(settings_record.safety_margin_ratio, Decimal("0.250"))
         invalid = self.client.post(
             "/api/replenishment-settings/",
-            {"velocity_weight_7": 0, "velocity_weight_15": 0, "velocity_weight_30": 0},
+            {"velocity_weight_3": 0, "velocity_weight_7": 0, "velocity_weight_15": 0, "velocity_weight_30": 0},
             format="json", **headers,
         )
         self.assertEqual(invalid.status_code, 400)
@@ -1626,6 +1626,38 @@ class ApiTests(TestCase):
             {"safety_margin_ratio": "1.1"}, format="json", **headers,
         )
         self.assertEqual(invalid_margin.status_code, 400)
+
+    def test_replenishment_batch_policy_only_overwrites_selected_fields(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(organization=self.organization, code="BATCH-REC", name="批量补货仓")
+        first = Product.objects.create(organization=self.organization, name="批量补货 A", status=Product.Status.ACTIVE)
+        second = Product.objects.create(organization=self.organization, name="批量补货 B", status=Product.Status.ACTIVE)
+        first_sku = SKU.objects.create(organization=self.organization, product=first, code="BATCH-REC-A", cost="8")
+        second_sku = SKU.objects.create(organization=self.organization, product=second, code="BATCH-REC-B", cost="9")
+        saved = self.client.post(
+            "/api/replenishment/batch-policy/",
+            {
+                "warehouse": str(warehouse.pk),
+                "sku_ids": [str(first_sku.pk), str(second_sku.pk)],
+                "fields": {"review_cycle_days": 9, "pack_size": "6"},
+            },
+            format="json", **headers,
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(saved.data["updated"], 2)
+        policies = ReplenishmentPolicy.objects.filter(organization=self.organization, warehouse=warehouse).order_by("sku__code")
+        self.assertEqual([item.review_cycle_days for item in policies], [9, 9])
+        self.assertEqual([item.pack_size for item in policies], [Decimal("6.000"), Decimal("6.000")])
+        self.assertEqual([item.target_days for item in policies], [30, 30])
+
+        recompute = self.client.post(
+            "/api/replenishment/recompute/",
+            {"warehouse": str(warehouse.pk), "sku_ids": [str(first_sku.pk)]},
+            format="json", **headers,
+        )
+        self.assertEqual(recompute.status_code, 200, recompute.data)
+        self.assertEqual(recompute.data["queued_skus"], 1)
 
     def test_tiktok_signature_uses_current_us_host_and_seller_shop_rows(self):
         params = {"app_key": "app-key", "timestamp": "1720000000"}
