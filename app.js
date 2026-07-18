@@ -101,6 +101,7 @@ let pendingProductImage = '';
 let tiktokConnections = [];
 let aiProviderConfigs = [];
 let aiInvocationLogs = [];
+let aiRecommendations = [];
 let alphashopConfig = null;
 let draftProductSkus = [];
 let draftPurchaseLines = [];
@@ -1070,6 +1071,32 @@ function renderIntegrationManager() {
   $('#aiUsageSummary').textContent = aiInvocationLogs.length
     ? '调用记录 ' + aiInvocationLogs.length + ' 条，其中成功 ' + successful.length + ' 条；输入 Tokens ' + inputTokens + '，输出 Tokens ' + outputTokens + '。'
     : '尚无大模型调用记录。保存并测试后会在这里汇总用量。';
+  const selectedProvider = $('#aiRecommendationProvider').value;
+  const enabledProviders = aiProviderConfigs.filter(function (provider) { return provider.enabled && provider.has_api_key; });
+  $('#aiRecommendationProvider').innerHTML = enabledProviders.length
+    ? enabledProviders.map(function (provider) { return '<option value="' + escapeHtml(provider.id) + '">' + escapeHtml(provider.name + ' · ' + provider.model_name) + '</option>'; }).join('')
+    : '<option value="">请先保存并测试一个已启用的大模型</option>';
+  if (enabledProviders.some(function (provider) { return String(provider.id) === String(selectedProvider); })) {
+    $('#aiRecommendationProvider').value = selectedProvider;
+  }
+  $('#aiRecommendationRows').innerHTML = aiRecommendations.length ? aiRecommendations.map(function (item) {
+    const provider = aiProviderConfigs.find(function (candidate) { return String(candidate.id) === String(item.provider); });
+    const labels = { inventory_forecast: '库存预测', replenishment: '补货建议', product_analysis: '商品分析', copywriting: '文案生成' };
+    const statuses = { proposed: '待确认', confirmed: '已确认', rejected: '已拒绝' };
+    const action = item.status === 'proposed'
+      ? '<div class="inline-actions"><button class="button tiny primary" type="button" data-ai-recommendation-action="confirm" data-ai-recommendation-id="' + escapeHtml(item.id) + '">确认方案</button><button class="button tiny danger-outline" type="button" data-ai-recommendation-action="reject" data-ai-recommendation-id="' + escapeHtml(item.id) + '">拒绝</button></div>'
+      : '';
+    const proposal = escapeHtml(JSON.stringify(item.proposal || {}, null, 2));
+    return '<div class="account-row ai-recommendation-row"><div><strong>' + escapeHtml(labels[item.kind] || item.kind) + ' · ' + escapeHtml(statuses[item.status] || item.status) + '</strong><small>' + escapeHtml((provider && provider.name) || '已删除模型') + ' · ' + formatDate(item.created_at, true) + '</small><details><summary>查看建议内容</summary><pre class="ai-proposal">' + proposal + '</pre></details></div>' + action + '</div>';
+  }).join('') : '<p class="session-help">尚无 AI 建议。提交输入数据后，系统只会生成待确认方案。</p>';
+  $('#aiInvocationRows').innerHTML = aiInvocationLogs.length ? aiInvocationLogs.slice(0, 20).map(function (item) {
+    const provider = aiProviderConfigs.find(function (candidate) { return String(candidate.id) === String(item.provider); });
+    const tokens = item.status === 'success'
+      ? '输入 ' + Number(item.input_tokens || 0) + ' / 输出 ' + Number(item.output_tokens || 0) + ' Tokens'
+      : (item.error_code || '调用失败');
+    const detail = item.status === 'success' ? tokens : (tokens + (item.error_message ? ' · ' + item.error_message : ''));
+    return '<div class="account-row"><div><strong>' + escapeHtml(item.feature || 'AI 调用') + ' · ' + escapeHtml(item.status === 'success' ? '成功' : '失败') + '</strong><small class="ai-log-meta">' + escapeHtml((provider && provider.name) || item.model_name || '已删除模型') + ' · ' + escapeHtml(formatDate(item.created_at, true)) + ' · 尝试 ' + Number(item.attempts || 0) + ' 次 · ' + Number(item.latency_ms || 0) + ' ms · ' + escapeHtml(detail) + '</small></div></div>';
+  }).join('') : '<p class="session-help">尚无调用日志。</p>';
 }
 
 function resetAIProviderForm() {
@@ -1102,11 +1129,12 @@ function editAIProviderConfig(id) {
 
 async function openIntegrationManager() {
   if (!teamGateway || !teamGateway.user || !teamGateway.user.is_owner) return;
-  const results = await Promise.all([teamGateway.listTikTokConnections(), teamGateway.listAIProviders(), teamGateway.getAlphaShopConfig(), teamGateway.listAIInvocations()]);
+  const results = await Promise.all([teamGateway.listTikTokConnections(), teamGateway.listAIProviders(), teamGateway.getAlphaShopConfig(), teamGateway.listAIInvocations(), teamGateway.listAIRecommendations()]);
   tiktokConnections = results[0] || [];
   aiProviderConfigs = results[1] || [];
   alphashopConfig = results[2] || null;
   aiInvocationLogs = results[3] || [];
+  aiRecommendations = results[4] || [];
   $('#accountManagerPanel').hidden = true;
   $('#ownerPasswordPanel').hidden = true;
   $('#integrationsPanel').hidden = false;
@@ -3854,6 +3882,43 @@ function bindEvents() {
       showToast('大模型连接测试成功。');
     } catch (error) { handleTeamError(error); }
   });
+  $('#aiRecommendationForm').addEventListener('submit', async function (event) {
+    event.preventDefault();
+    try {
+      const provider = $('#aiRecommendationProvider').value;
+      if (!provider) return showToast('请先保存并测试一个已启用的大模型。');
+      let inputData = {};
+      try { inputData = JSON.parse($('#aiRecommendationInput').value || '{}'); }
+      catch (_) { return showToast('AI 建议输入必须是合法的 JSON 对象。'); }
+      if (!inputData || Array.isArray(inputData) || typeof inputData !== 'object') {
+        return showToast('AI 建议输入必须是 JSON 对象。');
+      }
+      await teamGateway.createAIRecommendation({
+        provider: provider,
+        kind: $('#aiRecommendationKind').value,
+        input_data: inputData
+      });
+      await openIntegrationManager();
+      showToast('AI 建议已生成，等待你确认；系统没有自动修改库存。');
+    } catch (error) { handleTeamError(error); }
+  });
+  $('#aiRecommendationRows').addEventListener('click', function (event) {
+    const button = event.target.closest('[data-ai-recommendation-action]');
+    if (!button) return;
+    const id = button.dataset.aiRecommendationId;
+    const confirm = button.dataset.aiRecommendationAction === 'confirm';
+    askConfirm(
+      confirm
+        ? '确认采纳这条 AI 建议？本操作只记录确认决定，不会自动修改库存。'
+        : '确认拒绝这条 AI 建议？原建议和调用记录会保留。',
+      async function () {
+        if (confirm) await teamGateway.confirmAIRecommendation(id, '用户在 AI 建议工作台确认');
+        else await teamGateway.rejectAIRecommendation(id, '用户在 AI 建议工作台拒绝');
+        await openIntegrationManager();
+        showToast(confirm ? 'AI 建议已确认，库存未被自动修改。' : 'AI 建议已拒绝，原记录已保留。');
+      }
+    );
+  });
   $('#cancelInternalAccount').addEventListener('click', function () {
     resetInternalAccountForm();
   });
@@ -4059,7 +4124,7 @@ function bindEvents() {
   $('#acceptConfirm').addEventListener('click', function () {
     const callback = pendingConfirm;
     closeConfirm();
-    if (callback) callback();
+    if (callback) Promise.resolve(callback()).catch(handleTeamError);
   });
   $('#clearAllData').addEventListener('click', function () {
     if (TEAM_MODE) return showToast('团队模式不提供清空全部业务数据。');

@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timedelta, timezone as datetime_timezone
@@ -37,14 +38,28 @@ def _read_json(request: Request, *, timeout: int) -> dict:
         with urlopen(request, timeout=timeout) as response:  # nosec B310 - configured HTTPS integration endpoint
             payload = response.read().decode("utf-8")
     except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:500]
-        raise ValidationError(f"第三方服务返回 HTTP {exc.code}：{body}") from exc
+        # Provider error bodies may echo request metadata or credentials.  The
+        # code is sufficient for an operator to diagnose the failure, while the
+        # raw body must never be copied into our API response or invocation log.
+        raise ValidationError(f"第三方服务返回 HTTP {exc.code}") from exc
     except URLError as exc:
         raise ValidationError(f"无法连接第三方服务：{exc.reason}") from exc
     try:
         return json.loads(payload)
     except json.JSONDecodeError as exc:
         raise ValidationError("第三方服务返回了无法识别的 JSON") from exc
+
+
+def _redact_provider_error(value: object, api_key: str) -> str:
+    """Keep provider diagnostics useful without persisting credentials."""
+    message = str(value or "")
+    if api_key:
+        message = message.replace(api_key, "[REDACTED]")
+    return re.sub(
+        r"(?i)(authorization\s*[:=]?\s*bearer\s+)[^\s,;\"']+",
+        r"\1[REDACTED]",
+        message,
+    )
 
 
 def _tiktok_settings() -> tuple[str, str, str, str]:
@@ -268,7 +283,7 @@ def invoke_ai(*, provider, feature: str, messages: list[dict], actor=None, respo
             )
             return result, log
         except ValidationError as exc:
-            last_error = "; ".join(exc.messages)
+            last_error = _redact_provider_error("; ".join(exc.messages), api_key)
             if attempt > provider.max_retries:
                 break
             time.sleep(min(2 ** (attempt - 1), 4))

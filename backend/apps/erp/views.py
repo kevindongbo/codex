@@ -1364,6 +1364,26 @@ class AIRecommendationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, 
         )
         return Response(self.get_serializer(recommendation).data)
 
+    @action(detail=True, methods=["post"], url_path="reject")
+    @transaction.atomic
+    def reject(self, request, pk=None):
+        data = AIRecommendationConfirmationSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        recommendation = AIRecommendation.objects.select_for_update().get(pk=self.get_object().pk)
+        if recommendation.status != AIRecommendation.Status.PROPOSED:
+            raise ValidationError("该 AI 建议已处理，不能重复拒绝")
+        recommendation.status = AIRecommendation.Status.REJECTED
+        recommendation.rejection_reason = data.validated_data["reason"]
+        recommendation.save(update_fields=["status", "rejection_reason", "updated_at"])
+        write_audit(
+            organization=recommendation.organization,
+            actor=request.user,
+            action="ai.recommendation.reject",
+            instance=recommendation,
+            after={"kind": recommendation.kind, "reason": recommendation.rejection_reason, "inventory_posted": False},
+        )
+        return Response(self.get_serializer(recommendation).data)
+
 
 class AuditLogViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     queryset = AuditLog.objects.select_related("actor")

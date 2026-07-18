@@ -17,7 +17,8 @@ from rest_framework.test import APIClient
 from apps.erp.apps import ErpConfig
 from apps.erp import alphashop, integrations
 from apps.erp.models import (
-    AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
+    AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct,
+    CompetitorSnapshot, LocalImport, Membership, Organization,
     Product, ProductImage, PurchaseOrder, ReplenishmentPolicy, ReplenishmentSettings, ReturnOrder, SalesOrder,
     SalesOrderLine, Shipment, SKU, StockBalance, StockLedger, StockTransfer, TikTokShopConnection,
     TikTokShopOAuthState,
@@ -282,6 +283,71 @@ class ApiTests(TestCase):
         )
         self.assertEqual(unsafe.status_code, 400, unsafe.data)
         self.assertIn("default_parameters", unsafe.data)
+
+    def test_ai_recommendation_decisions_are_audited_and_never_post_inventory(self):
+        owner = get_user_model().objects.create_superuser(
+            username="owner-ai-workbench", password="test-pass-123", email="owner@example.com"
+        )
+        self.client.force_authenticate(owner)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        provider = AIProviderConfig.objects.create(
+            organization=self.organization,
+            name="workbench-provider",
+            api_base_url="https://llm.example.com/v1",
+            model_name="example-model",
+            api_key_encrypted="encrypted-not-used-by-decision",
+        )
+        proposed = AIRecommendation.objects.create(
+            organization=self.organization,
+            provider=provider,
+            kind=AIRecommendation.Kind.REPLENISHMENT,
+            input_data={"sku": "demo"},
+            proposal={"suggested_order_quantity": 12},
+        )
+        before_ledger_count = StockLedger.objects.filter(organization=self.organization).count()
+        confirmed = self.client.post(
+            f"/api/ai-recommendations/{proposed.pk}/confirm/",
+            {"reason": "reviewed"}, format="json", **headers,
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        proposed.refresh_from_db()
+        self.assertEqual(proposed.status, AIRecommendation.Status.CONFIRMED)
+        self.assertEqual(StockLedger.objects.filter(organization=self.organization).count(), before_ledger_count)
+        self.assertTrue(AuditLog.objects.filter(
+            organization=self.organization, action="ai.recommendation.confirm", object_id=str(proposed.pk)
+        ).exists())
+        repeated = self.client.post(
+            f"/api/ai-recommendations/{proposed.pk}/confirm/", format="json", **headers,
+        )
+        self.assertEqual(repeated.status_code, 400, repeated.data)
+
+        rejected = AIRecommendation.objects.create(
+            organization=self.organization,
+            provider=provider,
+            kind=AIRecommendation.Kind.COPYWRITING,
+            input_data={"title": "demo"},
+            proposal={"copy": "demo copy"},
+        )
+        response = self.client.post(
+            f"/api/ai-recommendations/{rejected.pk}/reject/",
+            {"reason": "not suitable"}, format="json", **headers,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        rejected.refresh_from_db()
+        self.assertEqual(rejected.status, AIRecommendation.Status.REJECTED)
+        self.assertEqual(rejected.rejection_reason, "not suitable")
+        self.assertTrue(AuditLog.objects.filter(
+            organization=self.organization, action="ai.recommendation.reject", object_id=str(rejected.pk)
+        ).exists())
+
+    def test_ai_error_redaction_removes_provider_credentials(self):
+        message = integrations._redact_provider_error(
+            "provider returned Authorization: Bearer visible-token and key=exact-key",
+            "exact-key",
+        )
+        self.assertNotIn("visible-token", message)
+        self.assertNotIn("exact-key", message)
+        self.assertIn("[REDACTED]", message)
 
     def test_viewer_cannot_modify_or_delete_organization(self):
         viewer = get_user_model().objects.create_user(username="viewer", password="test-pass-123")

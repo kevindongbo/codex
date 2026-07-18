@@ -361,6 +361,12 @@ form input:focus, form select:focus { border-color: rgba(15,139,141,.7); box-sha
 .receive-line-list .line-list-item { grid-template-columns: minmax(180px, 1fr) 96px 84px; }
 .receive-line-list input { margin: 0; min-width: 0; }
 .last-value { margin-top: 14px; padding: 11px 12px; border: 1px solid #d7e8e6; border-radius: 9px; color: #4e6f72; background: #eef8f7; font-size: 10px; line-height: 1.7; }
+.ai-operation-panel { margin-top: 18px; padding: 15px; border: 1px solid #dbe6ee; border-radius: 11px; background: #fbfdff; }
+.ai-operation-panel .form-section-title { margin: 0 0 12px; }
+.ai-operation-panel .form-section-title span { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.ai-recommendation-list, .ai-invocation-list { max-height: 280px; overflow-y: auto; }
+.ai-log-meta { margin-top: 4px; color: #718196; font-size: 9px; line-height: 1.55; }
+.ai-proposal { max-width: 100%; margin: 9px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #4c6071; font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .modal-actions { margin-top: 23px; display: flex; justify-content: flex-end; gap: 8px; }
 .session-modal { width: min(590px, 100%); }
 .mode-card { margin-bottom: 17px; padding: 14px; border: 1px solid #dbe4ed; border-radius: 11px; background: #f8fafc; display: flex; align-items: flex-start; gap: 11px; }

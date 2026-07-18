@@ -20,7 +20,7 @@
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260718-ai-controls-1" />
+  <link rel="stylesheet" href="styles.css?v=20260718-ai-workbench-1" />
 </head>
 <body>
   <header class="app-header">
@@ -749,6 +749,18 @@
         </form>
         <div class="account-list" id="aiProviderRows"></div>
         <div class="last-value" id="aiUsageSummary">尚无大模型调用记录。</div>
+        <div class="ai-operation-panel">
+          <div class="form-section-title"><strong>AI 建议工作台</strong><span>库存预测、补货建议、商品分析和文案生成都会先生成待确认方案；确认只记录决策，不会自动改库存。</span></div>
+          <form id="aiRecommendationForm">
+            <div class="form-grid two"><label>使用模型 <span>*</span><select id="aiRecommendationProvider" required></select></label><label>建议类型 <span>*</span><select id="aiRecommendationKind"><option value="inventory_forecast">库存预测</option><option value="replenishment">补货建议</option><option value="product_analysis">商品分析</option><option value="copywriting">文案生成</option></select></label><label class="full">输入数据（JSON）<textarea id="aiRecommendationInput" rows="5" required placeholder='例如：{"sku":"SKU-001","available_stock":12,"recent_daily_sales":[2,4,3],"lead_time_days":14}'>{}</textarea></label></div>
+            <div class="modal-actions"><button class="button primary" type="submit">生成待确认建议</button></div>
+          </form>
+          <div class="account-list ai-recommendation-list" id="aiRecommendationRows"></div>
+        </div>
+        <div class="ai-operation-panel">
+          <div class="form-section-title"><strong>调用日志</strong><span>只保留调用状态、耗时、重试次数和用量；不会显示 API Key 或请求密钥。</span></div>
+          <div class="account-list ai-invocation-list" id="aiInvocationRows"></div>
+        </div>
       </section>
 
       <section id="ownerPasswordPanel" hidden>
@@ -766,7 +778,7 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js"></script>
-  <script src="team.js?v=20260718-ai-controls-1"></script>
-  <script src="app.js?v=20260718-ai-controls-1"></script>
+  <script src="team.js?v=20260718-ai-workbench-1"></script>
+  <script src="app.js?v=20260718-ai-workbench-1"></script>
 </body>
 </html>

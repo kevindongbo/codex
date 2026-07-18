@@ -358,6 +358,30 @@ test('AI provider settings support edit, request parameters, and usage log queri
   assert.equal(calls[1].url, '/api/ai-invocations/');
 });
 
+test('AI workbench creates proposals and records confirm or reject decisions separately', async () => {
+  const calls = [];
+  const Team = await loadTeam(async (url, options) => {
+    calls.push({ url, options });
+    return response(200, { id: 'recommendation-1' });
+  });
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.accessToken = 'token';
+  gateway.organizationId = 'org-1';
+  await gateway.listAIRecommendations();
+  await gateway.createAIRecommendation({ provider: 'provider-1', kind: 'replenishment', input_data: { sku: 'sku-1' } });
+  await gateway.confirmAIRecommendation('recommendation-1', 'reviewed');
+  await gateway.rejectAIRecommendation('recommendation-2', 'not suitable');
+  assert.equal(calls[0].url, '/api/ai-recommendations/');
+  assert.equal(calls[1].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    provider: 'provider-1', kind: 'replenishment', input_data: { sku: 'sku-1' }
+  });
+  assert.equal(calls[2].url, '/api/ai-recommendations/recommendation-1/confirm/');
+  assert.equal(calls[3].url, '/api/ai-recommendations/recommendation-2/reject/');
+  assert.deepEqual(JSON.parse(calls[2].options.body), { reason: 'reviewed' });
+  assert.deepEqual(JSON.parse(calls[3].options.body), { reason: 'not suitable' });
+});
+
 test('draft transfers and replenishment overrides have explicit recovery endpoints', async () => {
   const calls = [];
   const Team = await loadTeam(async (url, options) => { calls.push({ url, options }); return response(204, null); });

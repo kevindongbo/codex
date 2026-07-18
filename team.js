@@ -354,6 +354,14 @@
     async updateAIProvider(id, payload) { return this.request('/ai-providers/' + id + '/', { method: 'PATCH', body: payload }); }
     async testAIProvider(id) { return this.request('/ai-providers/' + id + '/test/', { method: 'POST', body: {} }); }
     async listAIInvocations() { return this.listAll('/ai-invocations/'); }
+    async listAIRecommendations() { return this.listAll('/ai-recommendations/'); }
+    async createAIRecommendation(payload) { return this.request('/ai-recommendations/', { method: 'POST', body: payload }); }
+    async confirmAIRecommendation(id, reason) {
+      return this.request('/ai-recommendations/' + id + '/confirm/', { method: 'POST', body: { reason: reason || '' } });
+    }
+    async rejectAIRecommendation(id, reason) {
+      return this.request('/ai-recommendations/' + id + '/reject/', { method: 'POST', body: { reason: reason || '' } });
+    }
 
     async confirmOwnerPasswordChange(challengeId, code, password) {
       return this.request('/auth/owner/password/change/confirm/', {

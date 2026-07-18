@@ -37,7 +37,7 @@ For DeepSeek, this application uses the OpenAI-compatible Chat Completions route
 
 ## AI provider administration
 
-The owner can configure providers in **店铺与 AI 接口**. The configuration screen supports create and edit, enabled/disabled state, timeout, retry count, and an optional JSON object of OpenAI-compatible request parameters such as `temperature` and `max_tokens`. Credentials remain write-only: a blank API Key leaves an existing encrypted key unchanged, and the API never returns the saved key. `model`, `messages`, `api_key`, and `authorization` are reserved and cannot be supplied through request parameters.
+The owner can configure providers in **店铺与 AI 接口**. The configuration screen supports create and edit, enabled/disabled state, timeout, retry count, and an optional JSON object of OpenAI-compatible request parameters such as `temperature` and `max_tokens`. Credentials remain write-only: a blank API Key leaves an existing encrypted key unchanged, and the API never returns the saved key. `model`, `messages`, `api_key`, and `authorization` are reserved and cannot be supplied through request parameters. The same page provides four proposal types (inventory forecast, replenishment, product analysis, and copywriting), the latest invocation logs, and confirm/reject actions. Confirming a proposal only writes the operator decision and audit event; it never changes stock automatically. Provider failures are recorded without raw response bodies or credentials.
 
 The same screen shows aggregate successful-call count and token totals from the invocation log. A test call records its result in that log; credentials and response secrets are not displayed there.
 
@@ -56,7 +56,8 @@ The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables 
    ts=$(date +%Y%m%d-%H%M%S)
    mkdir -p /opt/dongbo/backups/$ts
    git -C /opt/dongbo/app rev-parse HEAD > /opt/dongbo/backups/$ts/code-commit.txt
-   tar --exclude=.git --exclude=.venv -C /opt/dongbo -czf /opt/dongbo/backups/$ts/app.tar.gz app
+   # Keep deployment secrets out of the portable code archive. /opt/dongbo/app/.env stays in place.
+   tar --exclude=.git --exclude=.venv --exclude=.env -C /opt/dongbo -czf /opt/dongbo/backups/$ts/app.tar.gz app
    sudo -u postgres pg_dump -Fc dongbo_erp > /opt/dongbo/backups/$ts/dongbo_erp.dump
    ```
 
@@ -94,7 +95,7 @@ The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables 
 - Upload a local JPG/PNG/WebP for a competitor and save; confirm the URL is `/api/media-assets/.../content/`, not `data:`.
 - Confirm a replenishment recommendation exposes velocity, lead time, safety calculation, inbound position, and alert level.
 - In **店铺与 AI 接口**, start TikTok seller authorization, complete Partner Center OAuth, and verify every authorized shop appears separately with its shop name. Refresh/disconnect one shop and confirm neither token nor shop cipher is returned in API responses.
-- Add an AI provider with `temperature` and `max_tokens` JSON parameters, edit it with a blank API Key, test it, and inspect the usage summary/log. Confirm a malformed parameter object or a reserved key is rejected. Create a recommendation and confirm it remains pending until explicitly confirmed and does not alter stock.
+- Add an AI provider with `temperature` and `max_tokens` JSON parameters, edit it with a blank API Key, test it, and inspect the usage summary plus the latest invocation rows. Confirm a malformed parameter object or a reserved key is rejected. Create one proposal, confirm it, create another and reject it; verify the stock ledger has no extra entry and both decisions appear in the audit log.
 
 ## API additions
 
@@ -104,6 +105,6 @@ The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables 
 - `POST /api/stock-ledger/{id}/revoke/`.
 - `GET/POST/PATCH /api/replenishment-settings/` (organization defaults, editable in **仓库中心 → 智能补货 → 全局补货参数**).
 - TikTok: `/api/tiktok-shop-connections/`, `authorize/`, `{id}/refresh/`, `{id}/disconnect/`, `{id}/sync/`, callback `/api/integrations/tiktok-shop/callback/`.
-- AI: `GET/POST /api/ai-providers/`, `PATCH /api/ai-providers/{id}/`, `{id}/test/`, `GET /api/ai-invocations/`, `/api/ai-recommendations/`, `{id}/confirm/`.
+- AI: `GET/POST /api/ai-providers/`, `PATCH /api/ai-providers/{id}/`, `{id}/test/`, `GET /api/ai-invocations/`, `GET/POST /api/ai-recommendations/`, `{id}/confirm/`, `{id}/reject/`.
 - Media: `POST /api/media-assets/`, `GET /api/media-assets/{id}/content/`.
 - AlphaShop: `GET/PUT /api/alphashop-config/` (main account only; credentials are write-only and encrypted at rest).

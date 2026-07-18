@@ -36,9 +36,9 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260718-ai-controls-1/);
-  assert.match(html, /team\.js\?v=20260718-ai-controls-1/);
-  assert.match(html, /app\.js\?v=20260718-ai-controls-1/);
+  assert.match(html, /styles\.css\?v=20260718-ai-workbench-1/);
+  assert.match(html, /team\.js\?v=20260718-ai-workbench-1/);
+  assert.match(html, /app\.js\?v=20260718-ai-workbench-1/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
@@ -71,6 +71,8 @@ test("contains product, warehouse, order and monitoring workflows", async () => 
     "policyTargetDays", "policyMoq", "policyPackSize", "policySafetyStock",
     "replenishmentSettingsModal", "replenishmentSettingsForm", "settingSafetyDays", "settingLeadDays",
     "aiProviderId", "aiProviderParameters", "aiProviderEnabled", "resetAIProvider", "aiUsageSummary",
+    "aiRecommendationForm", "aiRecommendationProvider", "aiRecommendationKind", "aiRecommendationInput",
+    "aiRecommendationRows", "aiInvocationRows",
     "snapshotAdvanced",
   ];
 
