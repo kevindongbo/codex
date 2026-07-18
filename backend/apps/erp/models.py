@@ -830,6 +830,9 @@ class TikTokShopConnection(OrganizationScopedModel):
     region = models.CharField("市场", max_length=8, default="MY")
     open_id = models.CharField("TikTok 授权主体", max_length=200)
     shop_id = models.CharField("店铺 ID", max_length=200, blank=True)
+    shop_name = models.CharField("店铺名称", max_length=200, blank=True)
+    shop_cipher = models.CharField("店铺加密标识", max_length=260, blank=True)
+    seller_type = models.CharField("授权主体类型", max_length=40, blank=True)
     access_token_encrypted = models.TextField("Access Token 密文", blank=True)
     refresh_token_encrypted = models.TextField("Refresh Token 密文", blank=True)
     access_token_expires_at = models.DateTimeField(null=True, blank=True)
@@ -844,7 +847,7 @@ class TikTokShopConnection(OrganizationScopedModel):
     class Meta:
         verbose_name = "TikTok Shop 授权店铺"
         verbose_name_plural = "TikTok Shop 授权店铺"
-        constraints = [models.UniqueConstraint(fields=["organization", "open_id"], name="uniq_tiktok_connection_open_id")]
+        constraints = [models.UniqueConstraint(fields=["organization", "open_id", "shop_id"], name="uniq_tiktok_connection_shop")]
 
 
 class TikTokShopSyncRun(OrganizationScopedModel):

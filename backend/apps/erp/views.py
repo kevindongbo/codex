@@ -1289,12 +1289,15 @@ def tiktok_shop_oauth_callback(request):
     if request.query_params.get("error") or not request.query_params.get("code"):
         return Response({"detail": "TikTok Shop 授权未完成", "error": request.query_params.get("error", "auth_denied")}, status=status.HTTP_400_BAD_REQUEST)
     try:
-        connection = integrations.complete_tiktok_authorization(
+        connections = integrations.complete_tiktok_authorization(
             state=str(request.query_params.get("state", "")), auth_code=str(request.query_params["code"])
         )
     except (DjangoValidationError, IntegrityError) as exc:
         raise ValidationError(exc.message_dict if hasattr(exc, "message_dict") else getattr(exc, "messages", [str(exc)])) from exc
-    return Response({"detail": "TikTok Shop 店铺授权成功，可以关闭此页面返回 ERP", "connection_id": str(connection.pk)})
+    return Response({
+        "detail": f"TikTok Shop 店铺授权成功，已连接 {len(connections)} 个店铺，可以关闭此页面返回 ERP",
+        "connection_ids": [str(connection.pk) for connection in connections],
+    })
 
 
 class AIProviderConfigViewSet(OrganizationScopedViewSet):

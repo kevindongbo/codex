@@ -645,7 +645,8 @@ class TikTokShopConnectionSerializer(ScopedSerializer):
     class Meta(ScopedSerializer.Meta):
         model = TikTokShopConnection
         fields = [
-            "id", "organization", "label", "region", "open_id", "shop_id", "access_token_expires_at",
+            "id", "organization", "label", "region", "open_id", "shop_id", "shop_name", "seller_type",
+            "access_token_expires_at",
             "refresh_token_expires_at", "granted_scopes", "status", "last_error", "authorized_by",
             "authorized_at", "disconnected_at", "created_at", "updated_at",
         ]

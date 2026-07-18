@@ -323,6 +323,24 @@ test('replenishment recommendations are requested for the selected warehouse', a
   assert.equal(recommendations[0].suggested_order_quantity, 24);
 });
 
+test('organization replenishment settings can be loaded and saved independently of SKU overrides', async () => {
+  const calls = [];
+  const Team = await loadTeam(async (url, options) => {
+    calls.push({ url, options });
+    return response(200, calls.length === 1 ? [{ id: 'settings-1', safety_days: '7.00' }] : { id: 'settings-1' });
+  });
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.accessToken = 'token';
+  gateway.organizationId = 'org-1';
+  const settings = await gateway.getReplenishmentSettings();
+  await gateway.saveReplenishmentSettings({ safety_days: 9, default_lead_time_days: 18 });
+  assert.equal(settings.id, 'settings-1');
+  assert.equal(calls[0].url, '/api/replenishment-settings/');
+  assert.equal(calls[1].url, '/api/replenishment-settings/');
+  assert.equal(calls[1].options.method, 'POST');
+  assert.equal(JSON.parse(calls[1].options.body).safety_days, 9);
+});
+
 test('draft transfers and replenishment overrides have explicit recovery endpoints', async () => {
   const calls = [];
   const Team = await loadTeam(async (url, options) => { calls.push({ url, options }); return response(204, null); });

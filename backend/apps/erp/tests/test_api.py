@@ -1,4 +1,7 @@
+import hashlib
+import hmac
 import os
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -8,14 +11,16 @@ from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.erp.apps import ErpConfig
-from apps.erp import alphashop
+from apps.erp import alphashop, integrations
 from apps.erp.models import (
     AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
-    Product, ProductImage, PurchaseOrder, ReplenishmentPolicy, ReturnOrder, SalesOrder,
-    SalesOrderLine, Shipment, SKU, StockBalance, StockLedger, StockTransfer,
+    Product, ProductImage, PurchaseOrder, ReplenishmentPolicy, ReplenishmentSettings, ReturnOrder, SalesOrder,
+    SalesOrderLine, Shipment, SKU, StockBalance, StockLedger, StockTransfer, TikTokShopConnection,
+    TikTokShopOAuthState,
     Supplier, Warehouse,
 )
 
@@ -1383,6 +1388,73 @@ class ApiTests(TestCase):
             **headers,
         )
         self.assertEqual(denied.status_code, 400)
+
+    def test_replenishment_settings_are_saved_per_organization_and_validate_weights(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        saved = self.client.post(
+            "/api/replenishment-settings/",
+            {
+                "safety_days": "9.5", "default_lead_time_days": 21, "review_cycle_days": 5,
+                "target_days": 35, "service_level_factor": "1.96", "initial_reference_shipment_count": 4,
+                "velocity_weight_7": "0.6", "velocity_weight_14": "0.3", "velocity_weight_30": "0.1",
+            }, format="json", **headers,
+        )
+        self.assertEqual(saved.status_code, 201, saved.data)
+        settings_record = ReplenishmentSettings.objects.get(organization=self.organization)
+        self.assertEqual(str(settings_record.safety_days), "9.50")
+        self.assertEqual(settings_record.default_lead_time_days, 21)
+        invalid = self.client.post(
+            "/api/replenishment-settings/",
+            {"velocity_weight_7": 0, "velocity_weight_14": 0, "velocity_weight_30": 0},
+            format="json", **headers,
+        )
+        self.assertEqual(invalid.status_code, 400)
+
+    def test_tiktok_signature_uses_current_us_host_and_seller_shop_rows(self):
+        params = {"app_key": "app-key", "timestamp": "1720000000"}
+        expected_payload = "app-secret/authorization/202309/shopsapp_keyapp-keytimestamp1720000000app-secret"
+        expected = hmac.new(b"app-secret", expected_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        self.assertEqual(
+            integrations._tiktok_signature(
+                path="/authorization/202309/shops", params=params, app_secret="app-secret"
+            ), expected,
+        )
+        self.assertEqual(integrations.TIKTOK_AUTH_URLS["US"], "https://services.us.tiktokshop.com/open/authorize")
+
+    @patch("apps.erp.integrations._get_tiktok_authorized_shops")
+    @patch("apps.erp.integrations._exchange_tiktok_token")
+    def test_tiktok_authorization_creates_one_encrypted_connection_per_shop(self, exchange_token, get_shops):
+        state = "seller-state"
+        TikTokShopOAuthState.objects.create(
+            organization=self.organization, state_hash=hashlib.sha256(state.encode("utf-8")).hexdigest(),
+            redirect_uri="https://erp.example.com/api/integrations/tiktok-shop/callback/", region="MY",
+            expires_at=timezone.now() + timedelta(minutes=10), created_by=self.user,
+        )
+        exchange_token.return_value = {
+            "open_id": "seller-open-id", "user_type": 0, "access_token": "access-token-secret",
+            "refresh_token": "refresh-token-secret", "access_token_expire_in": 3600,
+            "refresh_token_expire_in": 86400, "granted_scopes": ["seller.authorization.info"],
+        }
+        get_shops.return_value = [
+            {"id": "shop-my-1", "name": "马来一店", "region": "MY", "cipher": "cipher-1"},
+            {"id": "shop-my-2", "name": "马来二店", "region": "MY", "cipher": "cipher-2"},
+        ]
+        connections = integrations.complete_tiktok_authorization(state=state, auth_code="test-code", actor=self.user)
+        self.assertEqual(len(connections), 2)
+        self.assertEqual(TikTokShopConnection.objects.filter(organization=self.organization).count(), 2)
+        self.assertEqual({item.shop_id for item in connections}, {"shop-my-1", "shop-my-2"})
+        self.assertTrue(all(item.shop_name for item in connections))
+        self.assertTrue(all("access-token-secret" not in item.access_token_encrypted for item in connections))
+        exchange_token.return_value = {
+            "access_token": "rotated-access-token", "refresh_token": "rotated-refresh-token",
+            "access_token_expire_in": 7200, "refresh_token_expire_in": 172800,
+            "granted_scopes": ["seller.authorization.info"],
+        }
+        integrations.refresh_tiktok_connection(connections[0])
+        for connection in TikTokShopConnection.objects.filter(organization=self.organization):
+            self.assertNotIn("rotated-access-token", connection.access_token_encrypted)
+            self.assertEqual(connection.status, TikTokShopConnection.Status.CONNECTED)
 
     def test_confirm_and_ship_api_is_atomic_and_idempotent(self):
         self.client.force_authenticate(self.user)

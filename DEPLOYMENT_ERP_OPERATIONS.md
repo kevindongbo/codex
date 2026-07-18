@@ -9,8 +9,9 @@ This release adds batch purchase receiving, manual inbound/outbound and reversib
 - `0017_erp_operations_platform` creates replenishment settings, ledger reversals, TikTok OAuth state/connections/sync runs, encrypted AI provider configuration/log/recommendation tables; extends competitor URL fields and stock event types.
 - `0018_uploadedmediaasset` creates `UploadedMediaAsset` for uploaded image files. It returns `/api/media-assets/<uuid>/content/`, so the database stores a formal URL rather than Base64.
 - `0019_alphashopconfig` creates the organization-scoped `AlphaShopConfig` table. It stores Access Key and Secret Key only as Fernet ciphertext, with a one-row-per-organization constraint.
+- `0020_tiktok_shop_connections_per_shop` adds shop name/cipher/type metadata and changes TikTok Shop uniqueness from one seller authorization to one row per authorized shop. Existing legacy authorization rows are reused for the first discovered shop, preserving prior sync history.
 
-Both migrations are reversible through Django. Use `backend/scripts/rollback_erp_operations.sh` only after restoring the pre-deployment database backup; rolling schema back without restoring a backup discards the newly introduced records.
+All migrations are reversible through Django. Use `backend/scripts/rollback_erp_operations.sh` only after restoring the pre-deployment database backup; rolling schema back without restoring a backup discards the newly introduced records. For only this release, use `backend/scripts/rollback_tiktok_multishop.sh` with `CONFIRM_TIKTOK_MULTISHOP_ROLLBACK=YES` after the backup restore.
 
 ## Required production environment
 
@@ -86,7 +87,7 @@ The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables 
 - Set a balance to zero with no reservation; confirm delete requires the browser confirmation and leaves product/history intact. Confirm non-zero balance deletion is denied.
 - Upload a local JPG/PNG/WebP for a competitor and save; confirm the URL is `/api/media-assets/.../content/`, not `data:`.
 - Confirm a replenishment recommendation exposes velocity, lead time, safety calculation, inbound position, and alert level.
-- In **店铺与 AI 接口**, start TikTok authorization, complete Partner Center OAuth, refresh/disconnect it, and verify status. Confirm neither token is returned in API responses.
+- In **店铺与 AI 接口**, start TikTok seller authorization, complete Partner Center OAuth, and verify every authorized shop appears separately with its shop name. Refresh/disconnect one shop and confirm neither token nor shop cipher is returned in API responses.
 - Add an AI provider, test it, inspect its log, and create a recommendation. Confirm the recommendation remains pending until explicitly confirmed and does not alter stock.
 
 ## API additions
@@ -95,7 +96,7 @@ The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables 
 - `DELETE /api/stock-balances/{id}/` permits only zero on-hand and zero reserved balances.
 - `POST /api/stock-balances/manual-inbound/`, `POST /api/stock-balances/manual-outbound/`.
 - `POST /api/stock-ledger/{id}/revoke/`.
-- `GET/PATCH /api/replenishment-settings/`.
+- `GET/POST/PATCH /api/replenishment-settings/` (organization defaults, editable in **仓库中心 → 智能补货 → 全局补货参数**).
 - TikTok: `/api/tiktok-shop-connections/`, `authorize/`, `{id}/refresh/`, `{id}/disconnect/`, `{id}/sync/`, callback `/api/integrations/tiktok-shop/callback/`.
 - AI: `/api/ai-providers/`, `{id}/test/`, `/api/ai-invocations/`, `/api/ai-recommendations/`, `{id}/confirm/`.
 - Media: `POST /api/media-assets/`, `GET /api/media-assets/{id}/content/`.

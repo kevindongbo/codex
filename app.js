@@ -2809,6 +2809,45 @@ function openReplenishmentPolicy(productId) {
   $('#policySafetyStock').value = policy.safetyStockOverride == null ? '' : policy.safetyStockOverride;
   openModal('replenishmentPolicyModal');
 }
+async function openReplenishmentSettings() {
+  if (!TEAM_MODE || !teamGateway) return showToast('全局补货参数仅在团队在线模式下可配置。');
+  try {
+    const settings = await teamGateway.getReplenishmentSettings() || {
+      safety_days: 7, default_lead_time_days: 14, review_cycle_days: 7, target_days: 30,
+      service_level_factor: 1.65, initial_reference_shipment_count: 3,
+      velocity_weight_7: 0.5, velocity_weight_14: 0.3, velocity_weight_30: 0.2
+    };
+    $('#settingSafetyDays').value = settings.safety_days;
+    $('#settingLeadDays').value = settings.default_lead_time_days;
+    $('#settingReviewDays').value = settings.review_cycle_days;
+    $('#settingTargetDays').value = settings.target_days;
+    $('#settingServiceLevel').value = settings.service_level_factor;
+    $('#settingInitialShipments').value = settings.initial_reference_shipment_count;
+    $('#settingWeight7').value = settings.velocity_weight_7;
+    $('#settingWeight14').value = settings.velocity_weight_14;
+    $('#settingWeight30').value = settings.velocity_weight_30;
+    openModal('replenishmentSettingsModal');
+  } catch (error) { handleTeamError(error); }
+}
+async function handleReplenishmentSettingsSubmit(event) {
+  event.preventDefault();
+  if (!TEAM_MODE || !teamGateway) return;
+  const payload = {
+    safety_days: Number($('#settingSafetyDays').value),
+    default_lead_time_days: integer($('#settingLeadDays').value),
+    review_cycle_days: integer($('#settingReviewDays').value),
+    target_days: integer($('#settingTargetDays').value),
+    service_level_factor: Number($('#settingServiceLevel').value),
+    initial_reference_shipment_count: integer($('#settingInitialShipments').value),
+    velocity_weight_7: Number($('#settingWeight7').value),
+    velocity_weight_14: Number($('#settingWeight14').value),
+    velocity_weight_30: Number($('#settingWeight30').value)
+  };
+  try {
+    await executeTeamCommand(function () { return teamGateway.saveReplenishmentSettings(payload); }, '全局补货参数已保存并重新计算。', 'replenishment');
+    closeModal('replenishmentSettingsModal');
+  } catch (error) { handleTeamError(error); }
+}
 async function handleReplenishmentPolicySubmit(event) {
   event.preventDefault();
   const product = productById($('#policyProductId').value);
@@ -3938,6 +3977,8 @@ function bindEvents() {
   });
   $('#transferForm').addEventListener('submit', handleTransferSubmit);
   $('#replenishmentPolicyForm').addEventListener('submit', handleReplenishmentPolicySubmit);
+  $('#replenishmentSettingsForm').addEventListener('submit', handleReplenishmentSettingsSubmit);
+  $('#openReplenishmentSettings').addEventListener('click', openReplenishmentSettings);
   $('#refreshReplenishment').addEventListener('click', function () {
     if (TEAM_MODE) return refreshTeamState('补货建议已按最新库存和出库数据重新计算。');
     renderReplenishment();

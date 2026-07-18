@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import secrets
 import time
 from datetime import datetime, timedelta, timezone as datetime_timezone
+from hashlib import sha256
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -23,9 +25,11 @@ from .secure_config import decrypt_secret, encrypt_secret
 TIKTOK_TOKEN_GET_URL = "https://auth.tiktok-shops.com/api/v2/token/get"
 TIKTOK_TOKEN_REFRESH_URL = "https://auth.tiktok-shops.com/api/v2/token/refresh"
 TIKTOK_AUTH_URLS = {
-    "US": "https://services.tiktokshops.us/open/authorize",
+    "US": "https://services.us.tiktokshop.com/open/authorize",
     "ROW": "https://services.tiktokshop.com/open/authorize",
 }
+TIKTOK_OPEN_API_BASE = "https://open-api.tiktokglobalshop.com"
+TIKTOK_AUTHORIZED_SHOPS_PATH = "/authorization/202309/shops"
 
 
 def _read_json(request: Request, *, timeout: int) -> dict:
@@ -86,38 +90,104 @@ def _exchange_tiktok_token(*, auth_code: str | None = None, refresh_token: str |
     return payload["data"]
 
 
-def complete_tiktok_authorization(*, state: str, auth_code: str, actor=None) -> TikTokShopConnection:
+def _tiktok_signature(*, path: str, params: dict, app_secret: str) -> str:
+    """Build the documented Open API HMAC signature without logging the secret."""
+    canonical = "".join(
+        f"{key}{params[key]}" for key in sorted(params)
+        if key not in {"sign", "access_token"}
+    )
+    payload = f"{app_secret}{path}{canonical}{app_secret}".encode("utf-8")
+    return hmac.new(app_secret.encode("utf-8"), payload, sha256).hexdigest()
+
+
+def _get_tiktok_authorized_shops(*, access_token: str) -> list[dict]:
+    """Return all shops granted by a seller-level TikTok authorization."""
+    app_key, app_secret, _, _ = _tiktok_settings()
+    params = {"app_key": app_key, "timestamp": str(int(time.time()))}
+    params["sign"] = _tiktok_signature(
+        path=TIKTOK_AUTHORIZED_SHOPS_PATH, params=params, app_secret=app_secret
+    )
+    request = Request(
+        f"{TIKTOK_OPEN_API_BASE}{TIKTOK_AUTHORIZED_SHOPS_PATH}?{urlencode(params)}",
+        headers={"Content-Type": "application/json", "x-tts-access-token": access_token},
+        method="GET",
+    )
+    payload = _read_json(request, timeout=30)
+    if payload.get("code") not in (0, "0"):
+        raise ValidationError(payload.get("message") or "TikTok Shop 未返回已授权店铺")
+    shops = (payload.get("data") or {}).get("shops") or []
+    if not isinstance(shops, list):
+        raise ValidationError("TikTok Shop 已授权店铺响应格式无效")
+    return [shop for shop in shops if isinstance(shop, dict) and shop.get("id")]
+
+
+def _save_tiktok_shops(*, oauth_state, token_data: dict, actor=None) -> list[TikTokShopConnection]:
+    open_id = str(token_data.get("open_id") or "")
+    access_token = str(token_data.get("access_token") or "")
+    refresh_token = str(token_data.get("refresh_token") or "")
+    if not (open_id and access_token and refresh_token):
+        raise ValidationError("TikTok Shop 授权结果缺少必要令牌或授权主体")
+    user_type = token_data.get("user_type")
+    if user_type is not None and str(user_type) != "0":
+        raise ValidationError("当前授权不是 TikTok Shop 卖家授权，请使用卖家账号重新授权")
+    shops = _get_tiktok_authorized_shops(access_token=access_token)
+    if not shops:
+        raise ValidationError("授权成功但未读取到店铺；请确认应用已获 seller.authorization.info 权限")
+
+    now = timezone.now()
+    common = {
+        "access_token_encrypted": encrypt_secret(access_token),
+        "refresh_token_encrypted": encrypt_secret(refresh_token),
+        "access_token_expires_at": _unix_time(token_data.get("access_token_expire_in")),
+        "refresh_token_expires_at": _unix_time(token_data.get("refresh_token_expire_in")),
+        "granted_scopes": token_data.get("granted_scopes") or [],
+        "status": TikTokShopConnection.Status.CONNECTED,
+        "last_error": "",
+        "authorized_by": actor if getattr(actor, "is_authenticated", False) else oauth_state.created_by,
+        "authorized_at": now,
+        "disconnected_at": None,
+        "seller_type": str(user_type) if user_type is not None else "seller",
+    }
+    # Reuse legacy one-account rows so historical sync runs remain attached.
+    legacy = TikTokShopConnection.objects.filter(
+        organization=oauth_state.organization, open_id=open_id, shop_id=""
+    ).first()
+    connections = []
+    for index, shop in enumerate(shops):
+        defaults = {
+            **common,
+            "label": str(shop.get("name") or "")[:120],
+            "shop_name": str(shop.get("name") or "")[:200],
+            "shop_cipher": str(shop.get("cipher") or "")[:260],
+            "region": str(shop.get("region") or oauth_state.region).upper()[:8],
+        }
+        shop_id = str(shop["id"])
+        if index == 0 and legacy is not None:
+            legacy.shop_id = shop_id
+            for field, value in defaults.items():
+                setattr(legacy, field, value)
+            legacy.save()
+            connection = legacy
+        else:
+            connection, _ = TikTokShopConnection.objects.update_or_create(
+                organization=oauth_state.organization, open_id=open_id, shop_id=shop_id,
+                defaults=defaults,
+            )
+        connections.append(connection)
+    return connections
+
+
+def complete_tiktok_authorization(*, state: str, auth_code: str, actor=None) -> list[TikTokShopConnection]:
     digest = hashlib.sha256(state.encode("utf-8")).hexdigest()
     oauth_state = TikTokShopOAuthState.objects.select_for_update().filter(state_hash=digest, used_at__isnull=True).first()
     if oauth_state is None or oauth_state.expires_at < timezone.now():
         raise ValidationError("授权状态已过期或已使用，请重新发起授权")
     data = _exchange_tiktok_token(auth_code=auth_code)
-    open_id = str(data.get("open_id") or "")
-    access_token = str(data.get("access_token") or "")
-    refresh_token = str(data.get("refresh_token") or "")
-    if not (open_id and access_token and refresh_token):
-        raise ValidationError("TikTok Shop 授权结果缺少必要令牌或授权主体")
     now = timezone.now()
-    connection, _ = TikTokShopConnection.objects.update_or_create(
-        organization=oauth_state.organization,
-        open_id=open_id,
-        defaults={
-            "region": oauth_state.region,
-            "access_token_encrypted": encrypt_secret(access_token),
-            "refresh_token_encrypted": encrypt_secret(refresh_token),
-            "access_token_expires_at": _unix_time(data.get("access_token_expire_in")),
-            "refresh_token_expires_at": _unix_time(data.get("refresh_token_expire_in")),
-            "granted_scopes": data.get("granted_scopes") or [],
-            "status": TikTokShopConnection.Status.CONNECTED,
-            "last_error": "",
-            "authorized_by": actor if getattr(actor, "is_authenticated", False) else oauth_state.created_by,
-            "authorized_at": now,
-            "disconnected_at": None,
-        },
-    )
+    connections = _save_tiktok_shops(oauth_state=oauth_state, token_data=data, actor=actor)
     oauth_state.used_at = now
     oauth_state.save(update_fields=["used_at", "updated_at"])
-    return connection
+    return connections
 
 
 def _unix_time(value):
@@ -135,14 +205,23 @@ def refresh_tiktok_connection(connection: TikTokShopConnection) -> TikTokShopCon
     refresh_token = str(data.get("refresh_token") or "")
     if not (access_token and refresh_token):
         raise ValidationError("TikTok Shop 刷新令牌结果不完整")
-    connection.access_token_encrypted = encrypt_secret(access_token)
-    connection.refresh_token_encrypted = encrypt_secret(refresh_token)
-    connection.access_token_expires_at = _unix_time(data.get("access_token_expire_in"))
-    connection.refresh_token_expires_at = _unix_time(data.get("refresh_token_expire_in"))
-    connection.granted_scopes = data.get("granted_scopes") or connection.granted_scopes
-    connection.status = TikTokShopConnection.Status.CONNECTED
-    connection.last_error = ""
-    connection.save()
+    # A seller token can represent multiple shops.  Propagate a token rotation
+    # to every local shop row for that seller so a later sync never uses an old
+    # refresh token from a sibling shop.
+    updates = {
+        "access_token_encrypted": encrypt_secret(access_token),
+        "refresh_token_encrypted": encrypt_secret(refresh_token),
+        "access_token_expires_at": _unix_time(data.get("access_token_expire_in")),
+        "refresh_token_expires_at": _unix_time(data.get("refresh_token_expire_in")),
+        "status": TikTokShopConnection.Status.CONNECTED,
+        "last_error": "",
+    }
+    if data.get("granted_scopes"):
+        updates["granted_scopes"] = data["granted_scopes"]
+    TikTokShopConnection.objects.filter(
+        organization=connection.organization, open_id=connection.open_id
+    ).update(**updates)
+    connection.refresh_from_db()
     return connection
 
 
