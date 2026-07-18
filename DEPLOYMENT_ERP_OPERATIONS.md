@@ -10,6 +10,7 @@ This release adds batch purchase receiving, manual inbound/outbound and reversib
 - `0018_uploadedmediaasset` creates `UploadedMediaAsset` for uploaded image files. It returns `/api/media-assets/<uuid>/content/`, so the database stores a formal URL rather than Base64.
 - `0019_alphashopconfig` creates the organization-scoped `AlphaShopConfig` table. It stores Access Key and Secret Key only as Fernet ciphertext, with a one-row-per-organization constraint.
 - `0020_tiktok_shop_connections_per_shop` adds shop name/cipher/type metadata and changes TikTok Shop uniqueness from one seller authorization to one row per authorized shop. Existing legacy authorization rows are reused for the first discovered shop, preserving prior sync history.
+- `0021_replenishment_velocity_window_15_days` renames the 14-day velocity parameter to 15 days and adds the organization-level `safety_margin_ratio` (default `0.200`, constrained to 0–1). Its rollback helper is `backend/scripts/rollback_replenishment_window_0021.sh`; restore the verified PostgreSQL backup before using it.
 
 All migrations are reversible through Django. Use `backend/scripts/rollback_erp_operations.sh` only after restoring the pre-deployment database backup; rolling schema back without restoring a backup discards the newly introduced records. For only this release, use `backend/scripts/rollback_tiktok_multishop.sh` with `CONFIRM_TIKTOK_MULTISHOP_ROLLBACK=YES` after the backup restore.
 
