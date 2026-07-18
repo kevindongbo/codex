@@ -870,6 +870,29 @@ class TikTokShopSyncRun(OrganizationScopedModel):
     finished_at = models.DateTimeField(null=True, blank=True)
 
 
+class AlphaShopConfig(OrganizationScopedModel):
+    """Per-organization AlphaShop credentials, encrypted at rest.
+
+    The key material is deliberately kept in write-only API fields and is
+    never included in audit data or serialized back to the browser.
+    """
+
+    access_key_encrypted = models.TextField(blank=True)
+    secret_key_encrypted = models.TextField(blank=True)
+    api_base_url = models.URLField(max_length=1000, default="https://api.alphashop.cn")
+    enabled = models.BooleanField(default=True)
+    configured_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="configured_alphashop_connections",
+    )
+    last_configured_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "AlphaShop 选品接口配置"
+        verbose_name_plural = "AlphaShop 选品接口配置"
+        constraints = [models.UniqueConstraint(fields=["organization"], name="uniq_alphashop_config_org")]
+
+
 class AIProviderConfig(OrganizationScopedModel):
     name = models.CharField(max_length=120)
     api_base_url = models.URLField(max_length=1000)

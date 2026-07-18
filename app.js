@@ -100,6 +100,7 @@ let pendingConfirm = null;
 let pendingProductImage = '';
 let tiktokConnections = [];
 let aiProviderConfigs = [];
+let alphashopConfig = null;
 let draftProductSkus = [];
 let draftPurchaseLines = [];
 let draftOrderLines = [];
@@ -115,7 +116,7 @@ let ownerPasswordChallengeId = '';
 let ownerPermissionCatalog = {};
 let internalAccounts = [];
 let selectionState = {
-  statusLoaded: false, configured: false, loadingStatus: false,
+  statusLoaded: false, configured: false, source: 'none', loadingStatus: false,
   loadingKeywords: false, loadingReport: false, keywords: [], selectedKeyword: '',
   keywordResponseCached: false, report: null, reportCached: false,
   platformRegions: { tiktok: ['MY'], amazon: ['US'] }
@@ -985,6 +986,7 @@ function renderRuntimeState() {
   }).join('');
   $('#teamWarehouse').value = teamGateway.warehouseId;
   $('#ownerAccountActions').hidden = !teamGateway.user.is_owner;
+  if ($('#openSelectionConfig')) $('#openSelectionConfig').hidden = !teamGateway.user.is_owner;
   if (!online) {
     setText('#connectionBannerTitle', '团队服务器连接中断');
     setText('#connectionBannerDetail', '已保留上次同步的数据用于查看；所有写入已暂停，不会转存到本机。');
@@ -1044,6 +1046,15 @@ async function openInternalAccountManager() {
 }
 
 function renderIntegrationManager() {
+  const alpha = alphashopConfig || {};
+  const sourceText = alpha.source === 'system' ? '已由系统加密保存' : (alpha.source === 'environment' ? '正在使用旧版服务器配置；保存本表单后会切换为系统配置' : '尚未配置');
+  $('#alphashopConfigHint').textContent = sourceText + '。密钥不会回显；如需更新密钥，填写对应字段后保存即可。';
+  $('#alphashopApiBaseUrl').value = alpha.api_base_url || 'https://api.alphashop.cn';
+  $('#alphashopEnabled').checked = alpha.enabled !== false;
+  $('#alphashopAccessKey').value = '';
+  $('#alphashopSecretKey').value = '';
+  $('#alphashopAccessKey').required = !alpha.has_access_key;
+  $('#alphashopSecretKey').required = !alpha.has_secret_key;
   $('#tiktokConnectionRows').innerHTML = tiktokConnections.length ? tiktokConnections.map(function (connection) {
     const status = connection.status === 'connected' ? '已授权' : (connection.status === 'disconnected' ? '已解绑' : connection.status);
     return '<div class="account-row"><div><strong>' + escapeHtml(connection.shop_name || connection.open_id) + '</strong><small>' + escapeHtml(connection.region + ' · ' + status + ' · 到期 ' + (connection.access_token_expires_at || '未返回')) + '</small></div><div class="inline-actions">' +
@@ -1056,13 +1067,23 @@ function renderIntegrationManager() {
 
 async function openIntegrationManager() {
   if (!teamGateway || !teamGateway.user || !teamGateway.user.is_owner) return;
-  const results = await Promise.all([teamGateway.listTikTokConnections(), teamGateway.listAIProviders()]);
+  const results = await Promise.all([teamGateway.listTikTokConnections(), teamGateway.listAIProviders(), teamGateway.getAlphaShopConfig()]);
   tiktokConnections = results[0] || [];
   aiProviderConfigs = results[1] || [];
+  alphashopConfig = results[2] || null;
   $('#accountManagerPanel').hidden = true;
   $('#ownerPasswordPanel').hidden = true;
   $('#integrationsPanel').hidden = false;
   renderIntegrationManager();
+}
+
+async function openAlphaShopConfiguration() {
+  if (!teamGateway || !teamGateway.user || !teamGateway.user.is_owner) {
+    return showToast('只有主账号可以配置选品接口。');
+  }
+  openModal('sessionModal');
+  await openIntegrationManager();
+  $('#alphashopConfigForm').scrollIntoView({ block: 'start', behavior: 'smooth' });
 }
 
 function editInternalAccount(id) {
@@ -2166,8 +2187,8 @@ function renderSelectionStatus() {
   if (!TEAM_MODE) node.innerHTML = '<i></i><div><strong>仅团队服务器可用</strong><span>本机模式不会暴露或保存 API 密钥</span></div>';
   else if (!teamAuthenticated()) node.innerHTML = '<i></i><div><strong>请先登录</strong><span>登录后检查服务器接口配置</span></div>';
   else if (selectionState.loadingStatus) node.innerHTML = '<i></i><div><strong>正在检查接口</strong><span>密钥只保存在服务器</span></div>';
-  else if (selectionState.configured) node.innerHTML = '<i></i><div><strong>选品接口已就绪</strong><span>服务端鉴权 · 前端不保存密钥</span></div>';
-  else node.innerHTML = '<i></i><div><strong>服务器尚未配置密钥</strong><span>配置后无需修改网页代码</span></div>';
+  else if (selectionState.configured) node.innerHTML = '<i></i><div><strong>选品接口已就绪</strong><span>' + (selectionState.source === 'system' ? '主账号系统配置 · 密钥已加密保存' : '服务端鉴权 · 前端不保存密钥') + '</span></div>';
+  else node.innerHTML = '<i></i><div><strong>服务器尚未配置密钥</strong><span>主账号可点击“配置选品接口”完成加密保存</span></div>';
 }
 
 async function loadProductSelectionStatus() {
@@ -2177,6 +2198,7 @@ async function loadProductSelectionStatus() {
   try {
     const payload = await teamGateway.productSelectionStatus();
     selectionState.configured = Boolean(payload && payload.configured);
+    selectionState.source = (payload && payload.source) || 'none';
     selectionState.platformRegions = payload && payload.platform_regions ? payload.platform_regions : selectionState.platformRegions;
     selectionState.statusLoaded = true;
     renderSelectionRegions();
@@ -3678,6 +3700,29 @@ function bindEvents() {
   });
   $('#openIntegrations').addEventListener('click', function () {
     openIntegrationManager().catch(handleTeamError);
+  });
+  $('#openSelectionConfig').addEventListener('click', function () {
+    openAlphaShopConfiguration().catch(handleTeamError);
+  });
+  $('#alphashopConfigForm').addEventListener('submit', async function (event) {
+    event.preventDefault();
+    try {
+      const payload = {
+        api_base_url: $('#alphashopApiBaseUrl').value.trim(),
+        enabled: $('#alphashopEnabled').checked
+      };
+      const accessKey = $('#alphashopAccessKey').value;
+      const secretKey = $('#alphashopSecretKey').value;
+      if (accessKey) payload.access_key = accessKey;
+      if (secretKey) payload.secret_key = secretKey;
+      alphashopConfig = await teamGateway.saveAlphaShopConfig(payload);
+      $('#alphashopAccessKey').value = '';
+      $('#alphashopSecretKey').value = '';
+      selectionState.statusLoaded = false;
+      await loadProductSelectionStatus();
+      renderIntegrationManager();
+      showToast('AlphaShop 选品配置已加密保存。');
+    } catch (error) { handleTeamError(error); }
   });
   $('#startTikTokAuthorization').addEventListener('click', async function () {
     try {

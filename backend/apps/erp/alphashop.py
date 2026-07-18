@@ -7,6 +7,7 @@ authenticated ERP endpoints declared in ``views.py``.
 import json
 import socket
 import time
+from dataclasses import dataclass
 from hashlib import sha256
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -14,6 +15,10 @@ from urllib.request import Request, urlopen
 import jwt
 from django.conf import settings
 from django.core.cache import cache
+from django.core.exceptions import ValidationError as DjangoValidationError
+
+from .models import AlphaShopConfig
+from .secure_config import decrypt_secret
 
 
 PLATFORM_REGIONS = {
@@ -42,12 +47,66 @@ class AlphaShopError(Exception):
         self.status_code = status_code
 
 
-def configured():
-    return bool(settings.ALPHASHOP_ACCESS_KEY and settings.ALPHASHOP_SECRET_KEY)
+@dataclass(frozen=True)
+class AlphaShopCredentials:
+    access_key: str
+    secret_key: str
+    api_base_url: str
+    cache_scope: str
+    source: str
 
 
-def _token():
-    if not configured():
+def _resolve_credentials(organization=None):
+    """Resolve database configuration first, then retain legacy env fallback."""
+    if organization is not None:
+        config = AlphaShopConfig.objects.filter(organization=organization).first()
+        if config is not None:
+            if not config.enabled or not (config.access_key_encrypted and config.secret_key_encrypted):
+                return None
+            try:
+                access_key = decrypt_secret(config.access_key_encrypted)
+                secret_key = decrypt_secret(config.secret_key_encrypted)
+            except DjangoValidationError as exc:
+                raise AlphaShopError(
+                    "系统保存的选品密钥无法解密，请由主账号重新保存配置。",
+                    code="ALPHASHOP_CONFIG_INVALID", status_code=422,
+                ) from exc
+            return AlphaShopCredentials(
+                access_key=access_key,
+                secret_key=secret_key,
+                api_base_url=config.api_base_url.rstrip("/"),
+                cache_scope=f"system:{organization.pk}:{config.updated_at.isoformat()}",
+                source="system",
+            )
+    if settings.ALPHASHOP_ACCESS_KEY and settings.ALPHASHOP_SECRET_KEY:
+        return AlphaShopCredentials(
+            access_key=settings.ALPHASHOP_ACCESS_KEY,
+            secret_key=settings.ALPHASHOP_SECRET_KEY,
+            api_base_url=settings.ALPHASHOP_API_BASE.rstrip("/"),
+            cache_scope="environment",
+            source="environment",
+        )
+    return None
+
+
+def configured(organization=None):
+    return _resolve_credentials(organization) is not None
+
+
+def configuration_status(organization=None):
+    try:
+        credentials = _resolve_credentials(organization)
+    except AlphaShopError:
+        return {"configured": False, "source": "system", "configuration_error": True}
+    return {
+        "configured": credentials is not None,
+        "source": credentials.source if credentials else "none",
+        "configuration_error": False,
+    }
+
+
+def _token(credentials):
+    if credentials is None:
         raise AlphaShopError(
             "选品 API 尚未在服务器完成密钥配置，请联系主账号。",
             code="ALPHASHOP_NOT_CONFIGURED",
@@ -55,16 +114,16 @@ def _token():
         )
     now = int(time.time())
     return jwt.encode(
-        {"iss": settings.ALPHASHOP_ACCESS_KEY, "exp": now + 1800, "nbf": now - 5},
-        settings.ALPHASHOP_SECRET_KEY,
+        {"iss": credentials.access_key, "exp": now + 1800, "nbf": now - 5},
+        credentials.secret_key,
         algorithm="HS256",
         headers={"alg": "HS256"},
     )
 
 
-def _cache_key(endpoint, payload):
+def _cache_key(endpoint, payload, cache_scope):
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return "alphashop:" + sha256(f"{endpoint}:{raw}".encode("utf-8")).hexdigest()
+    return "alphashop:" + sha256(f"{cache_scope}:{endpoint}:{raw}".encode("utf-8")).hexdigest()
 
 
 def _decode_error_body(exc):
@@ -74,20 +133,26 @@ def _decode_error_body(exc):
         return {}
 
 
-def _request(endpoint, payload, *, timeout, cache_seconds):
-    key = _cache_key(endpoint, payload)
+def _request(endpoint, payload, *, timeout, cache_seconds, organization=None):
+    credentials = _resolve_credentials(organization)
+    if credentials is None:
+        raise AlphaShopError(
+            "选品 API 尚未配置，请由主账号在“店铺与 AI 接口”中完成 AlphaShop 设置。",
+            code="ALPHASHOP_NOT_CONFIGURED", status_code=503,
+        )
+    key = _cache_key(endpoint, payload, credentials.cache_scope)
     cached = cache.get(key)
     if cached is not None:
         return cached, True
 
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     request = Request(
-        f"{settings.ALPHASHOP_API_BASE}/{endpoint}",
+        f"{credentials.api_base_url}/{endpoint}",
         data=body,
         method="POST",
         headers={
             "Accept": "application/json",
-            "Authorization": f"Bearer {_token()}",
+            "Authorization": f"Bearer {_token(credentials)}",
             "Content-Type": "application/json; charset=utf-8",
             "User-Agent": "DongboERP/1.0",
         },
@@ -128,7 +193,7 @@ def _payload_data(response):
     return response
 
 
-def search_keywords(*, platform, region, keyword, listing_time=None):
+def search_keywords(*, platform, region, keyword, listing_time=None, organization=None):
     payload = {"platform": platform, "region": region, "keyword": keyword}
     if listing_time:
         payload["listingTime"] = listing_time
@@ -137,6 +202,7 @@ def search_keywords(*, platform, region, keyword, listing_time=None):
         payload,
         timeout=settings.ALPHASHOP_KEYWORD_TIMEOUT,
         cache_seconds=settings.ALPHASHOP_KEYWORD_CACHE_SECONDS,
+        organization=organization,
     )
     data = _payload_data(response)
     keywords = data.get("keywordList")
@@ -147,7 +213,7 @@ def search_keywords(*, platform, region, keyword, listing_time=None):
 
 def generate_report(
     *, platform, region, keyword, listing_time=None, min_price=None, max_price=None,
-    min_volume=None, max_volume=None, min_rating=None, max_rating=None,
+    min_volume=None, max_volume=None, min_rating=None, max_rating=None, organization=None,
 ):
     payload = {
         "productKeyword": keyword,
@@ -171,6 +237,7 @@ def generate_report(
         payload,
         timeout=settings.ALPHASHOP_REPORT_TIMEOUT,
         cache_seconds=settings.ALPHASHOP_REPORT_CACHE_SECONDS,
+        organization=organization,
     )
     data = _payload_data(response)
     summary = data.get("keywordSummary") if isinstance(data.get("keywordSummary"), dict) else {}

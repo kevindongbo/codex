@@ -8,6 +8,7 @@ This release adds batch purchase receiving, manual inbound/outbound and reversib
 
 - `0017_erp_operations_platform` creates replenishment settings, ledger reversals, TikTok OAuth state/connections/sync runs, encrypted AI provider configuration/log/recommendation tables; extends competitor URL fields and stock event types.
 - `0018_uploadedmediaasset` creates `UploadedMediaAsset` for uploaded image files. It returns `/api/media-assets/<uuid>/content/`, so the database stores a formal URL rather than Base64.
+- `0019_alphashopconfig` creates the organization-scoped `AlphaShopConfig` table. It stores Access Key and Secret Key only as Fernet ciphertext, with a one-row-per-organization constraint.
 
 Both migrations are reversible through Django. Use `backend/scripts/rollback_erp_operations.sh` only after restoring the pre-deployment database backup; rolling schema back without restoring a backup discards the newly introduced records.
 
@@ -32,6 +33,12 @@ Generate the encryption key once on the server with the production virtual envir
 The TikTok redirect URL must also be registered in TikTok Shop Partner Center. The app must have the relevant Shop authorization scopes approved before a real store can complete OAuth.
 
 For DeepSeek, this application uses the OpenAI-compatible Chat Completions route: set API address to `https://api.deepseek.com` and use `deepseek-v4-flash` or `deepseek-v4-pro`. Do not use DeepSeek's `/anthropic` address in this form.
+
+## AlphaShop system configuration
+
+After deployment, sign in as the main account and open **智能选品 → 配置选品接口** (or **账号菜单 → 店铺与 AI 接口**). Enter the AlphaShop Access Key, Secret Key, and HTTPS API address there. The browser submits these fields once over the authenticated session; the API encrypts them with `INTEGRATION_ENCRYPTION_KEY` and never returns them again. Internal accounts have neither the configuration button nor API permission.
+
+The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables remain an emergency compatibility fallback only when no system configuration record exists. A system-saved configuration always takes precedence.
 
 ## Deployment sequence
 
@@ -92,3 +99,4 @@ For DeepSeek, this application uses the OpenAI-compatible Chat Completions route
 - TikTok: `/api/tiktok-shop-connections/`, `authorize/`, `{id}/refresh/`, `{id}/disconnect/`, `{id}/sync/`, callback `/api/integrations/tiktok-shop/callback/`.
 - AI: `/api/ai-providers/`, `{id}/test/`, `/api/ai-invocations/`, `/api/ai-recommendations/`, `{id}/confirm/`.
 - Media: `POST /api/media-assets/`, `GET /api/media-assets/{id}/content/`.
+- AlphaShop: `GET/PUT /api/alphashop-config/` (main account only; credentials are write-only and encrypted at rest).

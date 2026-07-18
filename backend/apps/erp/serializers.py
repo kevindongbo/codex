@@ -10,7 +10,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from .models import (
-    AIInvocationLog, AIProviderConfig, AIRecommendation, AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
+    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
     Product, ProductImage, PurchaseOrder, PurchaseOrderLine, Receipt, ReceiptLine,
     ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
@@ -668,6 +668,61 @@ class TikTokShopSyncRunSerializer(ScopedSerializer):
         model = TikTokShopSyncRun
         fields = "__all__"
         read_only_fields = ScopedSerializer.Meta.read_only_fields
+
+
+class AlphaShopConfigSerializer(ScopedSerializer):
+    access_key = serializers.CharField(write_only=True, required=False, allow_blank=False, trim_whitespace=False)
+    secret_key = serializers.CharField(write_only=True, required=False, allow_blank=False, trim_whitespace=False)
+    has_access_key = serializers.SerializerMethodField(read_only=True)
+    has_secret_key = serializers.SerializerMethodField(read_only=True)
+
+    class Meta(ScopedSerializer.Meta):
+        model = AlphaShopConfig
+        fields = [
+            "id", "organization", "access_key", "secret_key", "has_access_key", "has_secret_key",
+            "api_base_url", "enabled", "configured_by", "last_configured_at", "created_at", "updated_at",
+        ]
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + [
+            "has_access_key", "has_secret_key", "configured_by", "last_configured_at",
+        ]
+
+    def get_has_access_key(self, obj):
+        return bool(obj.access_key_encrypted)
+
+    def get_has_secret_key(self, obj):
+        return bool(obj.secret_key_encrypted)
+
+    def validate_api_base_url(self, value):
+        base_url = str(value).rstrip("/")
+        parsed = urlparse(base_url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise serializers.ValidationError("选品 API 地址必须是有效的 HTTPS 地址。")
+        return base_url
+
+    def validate(self, attrs):
+        creating = self.instance is None
+        if creating and (not attrs.get("access_key") or not attrs.get("secret_key")):
+            raise serializers.ValidationError({"access_key": "首次保存需要同时填写 Access Key 和 Secret Key。"})
+        return attrs
+
+    def _encrypt_keys(self, validated_data):
+        access_key = validated_data.pop("access_key", None)
+        secret_key = validated_data.pop("secret_key", None)
+        try:
+            if access_key is not None:
+                validated_data["access_key_encrypted"] = encrypt_secret(access_key)
+            if secret_key is not None:
+                validated_data["secret_key_encrypted"] = encrypt_secret(secret_key)
+        except ImproperlyConfigured as exc:
+            raise serializers.ValidationError({"secret_key": str(exc)}) from exc
+
+    def create(self, validated_data):
+        self._encrypt_keys(validated_data)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        self._encrypt_keys(validated_data)
+        return super().update(instance, validated_data)
 
 
 class AIProviderConfigSerializer(ScopedSerializer):

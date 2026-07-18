@@ -13,7 +13,7 @@ from rest_framework.test import APIClient
 from apps.erp.apps import ErpConfig
 from apps.erp import alphashop
 from apps.erp.models import (
-    AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
+    AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
     Product, ProductImage, PurchaseOrder, ReplenishmentPolicy, ReturnOrder, SalesOrder,
     SalesOrderLine, Shipment, SKU, StockBalance, StockLedger, StockTransfer,
     Supplier, Warehouse,
@@ -1528,8 +1528,39 @@ class ApiTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["keywords"][0]["keyword"], "women bag")
         search_keywords.assert_called_once_with(
-            platform="tiktok", region="MY", keyword="bag", listing_time="90"
+            platform="tiktok", region="MY", keyword="bag", listing_time="90", organization=self.organization,
         )
+
+    @patch.dict(os.environ, {"INTEGRATION_ENCRYPTION_KEY": "6WYxq_NVKo0Eq8o3EoYh5uEVEGTN8KlPJbwc_EW8ujY="})
+    def test_owner_can_save_encrypted_alphashop_config_without_key_echo(self):
+        owner = get_user_model().objects.create_superuser(
+            username="selection-owner", email="owner@example.com", password="test-pass-123"
+        )
+        self.client.force_authenticate(owner)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        response = self.client.put(
+            "/api/alphashop-config/",
+            {
+                "access_key": "owner-access-key",
+                "secret_key": "owner-secret-key",
+                "api_base_url": "https://api.alphashop.cn",
+                "enabled": True,
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["configured"])
+        self.assertEqual(response.data["source"], "system")
+        self.assertNotIn("access_key", response.data)
+        self.assertNotIn("secret_key", response.data)
+        config = AlphaShopConfig.objects.get(organization=self.organization)
+        self.assertNotIn("owner-access-key", config.access_key_encrypted)
+        self.assertNotIn("owner-secret-key", config.secret_key_encrypted)
+
+        self.client.force_authenticate(self.user)
+        denied = self.client.get("/api/alphashop-config/", **headers)
+        self.assertEqual(denied.status_code, 403, denied.data)
 
     @patch("apps.erp.views.alphashop.generate_report")
     def test_product_selection_report_validates_filters_and_forwards_selected_keyword(self, generate_report):

@@ -21,7 +21,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    AIInvocationLog, AIProviderConfig, AIRecommendation, AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge,
+    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge,
     LocalImport, Product, ProductImage, PurchaseOrder, Receipt, ReplenishmentPolicy, ReplenishmentSettings,
     ReturnOrder, ReturnReceipt, SalesOrder, Shipment,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
@@ -35,7 +35,7 @@ from .permissions import (
     request_organization,
 )
 from .serializers import (
-    AIInvocationLogSerializer, AIProviderConfigSerializer, AIRecommendationConfirmationSerializer, AIRecommendationInputSerializer, AIRecommendationSerializer,
+    AIInvocationLogSerializer, AIProviderConfigSerializer, AIRecommendationConfirmationSerializer, AIRecommendationInputSerializer, AIRecommendationSerializer, AlphaShopConfigSerializer,
     AdjustmentInputSerializer, AllocateInputSerializer, AuditLogSerializer,
     CompetitorProductSerializer, CompetitorSnapshotSerializer, InternalAccountSerializer, MembershipSerializer,
     ConfirmAndShipInputSerializer, LocalImportSerializer, OrganizationSerializer,
@@ -117,13 +117,73 @@ class ProductSelectionStatusView(APIView):
     capability = "catalog"
 
     def get(self, request):
-        request_organization(request)
+        organization = request_organization(request)
         return Response({
-            "configured": alphashop.configured(),
+            **alphashop.configuration_status(organization),
             "platform_regions": {key: list(value) for key, value in alphashop.PLATFORM_REGIONS.items()},
             "listing_times": list(alphashop.LISTING_TIMES),
             "defaults": {"platform": "tiktok", "region": "MY", "listing_time": "90"},
         })
+
+
+class AlphaShopConfigurationView(APIView):
+    """Owner-only singleton configuration for the selection service.
+
+    The serializer exposes only boolean key-presence flags.  Raw credentials
+    are accepted as write-only fields, encrypted before persistence, and never
+    copied into audit records.
+    """
+
+    permission_classes = [OrganizationRolePermission]
+    owner_only = True
+
+    def get(self, request):
+        organization = request_organization(request)
+        config = AlphaShopConfig.objects.filter(organization=organization).first()
+        if config is not None:
+            data = AlphaShopConfigSerializer(config, context={"request": request}).data
+            data.update(alphashop.configuration_status(organization))
+            return Response(data)
+        status_payload = alphashop.configuration_status(organization)
+        return Response({
+            "configured": status_payload["configured"],
+            "source": status_payload["source"],
+            "configuration_error": status_payload["configuration_error"],
+            "has_access_key": False,
+            "has_secret_key": False,
+            "api_base_url": "https://api.alphashop.cn",
+            "enabled": True,
+        })
+
+    @transaction.atomic
+    def put(self, request):
+        organization = request_organization(request)
+        config = AlphaShopConfig.objects.filter(organization=organization).first()
+        serializer = AlphaShopConfigSerializer(
+            config,
+            data=request.data,
+            partial=config is not None,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        now = timezone.now()
+        if config is None:
+            config = serializer.save(organization=organization, configured_by=request.user, last_configured_at=now)
+            action = "alphashop.config.create"
+        else:
+            config = serializer.save(configured_by=request.user, last_configured_at=now)
+            action = "alphashop.config.update"
+        write_audit(
+            organization=organization,
+            actor=request.user,
+            action=action,
+            instance=config,
+            after={"enabled": config.enabled, "api_base_url": config.api_base_url, "credentials_saved": True},
+        )
+        bump_sync_revision(organization_id=organization.pk)
+        data = AlphaShopConfigSerializer(config, context={"request": request}).data
+        data.update(alphashop.configuration_status(organization))
+        return Response(data)
 
 
 class ProductSelectionKeywordView(APIView):
@@ -131,7 +191,7 @@ class ProductSelectionKeywordView(APIView):
     capability = "catalog"
 
     def post(self, request):
-        request_organization(request)
+        organization = request_organization(request)
         serializer = ProductSelectionKeywordInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         values = serializer.validated_data
@@ -140,7 +200,7 @@ class ProductSelectionKeywordView(APIView):
             raise ValidationError({"region": "该平台暂不支持这个国家或地区。"})
         _selection_rate_limit(request, "keywords", 30, 60)
         try:
-            return Response(alphashop.search_keywords(**values))
+            return Response(alphashop.search_keywords(**values, organization=organization))
         except alphashop.AlphaShopError as exc:
             return Response({"code": exc.code, "detail": exc.detail}, status=exc.status_code)
 
@@ -150,7 +210,7 @@ class ProductSelectionReportView(APIView):
     capability = "catalog"
 
     def post(self, request):
-        request_organization(request)
+        organization = request_organization(request)
         serializer = ProductSelectionReportInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         values = serializer.validated_data
@@ -159,7 +219,7 @@ class ProductSelectionReportView(APIView):
             raise ValidationError({"region": "该平台暂不支持这个国家或地区。"})
         _selection_rate_limit(request, "report", 10, 3600)
         try:
-            return Response(alphashop.generate_report(**values))
+            return Response(alphashop.generate_report(**values, organization=organization))
         except alphashop.AlphaShopError as exc:
             return Response({"code": exc.code, "detail": exc.detail}, status=exc.status_code)
 
