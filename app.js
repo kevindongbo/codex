@@ -3518,6 +3518,14 @@ async function handleAction(action, id) {
         return executeTeamCommand(function () { return teamGateway.deleteProduct(product); }, '商品及其 SKU 已删除。', 'catalog');
       });
     }
+    // Competitor snapshots are dependent records and the API deletes them with
+    // the selected competitor.  Do not block this operation merely because the
+    // competitor already has snapshots; that left the Delete button unusable.
+    if (TEAM_MODE && product.kind !== 'own') {
+      return askConfirm('二次确认：彻底删除竞品“' + product.name + '”及其全部监控快照？此操作不可恢复。', function () {
+        return executeTeamCommand(function () { return teamGateway.deleteProduct(product); }, '竞品及其监控快照已彻底删除。', 'catalog');
+      });
+    }
     if (hasBusinessReferences(id) || productSnapshots(id).length) {
       if (product.status !== 'inactive') {
         return askConfirm('该商品已有历史记录，不能硬删除。是否改为停用？', function () {
