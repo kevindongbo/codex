@@ -1662,8 +1662,11 @@ function renderPurchases() {
 
 function renderInventory() {
   let products = ownProducts(state, true).filter(function (product) {
-    const balance = balanceFor(product.id);
-    return (product.status !== 'draft' || hasBusinessReferences(product.id)) && (!product.needsReview || hasBusinessReferences(product.id)) && searchMatches(product) && (!TEAM_MODE || Boolean(balance.apiBalanceId));
+    // A deleted/missing balance is still a valid SKU master.  Keep it visible so
+    // the operator can see the SKU and recreate/adjust its stock deliberately.
+    // Filtering it here made the whole inventory page look empty after a balance
+    // was deleted, even though other inventory data still existed.
+    return (product.status !== 'draft' || hasBusinessReferences(product.id)) && (!product.needsReview || hasBusinessReferences(product.id)) && searchMatches(product);
   });
   if (inventoryFilter === 'low') {
     products = products.filter(function (product) { return product.status === 'active' && availableFor(product.id) < integer(product.safetyStock); });
@@ -3471,8 +3474,8 @@ async function handleAction(action, id) {
     const product = productById(id);
     const balance = balanceFor(id);
     if (!product || !balance.apiBalanceId) return showToast('库存记录不存在或尚未同步。');
-    return askConfirm('二次确认：彻底删除“' + product.name + '”当前仓的库存及全部库存流水？此操作不可恢复。', function () {
-      return executeTeamCommand(function () { return teamGateway.deleteStockBalance(balance, true); }, '库存记录及库存流水已彻底删除。', 'inventory');
+    return askConfirm('二次确认：仅彻底删除“' + product.name + '”在当前仓的这条库存记录及该 SKU 在当前仓的库存流水；不会删除其他商品或其他 SKU。此操作不可恢复。', function () {
+      return executeTeamCommand(function () { return teamGateway.deleteStockBalance(balance, true); }, '当前 SKU 在当前仓的库存记录及流水已彻底删除。', 'inventory');
     });
   }
   if (action === 'revoke-movement') {
