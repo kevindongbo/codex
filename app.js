@@ -1662,7 +1662,8 @@ function renderPurchases() {
 
 function renderInventory() {
   let products = ownProducts(state, true).filter(function (product) {
-    return (product.status !== 'draft' || hasBusinessReferences(product.id)) && (!product.needsReview || hasBusinessReferences(product.id)) && searchMatches(product);
+    const balance = balanceFor(product.id);
+    return (product.status !== 'draft' || hasBusinessReferences(product.id)) && (!product.needsReview || hasBusinessReferences(product.id)) && searchMatches(product) && (!TEAM_MODE || Boolean(balance.apiBalanceId));
   });
   if (inventoryFilter === 'low') {
     products = products.filter(function (product) { return product.status === 'active' && availableFor(product.id) < integer(product.safetyStock); });
@@ -1671,13 +1672,13 @@ function renderInventory() {
     const balance = balanceFor(product.id);
     const available = Math.max(0, balance.onHand - balance.reserved);
     const low = available < integer(product.safetyStock);
-    const canDeleteBalance = TEAM_MODE && teamCapabilityAllowed('inventory') && balance.apiBalanceId && balance.onHand === 0 && balance.reserved === 0;
+    const canDeleteBalance = TEAM_MODE && teamCapabilityAllowed('inventory') && balance.apiBalanceId;
     return '<tr><td>' + productMedia(product) + '</td><td>' + escapeHtml(product.sku || '待完善') + '</td>' +
       '<td><span class="stock-number instock">' + balance.onHand + '</span></td><td>' + balance.reserved + '</td>' +
       '<td><span class="stock-number ' + (low ? 'low' : 'instock') + '">' + available + '</span></td><td>' + integer(product.safetyStock) + '</td>' +
       '<td>' + money(balance.onHand * nonNegative(product.standardCost), product.costCurrency) + '</td>' +
       '<td>' + (product.status === 'draft' ? statusPill('草稿 · 有库存', 'shortage') : (product.status === 'inactive' ? statusPill('已停用', 'inactive') : (product.needsReview ? statusPill('待完善', 'shortage') : (low ? statusPill('需补货', 'shortage') : statusPill('正常', 'active'))))) + '</td>' +
-      '<td><div class="row-actions">' + (teamCapabilityAllowed('inventory') && product.status === 'active' && !product.needsReview ? rowButton('adjust-stock', product.id, '库存调整', 'primary') : (teamCapabilityAllowed('catalog') && product.needsReview ? rowButton('edit-product', product.id, '完善商品', 'primary') : '')) + rowButton('view-movements', product.id, '看流水') + (canDeleteBalance ? rowButton('delete-stock-balance', product.id, '删除零库存', 'danger') : '') + '</div></td></tr>';
+      '<td><div class="row-actions">' + (teamCapabilityAllowed('inventory') && product.status === 'active' && !product.needsReview ? rowButton('adjust-stock', product.id, '库存调整', 'primary') : (teamCapabilityAllowed('catalog') && product.needsReview ? rowButton('edit-product', product.id, '完善商品', 'primary') : '')) + rowButton('view-movements', product.id, '看流水') + (canDeleteBalance ? rowButton('delete-stock-balance', product.id, '彻底删除库存', 'danger') : '') + '</div></td></tr>';
   }).join('');
   toggleEmpty('#warehouseEmpty', products.length === 0);
 }
@@ -3470,9 +3471,8 @@ async function handleAction(action, id) {
     const product = productById(id);
     const balance = balanceFor(id);
     if (!product || !balance.apiBalanceId) return showToast('库存记录不存在或尚未同步。');
-    if (balance.onHand !== 0 || balance.reserved !== 0) return showToast('仅在在库与锁定库存均为 0 时可以删除库存记录。');
-    return askConfirm('确认删除“' + product.name + '”的零库存记录？该操作不会删除商品和历史流水。', function () {
-      return executeTeamCommand(function () { return teamGateway.deleteStockBalance(balance); }, '零库存记录已删除；商品和历史流水均已保留。', 'inventory');
+    return askConfirm('二次确认：彻底删除“' + product.name + '”当前仓的库存及全部库存流水？此操作不可恢复。', function () {
+      return executeTeamCommand(function () { return teamGateway.deleteStockBalance(balance, true); }, '库存记录及库存流水已彻底删除。', 'inventory');
     });
   }
   if (action === 'revoke-movement') {
@@ -3506,7 +3506,12 @@ async function handleAction(action, id) {
     if (!product) return;
     if (TEAM_MODE && product.kind === 'own') {
       const skuCopy = product.skuCount > 1 ? '及其 ' + product.skuCount + ' 个 SKU' : '及其 SKU';
-      return askConfirm('确认彻底删除“' + product.name + '”' + skuCopy + '？仅当没有库存和业务记录时才能删除，此操作不可撤销。', function () {
+      if (product.status === 'inactive') {
+        return askConfirm('二次确认：彻底删除已停用商品“' + product.name + '”' + skuCopy + '，以及关联库存、流水、采购、订单和快照数据？此操作不可恢复。', function () {
+          return executeTeamCommand(function () { return teamGateway.deleteProduct(product, true); }, '已停用商品及关联数据已彻底删除。', 'catalog');
+        });
+      }
+      return askConfirm('确认彻底删除“' + product.name + '”' + skuCopy + '？有业务记录的商品请先停用，再进行二次确认删除。', function () {
         return executeTeamCommand(function () { return teamGateway.deleteProduct(product); }, '商品及其 SKU 已删除。', 'catalog');
       });
     }

@@ -771,9 +771,9 @@
       return this.request('/competitors/' + (product.apiCompetitorId || product.id) + '/', { method: 'PATCH', body: { active: active } });
     }
 
-    async deleteProduct(product) {
+    async deleteProduct(product, force) {
       const path = product.kind === 'own'
-        ? '/products/' + (product.apiProductId || product.id) + '/'
+        ? '/products/' + (product.apiProductId || product.id) + (force ? '/force-delete/' : '/')
         : '/competitors/' + (product.apiCompetitorId || product.id) + '/';
       return this.request(path, { method: 'DELETE' });
     }
@@ -853,8 +853,8 @@
       }
     }
 
-    async deleteStockBalance(balance) {
-      return this.request('/stock-balances/' + balance.apiBalanceId + '/', { method: 'DELETE' });
+    async deleteStockBalance(balance, force) {
+      return this.request('/stock-balances/' + balance.apiBalanceId + (force ? '/force-delete/' : '/'), { method: 'DELETE' });
     }
 
     async revokeStockLedger(movement, reason) {

@@ -244,6 +244,50 @@ class ApiTests(TestCase):
         deleted = self.client.delete(f"/api/stock-balances/{balance.pk}/", **headers)
         self.assertEqual(deleted.status_code, 204)
 
+    def test_force_delete_stock_balance_removes_nonzero_balance_and_ledger(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(organization=self.organization, code="PURGE-WH", name="purge warehouse")
+        product = Product.objects.create(organization=self.organization, name="purge stock product", status=Product.Status.ACTIVE)
+        sku = SKU.objects.create(organization=self.organization, product=product, code="PURGE-SKU", cost="10")
+        inbound = self.client.post(
+            "/api/stock-balances/manual-inbound/",
+            {"warehouse": str(warehouse.pk), "sku": str(sku.pk), "quantity": "5", "idempotency_key": "purge-stock-1"},
+            format="json", **headers,
+        )
+        self.assertEqual(inbound.status_code, 201, inbound.data)
+        balance = StockBalance.objects.get(warehouse=warehouse, sku=sku)
+        deleted = self.client.delete(f"/api/stock-balances/{balance.pk}/force-delete/", **headers)
+        self.assertEqual(deleted.status_code, 204, deleted.data)
+        self.assertFalse(StockBalance.objects.filter(pk=balance.pk).exists())
+        self.assertFalse(StockLedger.objects.filter(sku=sku, warehouse=warehouse).exists())
+
+    def test_inactive_product_force_delete_purges_business_records(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(organization=self.organization, code="PURGE-PROD-WH", name="purge product warehouse")
+        supplier = Supplier.objects.create(organization=self.organization, code="PURGE-PROD-SUP", name="purge product supplier")
+        product = Product.objects.create(organization=self.organization, name="inactive purge product", status=Product.Status.ACTIVE)
+        sku = SKU.objects.create(organization=self.organization, product=product, code="PURGE-PROD-SKU", cost="8")
+        balance = StockBalance.objects.create(organization=self.organization, warehouse=warehouse, sku=sku, on_hand="2")
+        purchase = self.client.post(
+            "/api/purchase-orders/",
+            {"number": "PO-PURGE-PROD", "supplier": str(supplier.pk), "warehouse": str(warehouse.pk), "currency": "CNY",
+             "lines": [{"sku": str(sku.pk), "quantity_ordered": "2", "unit_cost": "8"}]},
+            format="json", **headers,
+        )
+        self.assertEqual(purchase.status_code, 201, purchase.data)
+        product.status = Product.Status.INACTIVE
+        product.save(update_fields=["status", "updated_at"])
+        product_id, sku_id, balance_id = product.pk, sku.pk, balance.pk
+        deleted = self.client.delete(f"/api/products/{product_id}/force-delete/", **headers)
+        self.assertEqual(deleted.status_code, 204, deleted.data)
+        self.assertFalse(Product.objects.filter(pk=product_id).exists())
+        self.assertFalse(SKU.objects.filter(pk=sku_id).exists())
+        self.assertFalse(StockBalance.objects.filter(pk=balance_id).exists())
+        self.assertEqual(PurchaseOrder.objects.get(pk=purchase.data["id"]).lines.count(), 0)
+        self.assertTrue(AuditLog.objects.filter(organization=self.organization, action="product.force_delete", object_id=str(product_id)).exists())
+
     def test_ai_provider_reports_deepseek_format_and_missing_encryption_key(self):
         owner = get_user_model().objects.create_superuser(username="owner-ai", password="test-pass-123", email="owner@example.com")
         self.client.force_authenticate(owner)

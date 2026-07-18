@@ -125,6 +125,8 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /purchaseOrders/);
   assert.match(scriptText, /delete-purchase/);
   assert.match(scriptText, /teamGateway\.deletePurchase/);
+  assert.match(scriptText, /teamGateway\.deleteProduct\(product, true\)/);
+  assert.match(scriptText, /teamGateway\.deleteStockBalance\(balance, true\)/);
   assert.doesNotMatch(scriptText, /团队版会保留本店 SKU 主档/);
   assert.match(scriptText, /inventoryBalances/);
   assert.match(scriptText, /inventoryMovements/);
@@ -174,6 +176,7 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(teamText, /local-imports\/commit/);
   assert.match(teamText, /product-selection\/keywords/);
   assert.match(teamText, /product-selection\/report/);
+  assert.match(teamText, /force-delete/);
   assert.equal(runtimeConfig.status, 200);
   assert.match(await runtimeConfig.text(), /mode: 'local'/);
   assert.equal(stylesheet.status, 200);

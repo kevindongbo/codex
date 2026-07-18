@@ -8,6 +8,7 @@ from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import FileResponse, Http404
 from django.db import IntegrityError, connection, transaction
+from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
@@ -22,9 +23,9 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge,
-    LocalImport, Product, ProductImage, PurchaseOrder, Receipt, ReplenishmentPolicy, ReplenishmentSettings,
-    ReturnOrder, ReturnReceipt, SalesOrder, Shipment,
-    SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
+    LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, Receipt, ReceiptLine, ReplenishmentPolicy, ReplenishmentSettings,
+    ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
+    SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
 from .owner_security import consume_challenge, create_challenge, email_verification_enabled
 from .permissions import (
@@ -738,6 +739,56 @@ class ProductViewSet(OrganizationScopedViewSet):
         return Response(self.get_serializer(product).data)
 
 
+    @staticmethod
+    def _raw_delete(queryset):
+        """Explicit owner purge path: bypass append-only guards after confirmation."""
+        if queryset.exists():
+            queryset._raw_delete(queryset.db)
+
+    @transaction.atomic
+    def _purge_inactive_product(self, instance):
+        """Permanently erase an inactive SKU master and every SKU-level record."""
+        skus = list(instance.skus.select_for_update())
+        sku_ids = [sku.pk for sku in skus]
+        if sku_ids:
+            purchase_line_ids = list(PurchaseOrderLine.objects.filter(sku_id__in=sku_ids).values_list("pk", flat=True))
+            sales_line_ids = list(SalesOrderLine.objects.filter(sku_id__in=sku_ids).values_list("pk", flat=True))
+            return_line_ids = list(ReturnLine.objects.filter(sku_id__in=sku_ids).values_list("pk", flat=True))
+            ledger_ids = list(StockLedger.objects.filter(sku_id__in=sku_ids).values_list("pk", flat=True))
+
+            # This endpoint is intentionally available only for an inactive product.
+            self._raw_delete(ReturnReceiptLine.objects.filter(Q(sku_id__in=sku_ids) | Q(return_line_id__in=return_line_ids)))
+            self._raw_delete(ReturnLine.objects.filter(pk__in=return_line_ids))
+            self._raw_delete(ShipmentLine.objects.filter(Q(sku_id__in=sku_ids) | Q(order_line_id__in=sales_line_ids)))
+            self._raw_delete(StockReservation.objects.filter(Q(sku_id__in=sku_ids) | Q(order_line_id__in=sales_line_ids)))
+            self._raw_delete(SalesOrderLine.objects.filter(pk__in=sales_line_ids))
+            self._raw_delete(ReceiptLine.objects.filter(Q(sku_id__in=sku_ids) | Q(purchase_line_id__in=purchase_line_ids)))
+            self._raw_delete(PurchaseOrderLine.objects.filter(pk__in=purchase_line_ids))
+            self._raw_delete(StockTransferLine.objects.filter(sku_id__in=sku_ids))
+            self._raw_delete(StockLedgerReversal.objects.filter(Q(original_ledger_id__in=ledger_ids) | Q(reversal_ledger_id__in=ledger_ids)))
+            self._raw_delete(StockLedger.objects.filter(pk__in=ledger_ids))
+            self._raw_delete(ReplenishmentPolicy.objects.filter(sku_id__in=sku_ids))
+            self._raw_delete(StockBalance.objects.filter(sku_id__in=sku_ids))
+            SKU.objects.filter(pk__in=sku_ids).delete()
+
+        write_audit(
+            organization=instance.organization,
+            actor=self.request.user,
+            action="product.force_delete",
+            instance=instance,
+            before={"name": instance.name, "status": instance.status, "sku_codes": [sku.code for sku in skus]},
+        )
+        instance.delete()
+
+    @action(detail=True, methods=["delete"], url_path="force-delete")
+    def force_delete(self, request, pk=None):
+        instance = self.get_object()
+        if instance.status != Product.Status.INACTIVE:
+            raise ValidationError("Only an inactive product can be force deleted.")
+        self._purge_inactive_product(instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class SKUViewSet(OrganizationScopedViewSet):
     queryset = SKU.objects.select_related("product").order_by("code", "id")
     serializer_class = SKUSerializer
@@ -950,6 +1001,33 @@ class StockBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixi
             raise ValidationError("仓库或 SKU 不属于当前组织")
         ledger = _service_call(adjust_inventory, organization=organization, actor=request.user, **values)
         return Response(StockLedgerSerializer(ledger).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["delete"], url_path="force-delete")
+    @transaction.atomic
+    def force_delete(self, request, pk=None):
+        """Irreversibly delete the balance and its stock ledger for this warehouse/SKU."""
+        balance = StockBalance.objects.select_for_update().get(pk=self.get_object().pk)
+        ledgers = StockLedger.objects.filter(
+            organization=balance.organization, warehouse=balance.warehouse, sku=balance.sku
+        )
+        ledger_ids = list(ledgers.values_list("pk", flat=True))
+        if ledger_ids:
+            StockLedgerReversal.objects.filter(
+                Q(original_ledger_id__in=ledger_ids) | Q(reversal_ledger_id__in=ledger_ids)
+            ).delete()
+            ledgers._raw_delete(ledgers.db)
+        ReplenishmentPolicy.objects.filter(
+            organization=balance.organization, warehouse=balance.warehouse, sku=balance.sku
+        ).delete()
+        write_audit(
+            organization=balance.organization,
+            actor=request.user,
+            action="inventory.balance.force_delete",
+            instance=balance,
+            before={"warehouse": str(balance.warehouse_id), "sku": str(balance.sku_id), "on_hand": str(balance.on_hand), "reserved": str(balance.reserved)},
+        )
+        balance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _manual_move(self, request, direction):
         data = ManualStockMovementInputSerializer(data=request.data, context=self.get_serializer_context())
