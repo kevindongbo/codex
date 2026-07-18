@@ -8,7 +8,7 @@ This document is the implementation and acceptance record for the ERP operations
 - Release commit: `77204a3` (includes `6b4adb5` and `adda3c8`)
 - Local migration validation: `python manage.py makemigrations --check --dry-run` — no changes detected
 - Backend regression: `python manage.py test apps.erp.tests --verbosity 1` — 75 tests passed
-- Browser/static regression: `node scripts/build-site.mjs && node --test tests/*.test.mjs` — 38 tests passed
+- Browser/static regression: `node scripts/build-site.mjs && node --test tests/*.test.mjs` — 39 tests passed
 - JavaScript syntax: `node --check app.js && node --check team.js` — passed
 
 Production verification remains a separate gate: back up the production code and PostgreSQL database, deploy the exact release commit, run migrations, check `/api/health/`, then perform the browser checks below.

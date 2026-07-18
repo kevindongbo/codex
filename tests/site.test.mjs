@@ -88,6 +88,18 @@ test("contains product, warehouse, order and monitoring workflows", async () => 
   assert.match(html, />确认并出库</);
 });
 
+test("keeps multi-line purchase creation and batch receiving usable for long orders", async () => {
+  const [html, css] = await Promise.all([
+    (await fetchPath("/index.html")).text(),
+    (await fetchPath("/styles.css")).text(),
+  ]);
+  assert.match(html, /id="purchaseLineList"/);
+  assert.match(html, /id="receivePurchaseId"/);
+  assert.match(html, /id="receiveLineList"/);
+  assert.match(html, /只填写实际到货的数量/);
+  assert.match(css, /\.purchase-line-list, \.receive-line-list \{ max-height: 300px; overflow-y: auto;/);
+});
+
 test("serves application assets with local and team data modes", async () => {
   const [script, teamScript, runtimeConfig, stylesheet, socialImage, missing] = await Promise.all([
     fetchPath("/app.js"),
