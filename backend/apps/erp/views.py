@@ -504,9 +504,10 @@ def replenishment_recommendations(request):
         target_days=Decimal(settings.target_days),
         manual_lead_days=Decimal(settings.default_lead_time_days),
         service_level_factor=settings.service_level_factor,
+        safety_margin_ratio=settings.safety_margin_ratio,
         initial_reference_shipment_count=settings.initial_reference_shipment_count,
     )
-    weights = (settings.velocity_weight_7, settings.velocity_weight_14, settings.velocity_weight_30)
+    weights = (settings.velocity_weight_7, settings.velocity_weight_15, settings.velocity_weight_30)
     recommendations = []
     skus = SKU.objects.filter(
         organization=organization,
@@ -530,6 +531,7 @@ def replenishment_recommendations(request):
                 ),
                 safety_stock_units=stored_policy.safety_stock_override,
                 service_level_factor=settings.service_level_factor,
+                safety_margin_ratio=default_policy.safety_margin_ratio,
                 initial_reference_shipment_count=settings.initial_reference_shipment_count,
             )
         forecast = build_replenishment_forecast(
@@ -918,7 +920,20 @@ class StockBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixi
     def perform_destroy(self, instance):
         balance = StockBalance.objects.select_for_update().get(pk=instance.pk)
         if balance.on_hand != 0 or balance.reserved != 0:
-            raise ValidationError("只有在库和锁定数量都为 0 的库存记录才能删除")
+            raise ValidationError("只有在库、锁定和可用库存都为 0 的库存记录才能删除；请先清空库存并释放占用")
+        pending_outbound = SalesOrder.objects.filter(
+            organization=balance.organization,
+            warehouse=balance.warehouse,
+            status__in=[
+                SalesOrder.Status.READY,
+                SalesOrder.Status.ALLOCATED,
+                SalesOrder.Status.PICKING,
+                SalesOrder.Status.VERIFIED,
+            ],
+            lines__sku=balance.sku,
+        ).exists()
+        if pending_outbound:
+            raise ValidationError("该 SKU 仍有关联的待出库订单，不能删除零库存记录；请先取消订单或完成出库")
         write_audit(
             organization=balance.organization, actor=self.request.user, action="inventory.balance.delete", instance=balance,
             before={"warehouse": str(balance.warehouse_id), "sku": str(balance.sku_id), "on_hand": str(balance.on_hand), "reserved": str(balance.reserved)},

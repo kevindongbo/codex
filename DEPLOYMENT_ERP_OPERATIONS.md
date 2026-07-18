@@ -91,16 +91,16 @@ The old `ALPHASHOP_ACCESS_KEY` and `ALPHASHOP_SECRET_KEY` environment variables 
 - Create a multi-line purchase order, select it on the receiving page, enter quantities for two lines, and confirm one receipt updates both lines.
 - Submit manual inbound and outbound with blank notes; verify outbound cannot exceed available stock.
 - Revoke a manual/adjustment ledger record and verify a separate reversal record appears; attempt a second revoke and confirm it is denied.
-- Set a balance to zero with no reservation; confirm delete requires the browser confirmation and leaves product/history intact. Confirm non-zero balance deletion is denied.
+- Set a balance to zero with no reservation or pending outbound order; confirm delete requires the browser confirmation and leaves product/history intact. Confirm non-zero balance or an associated pending order is denied.
 - Upload a local JPG/PNG/WebP for a competitor and save; confirm the URL is `/api/media-assets/.../content/`, not `data:`.
-- Confirm a replenishment recommendation exposes velocity, lead time, safety calculation, inbound position, and alert level.
+- Confirm a replenishment recommendation exposes 7/15/30-day velocity, lead time, safety calculation, configurable safety margin, inbound position, alert level, and calculation basis.
 - In **店铺与 AI 接口**, start TikTok seller authorization, complete Partner Center OAuth, and verify every authorized shop appears separately with its shop name. Refresh/disconnect one shop and confirm neither token nor shop cipher is returned in API responses.
 - Add an AI provider with `temperature` and `max_tokens` JSON parameters, edit it with a blank API Key, test it, and inspect the usage summary plus the latest invocation rows. Confirm a malformed parameter object or a reserved key is rejected. Create one proposal, confirm it, create another and reject it; verify the stock ledger has no extra entry and both decisions appear in the audit log.
 
 ## API additions
 
 - `POST /api/receipts/` accepts all selected receipt lines in one request.
-- `DELETE /api/stock-balances/{id}/` permits only zero on-hand and zero reserved balances.
+- `DELETE /api/stock-balances/{id}/` permits only zero on-hand and zero reserved balances with no pending outbound order for that SKU/warehouse.
 - `POST /api/stock-balances/manual-inbound/`, `POST /api/stock-balances/manual-outbound/`.
 - `POST /api/stock-ledger/{id}/revoke/`.
 - `GET/POST/PATCH /api/replenishment-settings/` (organization defaults, editable in **仓库中心 → 智能补货 → 全局补货参数**).

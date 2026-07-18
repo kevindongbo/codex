@@ -323,15 +323,17 @@ test("replenishment combines weighted outbound velocity, lead time, inbound stoc
 
   const recommendation = domain.localReplenishmentRecommendation(product);
   assert.ok(Math.abs(recommendation.velocity7 - 2) < 0.001);
-  assert.ok(Math.abs(recommendation.velocity14 - 1) < 0.001);
+  assert.ok(Math.abs(recommendation.velocity15 - (14 / 15)) < 0.001);
   assert.ok(Math.abs(recommendation.velocity30 - (14 / 30)) < 0.001);
-  assert.ok(Math.abs(recommendation.velocity - (2 * 0.5 + 1 * 0.3 + (14 / 30) * 0.2)) < 0.001);
+  assert.ok(Math.abs(recommendation.velocity - (2 * 0.5 + (14 / 15) * 0.3 + (14 / 30) * 0.2)) < 0.001);
   assert.equal(recommendation.leadDays, 10);
   assert.equal(recommendation.leadSource, "manual");
   assert.equal(recommendation.available, 10);
   assert.equal(recommendation.inbound, 5);
   assert.equal(recommendation.inventoryPosition, 15);
-  assert.equal(recommendation.suggestedQty, 30);
+  assert.equal(recommendation.suggestedQty, 54);
+  assert.equal(recommendation.safetyMarginRatio, 0.2);
+  assert.ok(recommendation.safetyMarginUnits > 0);
   assert.equal(recommendation.urgency, "urgent");
   assert.equal(recommendation.confidence, "medium");
   assert.ok(recommendation.latestOrderDate);
@@ -358,7 +360,7 @@ test("team replenishment response maps the final forecast dataclass fields witho
   const recommendation = domain.normalizeTeamRecommendation({
     product: "product-1", sku: "sku-1", policy: "policy-1",
     lead_time: { selected_days: 18, source: "historical_full_p80", confidence: "high" },
-    demand: { daily_velocity: "2.4000", daily_7: "3.0000", daily_14: "2.0000", daily_30: "1.5000" },
+    demand: { daily_velocity: "2.4000", daily_7: "3.0000", daily_15: "2.0000", daily_30: "1.5000" },
     inventory: { available: "10.000", in_transit: "20.000", inventory_position: "30.000" },
     reorder_point: "41.000", suggested_order_quantity: "24.000", alert_level: "red",
     available_days_of_cover: "4.2", available_stockout_date: "2026-07-20",
@@ -369,7 +371,7 @@ test("team replenishment response maps the final forecast dataclass fields witho
   assert.equal(recommendation.skuId, "sku-1");
   assert.equal(recommendation.velocity, 2.4);
   assert.equal(recommendation.velocity7, 3);
-  assert.equal(recommendation.velocity14, 2);
+  assert.equal(recommendation.velocity15, 2);
   assert.equal(recommendation.velocity30, 1.5);
   assert.equal(recommendation.leadDays, 18);
   assert.equal(recommendation.leadSource, "historical_full_p80");

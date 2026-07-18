@@ -379,8 +379,11 @@ class ReplenishmentSettings(OrganizationScopedModel):
     target_days = models.PositiveIntegerField("默认目标覆盖天数", default=30)
     service_level_factor = models.DecimalField("销售波动服务系数", max_digits=5, decimal_places=2, default=Decimal("1.65"))
     initial_reference_shipment_count = models.PositiveIntegerField("使用初始安全库存参考的最少出库单数", default=3)
+    safety_margin_ratio = models.DecimalField(
+        "建议补货安全余量比例", max_digits=5, decimal_places=3, default=Decimal("0.200")
+    )
     velocity_weight_7 = models.DecimalField("近 7 天权重", max_digits=5, decimal_places=3, default=Decimal("0.500"))
-    velocity_weight_14 = models.DecimalField("近 14 天权重", max_digits=5, decimal_places=3, default=Decimal("0.300"))
+    velocity_weight_15 = models.DecimalField("近 15 天权重", max_digits=5, decimal_places=3, default=Decimal("0.300"))
     velocity_weight_30 = models.DecimalField("近 30 天权重", max_digits=5, decimal_places=3, default=Decimal("0.200"))
 
     class Meta:
@@ -393,6 +396,10 @@ class ReplenishmentSettings(OrganizationScopedModel):
             models.CheckConstraint(condition=Q(review_cycle_days__gt=0), name="replenishment_settings_review_positive"),
             models.CheckConstraint(condition=Q(target_days__gt=0), name="replenishment_settings_target_positive"),
             models.CheckConstraint(condition=Q(service_level_factor__gte=0), name="replenishment_settings_service_nonnegative"),
+            models.CheckConstraint(
+                condition=Q(safety_margin_ratio__gte=0) & Q(safety_margin_ratio__lte=1),
+                name="replenishment_settings_margin_between_zero_and_one",
+            ),
         ]
 
 

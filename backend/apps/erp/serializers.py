@@ -633,11 +633,16 @@ class ReplenishmentSettingsSerializer(ScopedSerializer):
     def validate(self, attrs):
         weights = [
             attrs.get("velocity_weight_7", getattr(self.instance, "velocity_weight_7", Decimal("0"))),
-            attrs.get("velocity_weight_14", getattr(self.instance, "velocity_weight_14", Decimal("0"))),
+            attrs.get("velocity_weight_15", getattr(self.instance, "velocity_weight_15", Decimal("0"))),
             attrs.get("velocity_weight_30", getattr(self.instance, "velocity_weight_30", Decimal("0"))),
         ]
         if sum(weights) <= 0:
-            raise serializers.ValidationError("近 7/14/30 天销量权重之和必须大于 0")
+            raise serializers.ValidationError("近 7/15/30 天销量权重之和必须大于 0")
+        safety_margin_ratio = attrs.get(
+            "safety_margin_ratio", getattr(self.instance, "safety_margin_ratio", Decimal("0.200"))
+        )
+        if safety_margin_ratio < 0 or safety_margin_ratio > 1:
+            raise serializers.ValidationError({"safety_margin_ratio": "建议安全余量比例必须在 0 到 1 之间"})
         return attrs
 
 

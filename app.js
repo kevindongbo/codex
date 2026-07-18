@@ -1826,7 +1826,8 @@ function localPolicyFor(productId, warehouseId) {
     targetDays: integer(stored.targetDays || 30) || 30,
     minOrderQty: integer(stored.minOrderQty || 1) || 1,
     packSize: integer(stored.packSize || 1) || 1,
-    safetyStockOverride: stored.safetyStockOverride == null || stored.safetyStockOverride === '' ? null : integer(stored.safetyStockOverride)
+    safetyStockOverride: stored.safetyStockOverride == null || stored.safetyStockOverride === '' ? null : integer(stored.safetyStockOverride),
+    safetyMarginRatio: Math.min(1, Math.max(0, asNumber(stored.safetyMarginRatio, 0.2)))
   };
 }
 function localLeadSamples(productId, warehouseId) {
@@ -1863,9 +1864,9 @@ function localReplenishmentRecommendation(product) {
   const warehouseId = currentWarehouseId();
   const policy = localPolicyFor(product.id, warehouseId);
   const velocity7 = localVelocity(product.id, warehouseId, 7);
-  const velocity14 = localVelocity(product.id, warehouseId, 14);
+  const velocity15 = localVelocity(product.id, warehouseId, 15);
   const velocity30 = localVelocity(product.id, warehouseId, 30);
-  const velocity = velocity7 * 0.5 + velocity14 * 0.3 + velocity30 * 0.2;
+  const velocity = velocity7 * 0.5 + velocity15 * 0.3 + velocity30 * 0.2;
   const leadSamples = localLeadSamples(product.id, warehouseId);
   const leadMedian = percentile(leadSamples, 0.5);
   const leadP80 = percentile(leadSamples, 0.8);
@@ -1881,8 +1882,11 @@ function localReplenishmentRecommendation(product) {
   const inbound = purchaseInbound + transferInbound;
   const inventoryPosition = available + inbound;
   const safetyStock = policy.safetyStockOverride == null ? integer(product.safetyStock) : policy.safetyStockOverride;
-  const reorderPoint = Math.ceil(velocity * (leadDays + policy.reviewCycleDays) + safetyStock);
-  const rawSuggested = Math.max(0, velocity * policy.targetDays + safetyStock - inventoryPosition);
+  const reorderDemand = velocity * (leadDays + policy.reviewCycleDays);
+  const targetDemand = velocity * (leadDays + Math.max(policy.targetDays, policy.reviewCycleDays));
+  const reorderPoint = Math.ceil(reorderDemand * (1 + policy.safetyMarginRatio) + safetyStock);
+  const safetyMarginUnits = targetDemand * policy.safetyMarginRatio;
+  const rawSuggested = Math.max(0, targetDemand + safetyStock + safetyMarginUnits - inventoryPosition);
   let suggestedQty = rawSuggested <= 0 ? 0 : Math.max(policy.minOrderQty, Math.ceil(rawSuggested));
   if (suggestedQty) suggestedQty = Math.ceil(suggestedQty / policy.packSize) * policy.packSize;
   const daysCover = velocity > 0 ? inventoryPosition / velocity : Infinity;
@@ -1891,11 +1895,13 @@ function localReplenishmentRecommendation(product) {
   const urgency = insufficientData ? 'insufficient' : (inventoryPosition <= reorderPoint || latestInDays <= 0 ? 'urgent' : (latestInDays <= 7 ? 'soon' : 'healthy'));
   const confidence = leadSamples.length >= 3 && state.inventoryMovements.filter(function (item) { return item.productId === product.id && item.warehouseId === warehouseId && item.type === 'outbound'; }).length >= 3 ? 'high' : (leadSamples.length || velocity > 0 ? 'medium' : 'low');
   return {
-    productId: product.id, velocity: velocity, velocity7: velocity7, velocity14: velocity14, velocity30: velocity30,
+    productId: product.id, velocity: velocity, velocity7: velocity7, velocity15: velocity15, velocity30: velocity30,
     leadDays: leadDays, leadMedian: leadMedian, leadP80: leadP80, leadSource: leadSource,
     available: available, inbound: inbound, inventoryPosition: inventoryPosition, reorderPoint: reorderPoint,
     daysCover: daysCover, stockoutDate: velocity > 0 && Number.isFinite(daysCover) ? dateAfterDays(daysCover) : '',
     latestOrderDate: Number.isFinite(latestInDays) ? dateAfterDays(latestInDays, true) : '', suggestedQty: suggestedQty,
+    safetyMarginRatio: policy.safetyMarginRatio, safetyMarginUnits: safetyMarginUnits,
+    reasons: ['库存位置 = 可用库存 + 在途库存。', '建议安全余量 = 目标需求 × ' + (policy.safetyMarginRatio * 100).toFixed(0) + '%。'],
     urgency: urgency, confidence: confidence, policy: policy
   };
 }
@@ -1907,7 +1913,7 @@ function normalizeTeamRecommendation(item) {
     productId: String(item.product_id || item.productId || item.product || ''),
     skuId: String(item.sku_id || item.skuId || item.sku || ''),
     velocity: asNumber(demand.daily_velocity == null ? item.weighted_daily_velocity : demand.daily_velocity),
-    velocity7: asNumber(demand.daily_7), velocity14: asNumber(demand.daily_14), velocity30: asNumber(demand.daily_30),
+    velocity7: asNumber(demand.daily_7), velocity15: asNumber(demand.daily_15), velocity30: asNumber(demand.daily_30),
     leadDays: asNumber(lead.selected_days == null ? item.lead_days : lead.selected_days, 14),
     leadSource: lead.source || item.lead_source || 'fallback', available: integer(inventory.available == null ? item.available : inventory.available),
     inbound: integer(inventory.in_transit == null ? item.in_transit : inventory.in_transit),
@@ -1915,6 +1921,8 @@ function normalizeTeamRecommendation(item) {
     reorderPoint: integer(item.reorder_point), daysCover: item.available_days_of_cover == null ? Infinity : asNumber(item.available_days_of_cover),
     stockoutDate: item.projected_stockout_date || item.available_stockout_date || '', latestOrderDate: item.latest_order_date || '',
     suggestedQty: integer(item.suggested_order_quantity == null ? item.suggested_qty : item.suggested_order_quantity),
+    safetyMarginRatio: asNumber(item.safety_margin_ratio, 0), safetyMarginUnits: asNumber(item.safety_margin_units, 0),
+    reasons: Array.isArray(item.reasons) ? item.reasons : [],
     urgency: item.alert_level || item.urgency || 'healthy', confidence: item.confidence || lead.confidence || 'low', policy: item.policy || {}
   };
 }
@@ -1946,7 +1954,8 @@ function renderReplenishment() {
     if (teamCapabilityAllowed('purchase') && item.suggestedQty > 0) actions += rowButton('create-purchase-from-replenishment', product.id, '创建采购', 'primary');
     if (teamCapabilityAllowed('replenishment')) actions += rowButton('edit-replenishment', product.id, '调整参数');
     if (teamCapabilityAllowed('replenishment') && hasPolicy) actions += rowButton('reset-replenishment', product.id, '恢复默认', 'danger');
-    return '<tr><td>' + productMedia(product) + '<small class="confidence-copy">信心度：' + confidence + '</small></td><td><strong>' + item.velocity.toFixed(2) + '</strong><br><small>7/14/30：' + item.velocity7.toFixed(2) + ' / ' + item.velocity14.toFixed(2) + ' / ' + item.velocity30.toFixed(2) + '</small></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong><br><small>补货点 ' + item.reorderPoint + '</small></td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
+    const basis = (item.reasons || []).map(function (reason) { return '<li>' + escapeHtml(reason) + '</li>'; }).join('');
+    return '<tr><td>' + productMedia(product) + '<small class="confidence-copy">信心度：' + confidence + '</small></td><td><strong>' + item.velocity.toFixed(2) + '</strong><br><small>7/15/30：' + item.velocity7.toFixed(2) + ' / ' + item.velocity15.toFixed(2) + ' / ' + item.velocity30.toFixed(2) + '</small></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong><br><small>补货点 ' + item.reorderPoint + '；安全余量 ' + Math.round(item.safetyMarginUnits || 0) + '</small>' + (basis ? '<details class="calculation-basis"><summary>计算依据</summary><ul>' + basis + '</ul></details>' : '') + '</td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
   }).join('');
   toggleEmpty('#replenishmentEmpty', recommendations.length === 0);
   const needCount = recommendations.filter(function (item) { return ['urgent', 'soon', 'red', 'yellow'].includes(item.urgency); }).length;
@@ -2879,17 +2888,18 @@ async function openReplenishmentSettings() {
   try {
     const settings = await teamGateway.getReplenishmentSettings() || {
       safety_days: 7, default_lead_time_days: 14, review_cycle_days: 7, target_days: 30,
-      service_level_factor: 1.65, initial_reference_shipment_count: 3,
-      velocity_weight_7: 0.5, velocity_weight_14: 0.3, velocity_weight_30: 0.2
+      service_level_factor: 1.65, safety_margin_ratio: 0.2, initial_reference_shipment_count: 3,
+      velocity_weight_7: 0.5, velocity_weight_15: 0.3, velocity_weight_30: 0.2
     };
     $('#settingSafetyDays').value = settings.safety_days;
     $('#settingLeadDays').value = settings.default_lead_time_days;
     $('#settingReviewDays').value = settings.review_cycle_days;
     $('#settingTargetDays').value = settings.target_days;
     $('#settingServiceLevel').value = settings.service_level_factor;
+    $('#settingSafetyMargin').value = settings.safety_margin_ratio;
     $('#settingInitialShipments').value = settings.initial_reference_shipment_count;
     $('#settingWeight7').value = settings.velocity_weight_7;
-    $('#settingWeight14').value = settings.velocity_weight_14;
+    $('#settingWeight15').value = settings.velocity_weight_15;
     $('#settingWeight30').value = settings.velocity_weight_30;
     openModal('replenishmentSettingsModal');
   } catch (error) { handleTeamError(error); }
@@ -2903,9 +2913,10 @@ async function handleReplenishmentSettingsSubmit(event) {
     review_cycle_days: integer($('#settingReviewDays').value),
     target_days: integer($('#settingTargetDays').value),
     service_level_factor: Number($('#settingServiceLevel').value),
+    safety_margin_ratio: Number($('#settingSafetyMargin').value),
     initial_reference_shipment_count: integer($('#settingInitialShipments').value),
     velocity_weight_7: Number($('#settingWeight7').value),
-    velocity_weight_14: Number($('#settingWeight14').value),
+    velocity_weight_15: Number($('#settingWeight15').value),
     velocity_weight_30: Number($('#settingWeight30').value)
   };
   try {
@@ -2942,12 +2953,12 @@ function updateStockHint() {
   setText('#stockHint', '当前已在库 ' + balance.onHand + '，锁定 ' + balance.reserved + '，可用 ' + Math.max(0, balance.onHand - balance.reserved) + '。');
 }
 function openReceiveEditor(purchaseId) {
-  const order = state.purchaseOrders.find(function (item) { return item.id === purchaseId; });
-  if (!order || !isPurchaseOpen(order)) return showToast('采购单当前不能收货。');
+  const eligibleOrders = state.purchaseOrders.filter(function (item) { return isPurchaseOpen(item) && item.lines.some(function (line) { return remainingPurchaseLine(line) > 0; }); });
+  const order = eligibleOrders.find(function (item) { return item.id === purchaseId; }) || eligibleOrders[0];
+  if (!order) return showToast('暂无可收货的采购单。');
   const warehouse = TEAM_MODE ? selectedWarehouse() : warehouseById(order.warehouseId || currentWarehouseId());
   if (!warehouse || warehouse.canReceive === false || warehouse.can_receive === false) return showToast('当前仓库未开放收货，不能办理采购入库。');
   $('#receiveForm').reset();
-  const eligibleOrders = state.purchaseOrders.filter(function (item) { return isPurchaseOpen(item) && item.lines.some(function (line) { return remainingPurchaseLine(line) > 0; }); });
   $('#receivePurchaseId').innerHTML = eligibleOrders.map(function (item) {
     return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.number + ' · ' + item.supplier) + '</option>';
   }).join('');
@@ -4037,23 +4048,28 @@ function bindEvents() {
   $('#productForm').addEventListener('submit', handleProductSubmit);
   if ($('#saveProductDraft')) $('#saveProductDraft').addEventListener('click', function () { saveProductFromForm(true); });
   $('#openPurchaseModal').addEventListener('click', openPurchaseEditor);
+  $('#openReceiveModal').addEventListener('click', function () { openReceiveEditor(); });
   $('#purchaseLineProduct').addEventListener('change', function () {
-    const product = productById(this.value);
+    const selected = Array.from(this.selectedOptions || []);
+    const product = selected.length === 1 ? productById(selected[0].value) : null;
     if (product) {
       $('#purchaseLineCost').value = product.standardCost;
       if (!$('#purchaseSupplier').value) $('#purchaseSupplier').value = product.defaultSupplier;
     }
   });
   $('#addPurchaseLine').addEventListener('click', function () {
-    const productId = $('#purchaseLineProduct').value;
-    const product = productById(productId);
+    const productIds = Array.from($('#purchaseLineProduct').selectedOptions || []).map(function (option) { return option.value; });
+    const products = productIds.map(productById).filter(Boolean);
     const quantity = integer($('#purchaseLineQty').value);
     const unitCost = nonNegative($('#purchaseLineCost').value);
-    if (!product || product.kind !== 'own' || product.needsReview) return showToast('请选择已完善的本店 SKU。');
+    if (!products.length || products.some(function (product) { return product.kind !== 'own' || product.needsReview; })) return showToast('请选择已完善的本店 SKU。');
     if (!quantity) return showToast('采购数量必须大于 0。');
-    const existing = draftPurchaseLines.find(function (line) { return line.productId === productId; });
-    if (existing) { existing.quantity += quantity; existing.unitCost = unitCost; }
-    else draftPurchaseLines.push({ productId: productId, quantity: quantity, unitCost: unitCost });
+    products.forEach(function (product) {
+      const existing = draftPurchaseLines.find(function (line) { return line.productId === product.id; });
+      const lineCost = products.length === 1 ? unitCost : nonNegative(product.standardCost);
+      if (existing) { existing.quantity += quantity; existing.unitCost = lineCost; }
+      else draftPurchaseLines.push({ productId: product.id, quantity: quantity, unitCost: lineCost });
+    });
     $('#purchaseLineQty').value = '';
     renderPurchaseDraft();
   });

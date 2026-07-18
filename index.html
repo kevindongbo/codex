@@ -20,7 +20,7 @@
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260718-ai-workbench-1" />
+  <link rel="stylesheet" href="styles.css?v=20260718-purchase-replenishment-2" />
 </head>
 <body>
   <header class="app-header">
@@ -242,7 +242,7 @@
       <section class="subpage active" data-warehouse-page="purchase">
         <div class="subpage-heading">
           <div><h2>采购与在途</h2><p>按采购单跟踪已下单、运输、部分收货和完成状态。</p></div>
-          <button class="button primary" id="openPurchaseModal">＋ 创建采购单</button>
+          <div class="inline-actions"><button class="button secondary" id="openReceiveModal" type="button">办理收货</button><button class="button primary" id="openPurchaseModal">＋ 创建采购单</button></div>
         </div>
         <section class="panel">
           <div class="panel-toolbar">
@@ -307,7 +307,7 @@
 
       <section class="subpage" data-warehouse-page="replenishment" hidden>
         <div class="subpage-heading">
-          <div><h2>智能补货</h2><p>结合历史采购到货时间、7/14/30 天出库速度、在途与安全库存给出建议。</p></div>
+          <div><h2>智能补货</h2><p>结合历史采购到货时间、7/15/30 天出库速度、在途与安全库存给出建议。</p></div>
           <div class="inline-actions"><button class="button secondary" id="openReplenishmentSettings" type="button">全局补货参数</button><button class="button secondary" id="refreshReplenishment" type="button">重新计算</button></div>
         </div>
         <div class="recommendation-note" id="replenishmentMethodNote">预测会显示数据信心度；样本不足时使用保守默认值，不会冒充精确结果。</div>
@@ -544,9 +544,10 @@
           <label>复核周期（天）<input id="settingReviewDays" type="number" min="1" step="1" required /></label>
           <label>目标覆盖天数<input id="settingTargetDays" type="number" min="1" step="1" required /></label>
           <label>销售波动服务系数<input id="settingServiceLevel" type="number" min="0" step="0.01" required /></label>
+          <label>建议安全余量比例<input id="settingSafetyMargin" type="number" min="0" max="1" step="0.01" required /><small>例如 0.20 表示在目标需求上增加 20%；销量波动更大时系统自动提高。</small></label>
           <label>使用初始参考库存的最少出库单数<input id="settingInitialShipments" type="number" min="0" step="1" required /></label>
           <label>近 7 天销量权重<input id="settingWeight7" type="number" min="0" step="0.001" required /></label>
-          <label>近 14 天销量权重<input id="settingWeight14" type="number" min="0" step="0.001" required /></label>
+          <label>近 15 天销量权重<input id="settingWeight15" type="number" min="0" step="0.001" required /></label>
           <label>近 30 天销量权重<input id="settingWeight30" type="number" min="0" step="0.001" required /></label>
         </div>
         <p class="session-help">三个销量权重之和必须大于 0。系统会结合近期出库、波动、采购到货周期和在途库存计算补货点与建议数量。</p>
@@ -570,8 +571,8 @@
           <label class="full">备注<input id="purchaseNote" maxlength="120" placeholder="例如：海运第一批，分两次到货" /></label>
         </div>
         <div class="line-builder">
-          <div class="form-section-title"><strong>采购商品明细</strong><span>一张采购单可包含多个 SKU</span></div>
-          <div class="line-entry four"><label>本店 SKU<select id="purchaseLineProduct"></select></label><label>采购数量<input id="purchaseLineQty" type="number" min="1" step="1" /></label><label>实际单价<input id="purchaseLineCost" type="number" min="0" step="0.01" /></label><button class="button secondary" id="addPurchaseLine" type="button">＋ 加入明细</button></div>
+          <div class="form-section-title"><strong>采购商品明细</strong><span>可一次选择多个 SKU；加入后在下方连续填写每个商品的数量和单价。</span></div>
+          <div class="line-entry four"><label>本店 SKU（可多选）<select id="purchaseLineProduct" multiple size="5"></select></label><label>采购数量<input id="purchaseLineQty" type="number" min="1" step="1" /></label><label>实际单价（单选时可覆盖）<input id="purchaseLineCost" type="number" min="0" step="0.01" /></label><button class="button secondary" id="addPurchaseLine" type="button">＋ 加入明细</button></div>
           <div class="line-list purchase-line-list" id="purchaseLineList"></div>
         </div>
         <div class="modal-actions"><button class="button secondary" type="button" data-close="purchaseModal">取消</button><button class="button primary" type="submit">保存采购单</button></div>
@@ -778,7 +779,7 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js"></script>
-  <script src="team.js?v=20260718-ai-workbench-1"></script>
-  <script src="app.js?v=20260718-ai-workbench-1"></script>
+  <script src="team.js?v=20260718-purchase-replenishment-2"></script>
+  <script src="app.js?v=20260718-purchase-replenishment-2"></script>
 </body>
 </html>

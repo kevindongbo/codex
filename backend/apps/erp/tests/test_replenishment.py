@@ -278,12 +278,12 @@ class ReplenishmentTests(TestCase):
         )
 
         self.assertEqual(demand.quantity_7, Decimal("14.000"))
-        self.assertEqual(demand.quantity_14, Decimal("28.000"))
+        self.assertEqual(demand.quantity_15, Decimal("28.000"))
         self.assertEqual(demand.quantity_30, Decimal("58.000"))
         self.assertEqual(demand.daily_7, Decimal("2.0000"))
-        self.assertEqual(demand.daily_14, Decimal("2.0000"))
+        self.assertEqual(demand.daily_15, Decimal("1.8667"))
         self.assertEqual(demand.daily_30, Decimal("1.9333"))
-        self.assertEqual(demand.daily_velocity, Decimal("1.9867"))
+        self.assertEqual(demand.daily_velocity, Decimal("1.9467"))
         self.assertEqual(demand.shipment_count, 3)
 
     def test_inventory_position_counts_only_target_warehouse_open_inbound(self):
@@ -377,6 +377,30 @@ class ReplenishmentTests(TestCase):
         self.assertEqual(forecast.suggested_order_quantity, Decimal("0"))
         self.assertEqual(forecast.alert_level, "yellow")
 
+    def test_configured_margin_and_sales_variability_raise_replenishment_target(self):
+        baseline = calculate_replenishment(
+            lead_time=self.lead(days=10),
+            demand=self.demand(daily="2", stddev="0"),
+            inventory=self.inventory(available="20", in_transit="0"),
+            policy=ReplenishmentPolicy(safety_days=Decimal("0"), review_cycle_days=Decimal("5"), target_days=Decimal("30")),
+            as_of=self.as_of,
+        )
+        variable = calculate_replenishment(
+            lead_time=self.lead(days=10),
+            demand=self.demand(daily="2", stddev="1"),
+            inventory=self.inventory(available="20", in_transit="0"),
+            policy=ReplenishmentPolicy(
+                safety_days=Decimal("0"), review_cycle_days=Decimal("5"), target_days=Decimal("30"),
+                safety_margin_ratio=Decimal("0.10"),
+            ),
+            as_of=self.as_of,
+        )
+
+        self.assertEqual(variable.safety_margin_ratio, Decimal("0.5000"))
+        self.assertGreater(variable.safety_margin_units, Decimal("0"))
+        self.assertGreater(variable.suggested_order_quantity, baseline.suggested_order_quantity)
+        self.assertTrue(any("安全余量" in reason for reason in variable.reasons))
+
     def test_zero_sales_does_not_invent_demand_or_stockout_date(self):
         forecast = calculate_replenishment(
             lead_time=self.lead(days=14),
@@ -407,20 +431,21 @@ class ReplenishmentTests(TestCase):
         )
 
     @staticmethod
-    def demand(*, daily: str, confidence: str = "medium") -> DemandVelocity:
+    def demand(*, daily: str, confidence: str = "medium", stddev: str = "0") -> DemandVelocity:
         velocity = Decimal(daily)
         return DemandVelocity(
             daily_velocity=velocity,
             daily_7=velocity,
-            daily_14=velocity,
+            daily_15=velocity,
             daily_30=velocity,
             quantity_7=velocity * 7,
-            quantity_14=velocity * 14,
+            quantity_15=velocity * 15,
             quantity_30=velocity * 30,
             shipment_count=0,
             active_days=0,
             confidence=confidence,
             reasons=(),
+            daily_stddev=Decimal(stddev),
         )
 
     @staticmethod

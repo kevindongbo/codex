@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import os
 from datetime import timedelta
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -228,6 +229,18 @@ class ApiTests(TestCase):
         self.assertEqual(final_outbound.status_code, 201, final_outbound.data)
         balance = StockBalance.objects.get(warehouse=warehouse, sku=sku)
         self.assertEqual(balance.on_hand, 0)
+        pending_order = SalesOrder.objects.create(
+            organization=self.organization,
+            number="SO-BLOCK-ZERO-BALANCE",
+            warehouse=warehouse,
+            status=SalesOrder.Status.READY,
+        )
+        SalesOrderLine.objects.create(order=pending_order, sku=sku, quantity="1")
+        blocked = self.client.delete(f"/api/stock-balances/{balance.pk}/", **headers)
+        self.assertEqual(blocked.status_code, 400, blocked.data)
+        self.assertIn("待出库订单", str(blocked.data))
+        pending_order.status = SalesOrder.Status.CANCELLED
+        pending_order.save(update_fields=["status"])
         deleted = self.client.delete(f"/api/stock-balances/{balance.pk}/", **headers)
         self.assertEqual(deleted.status_code, 204)
 
@@ -1549,20 +1562,26 @@ class ApiTests(TestCase):
             "/api/replenishment-settings/",
             {
                 "safety_days": "9.5", "default_lead_time_days": 21, "review_cycle_days": 5,
-                "target_days": 35, "service_level_factor": "1.96", "initial_reference_shipment_count": 4,
-                "velocity_weight_7": "0.6", "velocity_weight_14": "0.3", "velocity_weight_30": "0.1",
+                "target_days": 35, "service_level_factor": "1.96", "safety_margin_ratio": "0.25", "initial_reference_shipment_count": 4,
+                "velocity_weight_7": "0.6", "velocity_weight_15": "0.3", "velocity_weight_30": "0.1",
             }, format="json", **headers,
         )
         self.assertEqual(saved.status_code, 201, saved.data)
         settings_record = ReplenishmentSettings.objects.get(organization=self.organization)
         self.assertEqual(str(settings_record.safety_days), "9.50")
         self.assertEqual(settings_record.default_lead_time_days, 21)
+        self.assertEqual(settings_record.safety_margin_ratio, Decimal("0.250"))
         invalid = self.client.post(
             "/api/replenishment-settings/",
-            {"velocity_weight_7": 0, "velocity_weight_14": 0, "velocity_weight_30": 0},
+            {"velocity_weight_7": 0, "velocity_weight_15": 0, "velocity_weight_30": 0},
             format="json", **headers,
         )
         self.assertEqual(invalid.status_code, 400)
+        invalid_margin = self.client.patch(
+            f"/api/replenishment-settings/{settings_record.pk}/",
+            {"safety_margin_ratio": "1.1"}, format="json", **headers,
+        )
+        self.assertEqual(invalid_margin.status_code, 400)
 
     def test_tiktok_signature_uses_current_us_host_and_seller_shop_rows(self):
         params = {"app_key": "app-key", "timestamp": "1720000000"}

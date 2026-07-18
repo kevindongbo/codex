@@ -301,10 +301,10 @@ def estimate_lead_time(
 class DemandVelocity:
     daily_velocity: Decimal
     daily_7: Decimal
-    daily_14: Decimal
+    daily_15: Decimal
     daily_30: Decimal
     quantity_7: Decimal
-    quantity_14: Decimal
+    quantity_15: Decimal
     quantity_30: Decimal
     shipment_count: int
     active_days: int
@@ -325,10 +325,10 @@ def estimate_demand_velocity(
         Decimal("0.20"),
     ),
 ) -> DemandVelocity:
-    """Calculate weighted 7/14/30-day velocity from completed shipment lines."""
+    """Calculate weighted 7/15/30-day velocity from completed shipment lines."""
 
     if len(weights) != 3:
-        raise ValueError("weights must contain values for 7, 14 and 30 days")
+        raise ValueError("weights must contain values for 7, 15 and 30 days")
     normalized_weights = tuple(
         _nonnegative("weight", _decimal(value)) for value in weights
     )
@@ -353,7 +353,7 @@ def estimate_demand_velocity(
     )
 
     quantities: dict[int, Decimal] = {}
-    for days in (7, 14, 30):
+    for days in (7, 15, 30):
         threshold = current_time - timedelta(days=days)
         quantities[days] = sum(
             (
@@ -364,11 +364,11 @@ def estimate_demand_velocity(
             ZERO,
         )
     daily_7 = quantities[7] / Decimal("7")
-    daily_14 = quantities[14] / Decimal("14")
+    daily_15 = quantities[15] / Decimal("15")
     daily_30 = quantities[30] / Decimal("30")
     velocity = (
         daily_7 * normalized_weights[0]
-        + daily_14 * normalized_weights[1]
+        + daily_15 * normalized_weights[1]
         + daily_30 * normalized_weights[2]
     )
 
@@ -386,7 +386,7 @@ def estimate_demand_velocity(
     variance = sum(((value - daily_average) ** 2 for value in daily_values), ZERO) / Decimal(len(daily_values))
     daily_stddev = _rate(Decimal(str(math.sqrt(float(variance)))))
     reasons: list[str] = [
-        "日速度按近 7/14/30 日实际出库加权计算（默认权重 50%/30%/20%）"
+        "日速度按近 7/15/30 日实际出库加权计算（默认权重 50%/30%/20%）"
     ]
     if not lines:
         confidence = "low"
@@ -404,10 +404,10 @@ def estimate_demand_velocity(
     return DemandVelocity(
         daily_velocity=_rate(velocity),
         daily_7=_rate(daily_7),
-        daily_14=_rate(daily_14),
+        daily_15=_rate(daily_15),
         daily_30=_rate(daily_30),
         quantity_7=_quantity(quantities[7]),
-        quantity_14=_quantity(quantities[14]),
+        quantity_15=_quantity(quantities[15]),
         quantity_30=_quantity(quantities[30]),
         shipment_count=len(shipment_ids),
         active_days=len(active_dates),
@@ -498,6 +498,7 @@ class ReplenishmentPolicy:
     manual_lead_days: Decimal = Decimal("14")
     safety_stock_units: Decimal | None = None
     service_level_factor: Decimal = Decimal("1.65")
+    safety_margin_ratio: Decimal = ZERO
     initial_safety_reference: Decimal = ZERO
     initial_reference_shipment_count: int = 3
 
@@ -509,6 +510,8 @@ class ReplenishmentForecast:
     demand: DemandVelocity
     inventory: InventoryPosition
     safety_stock_units: Decimal
+    safety_margin_ratio: Decimal
+    safety_margin_units: Decimal
     reorder_point: Decimal
     target_inventory_position: Decimal
     raw_order_quantity: Decimal
@@ -577,6 +580,11 @@ def calculate_replenishment(
     lead_days = Decimal(lead_time.selected_days)
     day_based_safety = velocity * safety_days
     service_level_factor = _nonnegative("service_level_factor", _decimal(policy.service_level_factor))
+    configured_margin_ratio = _nonnegative(
+        "safety_margin_ratio", _decimal(policy.safety_margin_ratio)
+    )
+    if configured_margin_ratio > 1:
+        raise ValueError("safety_margin_ratio cannot exceed 1")
     volatility_safety = demand.daily_stddev * Decimal(str(math.sqrt(float(lead_days + review_days)))) * service_level_factor
     manual_safety = _nonnegative(
         "safety_stock_units", _decimal(policy.safety_stock_units, ZERO)
@@ -585,9 +593,15 @@ def calculate_replenishment(
     initial_safety = initial_reference if demand.shipment_count < policy.initial_reference_shipment_count else ZERO
     safety_units = max(day_based_safety, volatility_safety, manual_safety, initial_safety)
 
-    reorder_point = velocity * (lead_days + review_days) + safety_units
     effective_target_days = max(target_days, review_days)
-    target_position = velocity * (lead_days + effective_target_days) + safety_units
+    volatility_ratio = demand.daily_stddev / velocity if velocity > ZERO else ZERO
+    effective_margin_ratio = min(Decimal("1"), max(configured_margin_ratio, volatility_ratio))
+    reorder_demand = velocity * (lead_days + review_days)
+    reorder_margin = reorder_demand * effective_margin_ratio
+    target_demand = velocity * (lead_days + effective_target_days)
+    safety_margin_units = target_demand * effective_margin_ratio
+    reorder_point = reorder_demand + safety_units + reorder_margin
+    target_position = target_demand + safety_units + safety_margin_units
     position = max(ZERO, _decimal(inventory.inventory_position))
     needs_reorder = position <= reorder_point and target_position > position
     raw_quantity = max(ZERO, target_position - position) if needs_reorder else ZERO
@@ -618,6 +632,10 @@ def calculate_replenishment(
     reasons.append(
         f"安全库存同时考虑覆盖天数和销量波动（近 30 天日波动 {demand.daily_stddev}，服务系数 {service_level_factor}）"
     )
+    reasons.append(
+        f"补货安全余量 = 目标需求 {_quantity(target_demand)} × 有效比例 {effective_margin_ratio:.1%}；"
+        f"配置值 {configured_margin_ratio:.1%}，销量波动比例 {volatility_ratio:.1%}，取较高者。"
+    )
     if initial_safety > ZERO:
         reasons.append("出库历史不足，暂以首次录入的安全库存作为参考；后续会自动切换为销量与波动计算")
     if inventory.in_transit > 0:
@@ -637,6 +655,8 @@ def calculate_replenishment(
         demand=demand,
         inventory=inventory,
         safety_stock_units=_quantity(safety_units),
+        safety_margin_ratio=effective_margin_ratio.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
+        safety_margin_units=_quantity(safety_margin_units),
         reorder_point=_quantity(reorder_point),
         target_inventory_position=_quantity(target_position),
         raw_order_quantity=_quantity(raw_quantity),

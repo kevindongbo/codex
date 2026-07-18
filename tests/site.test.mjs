@@ -36,18 +36,20 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260718-ai-workbench-1/);
-  assert.match(html, /team\.js\?v=20260718-ai-workbench-1/);
-  assert.match(html, /app\.js\?v=20260718-ai-workbench-1/);
+  assert.match(html, /styles\.css\?v=20260718-purchase-replenishment-2/);
+  assert.match(html, /team\.js\?v=20260718-purchase-replenishment-2/);
+  assert.match(html, /app\.js\?v=20260718-purchase-replenishment-2/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
 
 test("contains product, warehouse, order and monitoring workflows", async () => {
   const html = await (await fetchPath("/index.html")).text();
+  assert.match(html, /id="purchaseLineProduct" multiple size="5"/);
+  assert.match(html, /id="openReceiveModal"/);
   const requiredIds = [
     "productRows", "productSkuEditor", "productSkuList", "addProductSku", "productImageUrl", "productImageFile",
-    "purchaseRows", "purchaseLineList", "receiveForm", "warehouseRows",
+    "purchaseRows", "purchaseLineList", "openReceiveModal", "receivePurchaseId", "receiveForm", "warehouseRows",
     "movementRows", "orderRows", "orderLineList", "returnForm", "competitorRows",
     "historyRows", "trendChart", "changeList", "moduleSidebar", "sidebarToggle",
     "sidebarScrim", "saveProductDraft", "inventoryListPanel", "movementPanel",
@@ -137,7 +139,9 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /receiveTransfer/);
   assert.match(scriptText, /replenishmentPolicies/);
   assert.match(scriptText, /localReplenishmentRecommendation/);
-  assert.match(scriptText, /velocity7 \* 0\.5 \+ velocity14 \* 0\.3 \+ velocity30 \* 0\.2/);
+  assert.match(scriptText, /velocity7 \* 0\.5 \+ velocity15 \* 0\.3 \+ velocity30 \* 0\.2/);
+  assert.match(scriptText, /safetyMarginRatio/);
+  assert.match(scriptText, /calculation-basis/);
   assert.match(scriptText, /fillSnapshotHint/);
   assert.match(scriptText, /reserved > balance\.onHand/);
   assert.match(scriptText, /modal\.classList\.add\('open'\)/);
