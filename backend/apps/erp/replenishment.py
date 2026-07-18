@@ -310,6 +310,7 @@ class DemandVelocity:
     active_days: int
     confidence: str
     reasons: tuple[str, ...]
+    daily_stddev: Decimal = ZERO
 
 
 def estimate_demand_velocity(
@@ -375,6 +376,15 @@ def estimate_demand_velocity(
     active_dates = {
         timezone.localtime(line.shipment.shipped_at).date() for line in lines
     }
+    daily_quantities = {current_time.date() - timedelta(days=offset): ZERO for offset in range(30)}
+    for line in lines:
+        day = timezone.localtime(line.shipment.shipped_at).date()
+        if day in daily_quantities:
+            daily_quantities[day] += _decimal(line.quantity)
+    daily_values = list(daily_quantities.values())
+    daily_average = sum(daily_values, ZERO) / Decimal(len(daily_values))
+    variance = sum(((value - daily_average) ** 2 for value in daily_values), ZERO) / Decimal(len(daily_values))
+    daily_stddev = _rate(Decimal(str(math.sqrt(float(variance)))))
     reasons: list[str] = [
         "日速度按近 7/14/30 日实际出库加权计算（默认权重 50%/30%/20%）"
     ]
@@ -401,6 +411,7 @@ def estimate_demand_velocity(
         quantity_30=_quantity(quantities[30]),
         shipment_count=len(shipment_ids),
         active_days=len(active_dates),
+        daily_stddev=daily_stddev,
         confidence=confidence,
         reasons=tuple(reasons),
     )
@@ -486,6 +497,9 @@ class ReplenishmentPolicy:
     pack_size: Decimal = Decimal("1")
     manual_lead_days: Decimal = Decimal("14")
     safety_stock_units: Decimal | None = None
+    service_level_factor: Decimal = Decimal("1.65")
+    initial_safety_reference: Decimal = ZERO
+    initial_reference_shipment_count: int = 3
 
 
 @dataclass(frozen=True)
@@ -562,10 +576,14 @@ def calculate_replenishment(
     velocity = max(ZERO, _decimal(demand.daily_velocity))
     lead_days = Decimal(lead_time.selected_days)
     day_based_safety = velocity * safety_days
+    service_level_factor = _nonnegative("service_level_factor", _decimal(policy.service_level_factor))
+    volatility_safety = demand.daily_stddev * Decimal(str(math.sqrt(float(lead_days + review_days)))) * service_level_factor
     manual_safety = _nonnegative(
         "safety_stock_units", _decimal(policy.safety_stock_units, ZERO)
     )
-    safety_units = max(day_based_safety, manual_safety)
+    initial_reference = _nonnegative("initial_safety_reference", _decimal(policy.initial_safety_reference))
+    initial_safety = initial_reference if demand.shipment_count < policy.initial_reference_shipment_count else ZERO
+    safety_units = max(day_based_safety, volatility_safety, manual_safety, initial_safety)
 
     reorder_point = velocity * (lead_days + review_days) + safety_units
     effective_target_days = max(target_days, review_days)
@@ -597,6 +615,11 @@ def calculate_replenishment(
     reasons.append(
         "库存位置 = 可用库存 + 已确认在途；补货点 = 日速度 ×（采购周期 + 检查周期）+ 安全库存"
     )
+    reasons.append(
+        f"安全库存同时考虑覆盖天数和销量波动（近 30 天日波动 {demand.daily_stddev}，服务系数 {service_level_factor}）"
+    )
+    if initial_safety > ZERO:
+        reasons.append("出库历史不足，暂以首次录入的安全库存作为参考；后续会自动切换为销量与波动计算")
     if inventory.in_transit > 0:
         reasons.append(f"库存位置已计入 {inventory.in_transit} 件已确认在途")
     if needs_reorder:
@@ -640,6 +663,7 @@ def build_replenishment_forecast(
     route_resolver: Callable[[PurchaseOrder], object] | None = None,
     policy: ReplenishmentPolicy | None = None,
     as_of: datetime | None = None,
+    weights: Sequence[Decimal | int | float] = (Decimal("0.50"), Decimal("0.30"), Decimal("0.20")),
 ) -> ReplenishmentForecast:
     """Build a complete, explainable forecast from current ERP records."""
 
@@ -660,24 +684,25 @@ def build_replenishment_forecast(
         sku=sku,
         warehouse=warehouse,
         as_of=current_time,
+        weights=weights,
     )
     inventory = get_inventory_position(
         organization=organization,
         sku=sku,
         warehouse=warehouse,
     )
-    configured_safety = policy.safety_stock_units
-    if configured_safety is None:
-        configured_safety = _decimal(getattr(sku, "safety_stock", ZERO))
-        policy = ReplenishmentPolicy(
-            safety_days=policy.safety_days,
-            review_cycle_days=policy.review_cycle_days,
-            target_days=policy.target_days,
-            moq=policy.moq,
-            pack_size=policy.pack_size,
-            manual_lead_days=policy.manual_lead_days,
-            safety_stock_units=configured_safety,
-        )
+    policy = ReplenishmentPolicy(
+        safety_days=policy.safety_days,
+        review_cycle_days=policy.review_cycle_days,
+        target_days=policy.target_days,
+        moq=policy.moq,
+        pack_size=policy.pack_size,
+        manual_lead_days=policy.manual_lead_days,
+        safety_stock_units=policy.safety_stock_units,
+        service_level_factor=policy.service_level_factor,
+        initial_safety_reference=policy.initial_safety_reference or _decimal(getattr(sku, "safety_stock", ZERO)),
+        initial_reference_shipment_count=policy.initial_reference_shipment_count,
+    )
     return calculate_replenishment(
         lead_time=lead_time,
         demand=demand,

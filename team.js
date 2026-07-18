@@ -339,6 +339,17 @@
       return this.request('/auth/owner/password/change/request/', { method: 'POST', organization: false, body: {} });
     }
 
+    async listTikTokConnections() { return this.listAll('/tiktok-shop-connections/'); }
+    async startTikTokAuthorization(region) {
+      return this.request('/tiktok-shop-connections/authorize/', { method: 'POST', body: { region: region || 'MY' } });
+    }
+    async refreshTikTokConnection(id) { return this.request('/tiktok-shop-connections/' + id + '/refresh/', { method: 'POST', body: {} }); }
+    async disconnectTikTokConnection(id) { return this.request('/tiktok-shop-connections/' + id + '/disconnect/', { method: 'POST', body: {} }); }
+
+    async listAIProviders() { return this.listAll('/ai-providers/'); }
+    async saveAIProvider(payload) { return this.request('/ai-providers/', { method: 'POST', body: payload }); }
+    async testAIProvider(id) { return this.request('/ai-providers/' + id + '/test/', { method: 'POST', body: {} }); }
+
     async confirmOwnerPasswordChange(challengeId, code, password) {
       return this.request('/auth/owner/password/change/confirm/', {
         method: 'POST', organization: false,
@@ -465,15 +476,16 @@
       });
       const inventoryBalances = raw.balances.filter((item) => String(item.warehouse) === this.warehouseId).map(function (item) {
         return {
-          warehouseId: LOCAL_WAREHOUSE_ID, productId: productBySku.get(String(item.sku)) || '',
+          apiBalanceId: String(item.id), warehouseId: LOCAL_WAREHOUSE_ID, productId: productBySku.get(String(item.sku)) || '',
           onHand: number(item.on_hand), reserved: number(item.reserved), inTransit: number(item.in_transit),
           updatedAt: item.updated_at
         };
       }).filter(function (item) { return item.productId; });
-      const movementType = { receipt: 'receipt', adjustment: 'adjustment', reserve: 'reserve', release: 'release', shipment: 'outbound', return: 'return' };
+      const movementType = { receipt: 'receipt', adjustment: 'adjustment', manual_inbound: 'manual_inbound', manual_outbound: 'manual_outbound', reversal: 'reversal', reserve: 'reserve', release: 'release', shipment: 'outbound', return: 'return' };
       const inventoryMovements = raw.ledger.filter((item) => String(item.warehouse) === this.warehouseId).map(function (item) {
         return {
-          id: String(item.id), warehouseId: LOCAL_WAREHOUSE_ID, productId: productBySku.get(String(item.sku)) || '',
+          id: String(item.id), apiLedgerId: String(item.id), isReversed: Boolean(item.is_reversed), reversalInfo: item.reversal_info || null,
+          warehouseId: LOCAL_WAREHOUSE_ID, productId: productBySku.get(String(item.sku)) || '',
           type: movementType[item.event_type] || item.event_type, onHandDelta: number(item.on_hand_delta),
           reservedDelta: number(item.reserved_delta), afterOnHand: number(item.on_hand_after), afterReserved: number(item.reserved_after),
           sourceType: item.reference_type, sourceId: item.reference_id, sourceLineId: '',
@@ -643,6 +655,7 @@
 
     async saveProduct(product, initialSnapshot) {
       if (product.kind !== 'own') {
+        if (/^data:image\//i.test(product.image || '')) product.image = await this.uploadDataImage(product.image, product.name || 'competitor');
         const payload = {
           name: product.name, kind: product.kind, platform: 'tiktok_shop', market: product.market || '',
           url: product.productUrl, image_url: product.image, seller: product.seller || '',
@@ -712,7 +725,7 @@
       if (product.status === 'draft') {
         if (raw.status !== 'draft') throw new ApiError('团队版已启用商品不能退回草稿，可改为停用。', 409, null);
       } else if (product.status === 'active') {
-        await this.request('/products/' + raw.id + '/activate/', { method: 'POST', body: {} });
+        raw = await this.request('/products/' + raw.id + '/activate/', { method: 'POST', body: {} });
       } else if (product.status === 'inactive') {
         if (raw.status === 'draft') await this.request('/products/' + raw.id + '/activate/', { method: 'POST', body: {} });
         await this.request('/products/' + raw.id + '/deactivate/', { method: 'POST', body: {} });
@@ -724,6 +737,18 @@
         await this.request('/competitors/' + product.apiCompetitorId + '/', { method: 'PATCH', body: { active: false } });
       }
       return raw;
+    }
+
+    async uploadDataImage(dataUrl, name) {
+      const response = await root.fetch(dataUrl);
+      if (!response.ok) throw new ApiError('无法读取本地图片，请重新选择图片。', response.status, null);
+      const blob = await response.blob();
+      const extension = blob.type === 'image/png' ? 'png' : (blob.type === 'image/webp' ? 'webp' : 'jpg');
+      const file = new root.File([blob], String(name || 'image').replace(/[^a-z0-9_-]+/gi, '-') + '.' + extension, { type: blob.type || 'image/jpeg' });
+      const body = new root.FormData();
+      body.append('file', file);
+      const saved = await this.request('/media-assets/', { method: 'POST', body: body });
+      return saved.url;
     }
 
     async setProductActive(product, active) {
@@ -767,8 +792,12 @@
       return this.request('/purchase-orders/' + order.id + '/', { method: 'DELETE' });
     }
 
-    async receivePurchase(order, line, quantity) {
-      const key = this.idempotencyKey('receipt', [order.id, line.id, quantity].join(':'));
+    async receivePurchase(order, lines) {
+      const normalizedLines = (lines || []).map(function (line) {
+        return { purchase_line: line.id, quantity: number(line.quantity), unit_cost: line.unitCost };
+      }).filter(function (line) { return line.quantity > 0; });
+      if (!normalizedLines.length) throw new ApiError('请至少填写一个商品的本次收货数量。', 400, null);
+      const key = this.idempotencyKey('receipt', [order.id].concat(normalizedLines.map(function (line) { return line.purchase_line + ':' + line.quantity; }).sort()).join(':'));
       try {
         const result = await this.request('/receipts/', {
           method: 'POST',
@@ -776,7 +805,7 @@
             purchase_order: order.id,
             number: 'GRN-' + key.value.slice(-24),
             idempotency_key: key.value,
-            lines: [{ purchase_line: line.id, quantity: quantity, unit_cost: line.unitCost }]
+            lines: normalizedLines
           }
         });
         this.completeIdempotency(key);
@@ -788,15 +817,18 @@
     }
 
     async adjustInventory(product, operation, quantity, note) {
+      const movementPath = operation === 'manual_inbound' ? '/stock-balances/manual-inbound/' : (operation === 'manual_outbound' ? '/stock-balances/manual-outbound/' : '');
       const subtract = operation === 'adjust_sub' || operation === 'damage';
       const key = this.idempotencyKey('adjustment', [this.warehouseId, product.skuId, operation, quantity, note].join(':'));
       try {
-        const result = await this.request('/stock-balances/adjust/', {
+        const result = await this.request(movementPath || '/stock-balances/adjust/', {
           method: 'POST',
-          body: {
+          body: movementPath ? {
+            warehouse: this.warehouseId, sku: product.skuId, quantity: number(quantity), reason: note || '', idempotency_key: key.value
+          } : {
             warehouse: this.warehouseId, sku: product.skuId,
             delta: (subtract ? -1 : 1) * number(quantity),
-            reason: operation + ' · ' + note,
+            reason: (operation + ' · ' + (note || '')).trim(),
             idempotency_key: key.value
           }
         });
@@ -806,6 +838,16 @@
         this.completeIdempotency(key, error);
         throw error;
       }
+    }
+
+    async deleteStockBalance(balance) {
+      return this.request('/stock-balances/' + balance.apiBalanceId + '/', { method: 'DELETE' });
+    }
+
+    async revokeStockLedger(movement, reason) {
+      return this.request('/stock-ledger/' + (movement.apiLedgerId || movement.id) + '/revoke/', {
+        method: 'POST', body: { reason: reason || '' }
+      });
     }
 
     async createAndShipTransfer(transfer) {

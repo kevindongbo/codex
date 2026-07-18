@@ -1,6 +1,7 @@
 import re
 import uuid
 from decimal import Decimal
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib.auth import get_user_model
@@ -8,13 +9,14 @@ from django.db import transaction
 from rest_framework import serializers
 
 from .models import (
-    AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
+    AIInvocationLog, AIProviderConfig, AIRecommendation, AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
     Product, ProductImage, PurchaseOrder, PurchaseOrderLine, Receipt, ReceiptLine,
-    ReplenishmentPolicy,
+    ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
-    SKU, StockBalance, StockLedger, StockTransfer, StockTransferLine, Supplier, Warehouse,
+    SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, StockTransferLine, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
 from .permissions import PERMISSION_CATALOG, request_organization
+from .secure_config import encrypt_secret
 
 
 SELECTION_PLATFORMS = ("tiktok", "amazon")
@@ -199,6 +201,23 @@ class ProductImageSerializer(OrganizationValidationMixin, serializers.ModelSeria
         model = ProductImage
         fields = "__all__"
         read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class UploadedMediaAssetSerializer(ScopedSerializer):
+    file = serializers.FileField(write_only=True, required=True)
+    url = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = UploadedMediaAsset
+        fields = ["id", "file", "url", "original_name", "content_type", "size", "created_at"]
+        read_only_fields = ["id", "url", "original_name", "content_type", "size", "created_at"]
+
+    def get_url(self, obj):
+        request = self.context.get("request")
+        if not obj.file:
+            return ""
+        relative_url = "/api/media-assets/{}/content/".format(obj.pk)
+        return request.build_absolute_uri(relative_url) if request else relative_url
 
 
 class SKUSerializer(OrganizationValidationMixin, ScopedSerializer):
@@ -437,6 +456,24 @@ class StockBalanceSerializer(ScopedSerializer):
 
 
 class StockLedgerSerializer(ScopedSerializer):
+    is_reversed = serializers.SerializerMethodField()
+    reversal_info = serializers.SerializerMethodField()
+
+    def get_is_reversed(self, obj):
+        return hasattr(obj, "reversal")
+
+    def get_reversal_info(self, obj):
+        reversal = getattr(obj, "reversal", None)
+        if reversal is None:
+            return None
+        return {
+            "id": str(reversal.pk),
+            "reversal_ledger": str(reversal.reversal_ledger_id),
+            "reason": reversal.reason,
+            "reversed_by": str(reversal.reversed_by_id) if reversal.reversed_by_id else None,
+            "reversed_at": reversal.reversed_at,
+        }
+
     class Meta(ScopedSerializer.Meta):
         model = StockLedger
         fields = "__all__"
@@ -551,7 +588,7 @@ class AdjustmentInputSerializer(OrganizationValidationMixin, serializers.Seriali
     warehouse = serializers.PrimaryKeyRelatedField(queryset=Warehouse.objects.all())
     sku = serializers.PrimaryKeyRelatedField(queryset=SKU.objects.all())
     delta = serializers.DecimalField(max_digits=14, decimal_places=3)
-    reason = serializers.CharField(max_length=240)
+    reason = serializers.CharField(max_length=240, required=False, allow_blank=True, default="")
     idempotency_key = serializers.CharField(max_length=120)
 
     def __init__(self, *args, **kwargs):
@@ -565,6 +602,130 @@ class AdjustmentInputSerializer(OrganizationValidationMixin, serializers.Seriali
         if value == 0:
             raise serializers.ValidationError("调整数量不能为 0")
         return value
+
+
+class ManualStockMovementInputSerializer(OrganizationValidationMixin, serializers.Serializer):
+    warehouse = serializers.PrimaryKeyRelatedField(queryset=Warehouse.objects.all())
+    sku = serializers.PrimaryKeyRelatedField(queryset=SKU.objects.all())
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=3, min_value=Decimal("0.001"))
+    reason = serializers.CharField(max_length=240, required=False, allow_blank=True, default="")
+    idempotency_key = serializers.CharField(max_length=120)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        organization = self.get_organization()
+        if organization is not None:
+            self.fields["warehouse"].queryset = Warehouse.objects.filter(organization=organization)
+            self.fields["sku"].queryset = SKU.objects.filter(organization=organization)
+
+
+class StockLedgerReversalInputSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=240, required=False, allow_blank=True, default="")
+
+
+class ReplenishmentSettingsSerializer(ScopedSerializer):
+    class Meta(ScopedSerializer.Meta):
+        model = ReplenishmentSettings
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields
+
+    def validate(self, attrs):
+        weights = [
+            attrs.get("velocity_weight_7", getattr(self.instance, "velocity_weight_7", Decimal("0"))),
+            attrs.get("velocity_weight_14", getattr(self.instance, "velocity_weight_14", Decimal("0"))),
+            attrs.get("velocity_weight_30", getattr(self.instance, "velocity_weight_30", Decimal("0"))),
+        ]
+        if sum(weights) <= 0:
+            raise serializers.ValidationError("近 7/14/30 天销量权重之和必须大于 0")
+        return attrs
+
+
+class TikTokShopConnectionSerializer(ScopedSerializer):
+    class Meta(ScopedSerializer.Meta):
+        model = TikTokShopConnection
+        fields = [
+            "id", "organization", "label", "region", "open_id", "shop_id", "access_token_expires_at",
+            "refresh_token_expires_at", "granted_scopes", "status", "last_error", "authorized_by",
+            "authorized_at", "disconnected_at", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class TikTokAuthorizationStartSerializer(serializers.Serializer):
+    region = serializers.CharField(max_length=8, default="MY")
+
+    def validate_region(self, value):
+        return value.upper()
+
+
+class TikTokSyncStartSerializer(serializers.Serializer):
+    resource = serializers.ChoiceField(choices=TikTokShopSyncRun.Resource.choices)
+
+
+class TikTokShopSyncRunSerializer(ScopedSerializer):
+    class Meta(ScopedSerializer.Meta):
+        model = TikTokShopSyncRun
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields
+
+
+class AIProviderConfigSerializer(ScopedSerializer):
+    api_key = serializers.CharField(write_only=True, required=False, allow_blank=False, trim_whitespace=False)
+    has_api_key = serializers.SerializerMethodField(read_only=True)
+
+    class Meta(ScopedSerializer.Meta):
+        model = AIProviderConfig
+        fields = [
+            "id", "organization", "name", "api_base_url", "model_name", "api_key", "has_api_key",
+            "default_parameters", "timeout_seconds", "max_retries", "enabled", "created_at", "updated_at",
+        ]
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + ["has_api_key"]
+
+    def get_has_api_key(self, obj):
+        return bool(obj.api_key_encrypted)
+
+    def create(self, validated_data):
+        api_key = validated_data.pop("api_key", "")
+        if not api_key:
+            raise serializers.ValidationError({"api_key": "首次保存必须提供 API Key"})
+        validated_data["api_key_encrypted"] = encrypt_secret(api_key)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        api_key = validated_data.pop("api_key", None)
+        if api_key is not None:
+            validated_data["api_key_encrypted"] = encrypt_secret(api_key)
+        return super().update(instance, validated_data)
+
+
+class AIInvocationLogSerializer(ScopedSerializer):
+    class Meta(ScopedSerializer.Meta):
+        model = AIInvocationLog
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields
+
+
+class AIRecommendationSerializer(ScopedSerializer):
+    class Meta(ScopedSerializer.Meta):
+        model = AIRecommendation
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + ["status", "confirmed_by", "confirmed_at", "rejection_reason"]
+
+
+class AIRecommendationInputSerializer(serializers.Serializer):
+    provider = serializers.PrimaryKeyRelatedField(queryset=AIProviderConfig.objects.all())
+    kind = serializers.ChoiceField(choices=AIRecommendation.Kind.choices)
+    input_data = serializers.JSONField()
+
+    def validate(self, attrs):
+        organization = _context_organization(self)
+        if organization is not None and attrs["provider"].organization_id != organization.id:
+            raise serializers.ValidationError({"provider": "大模型配置不属于当前组织"})
+        return attrs
+
+
+class AIRecommendationConfirmationSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=240, required=False, allow_blank=True, default="")
 
 
 class SalesOrderLineSerializer(serializers.ModelSerializer):
@@ -789,6 +950,10 @@ class ReturnReceiveInputSerializer(OrganizationValidationMixin, serializers.Seri
 
 
 class CompetitorProductSerializer(OrganizationValidationMixin, ScopedSerializer):
+    # Use a CharField rather than DRF URLField so an internal media URL such as
+    # http://testserver/api/media-assets/<id>/content/ is accepted in every environment.
+    image_url = serializers.CharField(required=False, allow_blank=True, max_length=4096)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.scope_relation("linked_product", Product)
@@ -803,8 +968,11 @@ class CompetitorProductSerializer(OrganizationValidationMixin, ScopedSerializer)
         return attrs
 
     def validate_image_url(self, value):
-        if value and not value.lower().startswith("https://"):
-            raise serializers.ValidationError("竞品图片必须使用 HTTPS 地址")
+        if value and value.lower().startswith("data:"):
+            raise serializers.ValidationError("Base64 图片不能直接保存，请先通过上传接口取得正式图片地址")
+        parsed = urlparse(value) if value else None
+        if value and (parsed.scheme not in {"https", "http"} or not parsed.netloc):
+            raise serializers.ValidationError("竞品图片必须使用有效的 HTTP(S) 地址")
         return value
 
     class Meta(ScopedSerializer.Meta):

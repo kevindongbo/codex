@@ -198,6 +198,22 @@ class ProductImage(TimeStampedModel):
         constraints = [models.UniqueConstraint(fields=["product", "position"], name="uniq_product_image_position")]
 
 
+class UploadedMediaAsset(OrganizationScopedModel):
+    """Image stored by the configured Django storage backend (local media or OSS)."""
+
+    file = models.FileField(upload_to="organization-images/%Y/%m/%d")
+    original_name = models.CharField(max_length=255, blank=True)
+    content_type = models.CharField(max_length=100, blank=True)
+    size = models.PositiveIntegerField(default=0)
+    sha256 = models.CharField(max_length=64, blank=True, db_index=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["organization", "created_at"])]
+
+    def __str__(self):
+        return self.original_name or self.file.name
+
+
 class Supplier(OrganizationScopedModel):
     code = models.CharField("供应商编码", max_length=40)
     name = models.CharField("供应商名称", max_length=160)
@@ -354,6 +370,32 @@ class ReplenishmentPolicy(OrganizationScopedModel):
         ]
 
 
+class ReplenishmentSettings(OrganizationScopedModel):
+    """Organization-wide defaults for explainable automatic replenishment."""
+
+    safety_days = models.DecimalField("安全库存覆盖天数", max_digits=6, decimal_places=2, default=Decimal("7"))
+    default_lead_time_days = models.PositiveIntegerField("默认采购备货周期（天）", default=14)
+    review_cycle_days = models.PositiveIntegerField("默认复核周期（天）", default=7)
+    target_days = models.PositiveIntegerField("默认目标覆盖天数", default=30)
+    service_level_factor = models.DecimalField("销售波动服务系数", max_digits=5, decimal_places=2, default=Decimal("1.65"))
+    initial_reference_shipment_count = models.PositiveIntegerField("使用初始安全库存参考的最少出库单数", default=3)
+    velocity_weight_7 = models.DecimalField("近 7 天权重", max_digits=5, decimal_places=3, default=Decimal("0.500"))
+    velocity_weight_14 = models.DecimalField("近 14 天权重", max_digits=5, decimal_places=3, default=Decimal("0.300"))
+    velocity_weight_30 = models.DecimalField("近 30 天权重", max_digits=5, decimal_places=3, default=Decimal("0.200"))
+
+    class Meta:
+        verbose_name = "智能补货全局参数"
+        verbose_name_plural = "智能补货全局参数"
+        constraints = [
+            models.UniqueConstraint(fields=["organization"], name="uniq_replenishment_settings_org"),
+            models.CheckConstraint(condition=Q(safety_days__gte=0), name="replenishment_settings_safety_nonnegative"),
+            models.CheckConstraint(condition=Q(default_lead_time_days__gt=0), name="replenishment_settings_lead_positive"),
+            models.CheckConstraint(condition=Q(review_cycle_days__gt=0), name="replenishment_settings_review_positive"),
+            models.CheckConstraint(condition=Q(target_days__gt=0), name="replenishment_settings_target_positive"),
+            models.CheckConstraint(condition=Q(service_level_factor__gte=0), name="replenishment_settings_service_nonnegative"),
+        ]
+
+
 class StockLedger(OrganizationScopedModel):
     class Type(models.TextChoices):
         RECEIPT = "receipt", "采购收货"
@@ -365,6 +407,9 @@ class StockLedger(OrganizationScopedModel):
         TRANSFER_OUT = "transfer_out", "调拨发出"
         TRANSFER_IN = "transfer_in", "调拨收货"
         TRANSFER_CANCEL = "transfer_cancel", "调拨撤回"
+        MANUAL_INBOUND = "manual_inbound", "手动入库"
+        MANUAL_OUTBOUND = "manual_outbound", "手动出库"
+        REVERSAL = "reversal", "库存流水撤回"
 
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="stock_ledger")
     sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="stock_ledger")
@@ -401,6 +446,26 @@ class StockLedger(OrganizationScopedModel):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("库存流水不可删除")
+
+
+class StockLedgerReversal(TimeStampedModel):
+    """Keeps the original append-only ledger immutable while recording a reversal."""
+
+    original_ledger = models.OneToOneField(
+        StockLedger, on_delete=models.PROTECT, related_name="reversal", verbose_name="原库存流水"
+    )
+    reversal_ledger = models.OneToOneField(
+        StockLedger, on_delete=models.PROTECT, related_name="reverses", verbose_name="撤回库存流水"
+    )
+    reason = models.CharField("撤回原因", max_length=240, blank=True)
+    reversed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="stock_ledger_reversals"
+    )
+    reversed_at = models.DateTimeField("撤回时间", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "库存流水撤回"
+        verbose_name_plural = "库存流水撤回"
 
 
 class StockTransferQuerySet(models.QuerySet):
@@ -704,8 +769,8 @@ class CompetitorProduct(OrganizationScopedModel):
     kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.DIRECT)
     platform = models.CharField(max_length=40, default="other")
     market = models.CharField(max_length=8, blank=True)
-    url = models.URLField(max_length=1000, blank=True)
-    image_url = models.URLField(max_length=1000, blank=True)
+    url = models.URLField(max_length=2000, blank=True)
+    image_url = models.URLField(max_length=4096, blank=True)
     seller = models.CharField(max_length=160, blank=True)
     currency = models.CharField(max_length=3, default="CNY")
     active = models.BooleanField(default=True)
@@ -740,6 +805,124 @@ class CompetitorSnapshot(TimeStampedModel):
                 name="competitor_reviews_nonnegative",
             ),
         ]
+
+
+class TikTokShopOAuthState(TimeStampedModel):
+    """Stores a single-use hash only; the raw OAuth state never reaches the database."""
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="tiktok_oauth_states")
+    state_hash = models.CharField(max_length=128, unique=True)
+    redirect_uri = models.URLField(max_length=1000)
+    region = models.CharField(max_length=8, default="MY")
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+
+
+class TikTokShopConnection(OrganizationScopedModel):
+    class Status(models.TextChoices):
+        CONNECTED = "connected", "已授权"
+        EXPIRED = "expired", "已过期"
+        DISCONNECTED = "disconnected", "已解绑"
+        ERROR = "error", "授权异常"
+
+    label = models.CharField("店铺备注名称", max_length=120, blank=True)
+    region = models.CharField("市场", max_length=8, default="MY")
+    open_id = models.CharField("TikTok 授权主体", max_length=200)
+    shop_id = models.CharField("店铺 ID", max_length=200, blank=True)
+    access_token_encrypted = models.TextField("Access Token 密文", blank=True)
+    refresh_token_encrypted = models.TextField("Refresh Token 密文", blank=True)
+    access_token_expires_at = models.DateTimeField(null=True, blank=True)
+    refresh_token_expires_at = models.DateTimeField(null=True, blank=True)
+    granted_scopes = models.JSONField("授权范围", default=list, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.CONNECTED)
+    last_error = models.CharField(max_length=500, blank=True)
+    authorized_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    authorized_at = models.DateTimeField(null=True, blank=True)
+    disconnected_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "TikTok Shop 授权店铺"
+        verbose_name_plural = "TikTok Shop 授权店铺"
+        constraints = [models.UniqueConstraint(fields=["organization", "open_id"], name="uniq_tiktok_connection_open_id")]
+
+
+class TikTokShopSyncRun(OrganizationScopedModel):
+    class Resource(models.TextChoices):
+        PRODUCTS = "products", "商品"
+        ORDERS = "orders", "订单"
+        INVENTORY = "inventory", "库存"
+        SHOP = "shop", "店铺信息"
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "已排队"
+        RUNNING = "running", "同步中"
+        COMPLETED = "completed", "已完成"
+        FAILED = "failed", "失败"
+
+    connection = models.ForeignKey(TikTokShopConnection, on_delete=models.PROTECT, related_name="sync_runs")
+    resource = models.CharField(max_length=20, choices=Resource.choices)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)
+    summary = models.JSONField(default=dict, blank=True)
+    error_message = models.CharField(max_length=500, blank=True)
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+
+class AIProviderConfig(OrganizationScopedModel):
+    name = models.CharField(max_length=120)
+    api_base_url = models.URLField(max_length=1000)
+    model_name = models.CharField(max_length=160)
+    api_key_encrypted = models.TextField()
+    default_parameters = models.JSONField(default=dict, blank=True)
+    timeout_seconds = models.PositiveIntegerField(default=45)
+    max_retries = models.PositiveSmallIntegerField(default=2)
+    enabled = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "大模型服务配置"
+        verbose_name_plural = "大模型服务配置"
+        constraints = [models.UniqueConstraint(fields=["organization", "name"], name="uniq_ai_provider_name")]
+
+
+class AIInvocationLog(OrganizationScopedModel):
+    provider = models.ForeignKey(AIProviderConfig, null=True, blank=True, on_delete=models.SET_NULL, related_name="invocations")
+    feature = models.CharField(max_length=60)
+    model_name = models.CharField(max_length=160, blank=True)
+    status = models.CharField(max_length=20)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    latency_ms = models.PositiveIntegerField(default=0)
+    input_tokens = models.PositiveIntegerField(null=True, blank=True)
+    output_tokens = models.PositiveIntegerField(null=True, blank=True)
+    error_code = models.CharField(max_length=80, blank=True)
+    error_message = models.CharField(max_length=500, blank=True)
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class AIRecommendation(OrganizationScopedModel):
+    class Kind(models.TextChoices):
+        INVENTORY_FORECAST = "inventory_forecast", "库存预测"
+        REPLENISHMENT = "replenishment", "补货建议"
+        PRODUCT_ANALYSIS = "product_analysis", "商品分析"
+        COPYWRITING = "copywriting", "文案生成"
+
+    class Status(models.TextChoices):
+        PROPOSED = "proposed", "待确认"
+        CONFIRMED = "confirmed", "已确认"
+        REJECTED = "rejected", "已拒绝"
+
+    provider = models.ForeignKey(AIProviderConfig, null=True, blank=True, on_delete=models.SET_NULL)
+    kind = models.CharField(max_length=40, choices=Kind.choices)
+    input_data = models.JSONField(default=dict, blank=True)
+    proposal = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PROPOSED)
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="confirmed_ai_recommendations")
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.CharField(max_length=240, blank=True)
 
 
 class AuditLog(OrganizationScopedModel):

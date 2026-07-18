@@ -1,3 +1,4 @@
+import hashlib
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
 
@@ -5,6 +6,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.http import FileResponse, Http404
 from django.db import IntegrityError, connection, transaction
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
@@ -19,10 +21,10 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge,
-    LocalImport, Product, ProductImage, PurchaseOrder, Receipt, ReplenishmentPolicy,
+    AIInvocationLog, AIProviderConfig, AIRecommendation, AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge,
+    LocalImport, Product, ProductImage, PurchaseOrder, Receipt, ReplenishmentPolicy, ReplenishmentSettings,
     ReturnOrder, ReturnReceipt, SalesOrder, Shipment,
-    SKU, StockBalance, StockLedger, StockTransfer, Supplier, Warehouse,
+    SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
 from .owner_security import consume_challenge, create_challenge, email_verification_enabled
 from .permissions import (
@@ -33,23 +35,25 @@ from .permissions import (
     request_organization,
 )
 from .serializers import (
+    AIInvocationLogSerializer, AIProviderConfigSerializer, AIRecommendationConfirmationSerializer, AIRecommendationInputSerializer, AIRecommendationSerializer,
     AdjustmentInputSerializer, AllocateInputSerializer, AuditLogSerializer,
     CompetitorProductSerializer, CompetitorSnapshotSerializer, InternalAccountSerializer, MembershipSerializer,
     ConfirmAndShipInputSerializer, LocalImportSerializer, OrganizationSerializer,
-    ProductImageSerializer, ProductSerializer, QuickSalesSnapshotInputSerializer,
+    ProductImageSerializer, ProductSerializer, QuickSalesSnapshotInputSerializer, UploadedMediaAssetSerializer,
     PurchaseOrderSerializer, ReceiptSerializer, ReceiveInputSerializer,
-    ReplenishmentPolicySerializer, ReplenishmentRecommendationQuerySerializer,
+    ReplenishmentPolicySerializer, ReplenishmentRecommendationQuerySerializer, ReplenishmentSettingsSerializer,
     ReturnOrderSerializer, ReturnReceiveInputSerializer, SalesOrderSerializer,
     ShipmentSerializer, ShipInputSerializer, SKUSerializer, StockBalanceSerializer,
-    StockLedgerSerializer, StockTransferSerializer, SupplierSerializer,
+    StockLedgerReversalInputSerializer, StockLedgerSerializer, StockTransferSerializer, SupplierSerializer,
+    ManualStockMovementInputSerializer, TikTokAuthorizationStartSerializer, TikTokShopConnectionSerializer, TikTokShopSyncRunSerializer, TikTokSyncStartSerializer,
     TransferPostInputSerializer, WarehouseSerializer,
     ProductSelectionKeywordInputSerializer, ProductSelectionReportInputSerializer,
 )
-from . import alphashop
+from . import alphashop, integrations
 from .services import (
     adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
     confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
-    dispatch_stock_transfer, receive_purchase, receive_return, receive_stock_transfer,
+    dispatch_stock_transfer, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger,
     reject_return, ship_order, start_picking, submit_purchase, verify_order, write_audit,
 )
 from .local_imports import commit_local_import, validate_local_import
@@ -433,7 +437,16 @@ def replenishment_recommendations(request):
             organization=organization, warehouse=warehouse
         )
     }
-    default_policy = ForecastPolicy()
+    settings, _ = ReplenishmentSettings.objects.get_or_create(organization=organization)
+    default_policy = ForecastPolicy(
+        safety_days=settings.safety_days,
+        review_cycle_days=Decimal(settings.review_cycle_days),
+        target_days=Decimal(settings.target_days),
+        manual_lead_days=Decimal(settings.default_lead_time_days),
+        service_level_factor=settings.service_level_factor,
+        initial_reference_shipment_count=settings.initial_reference_shipment_count,
+    )
+    weights = (settings.velocity_weight_7, settings.velocity_weight_14, settings.velocity_weight_30)
     recommendations = []
     skus = SKU.objects.filter(
         organization=organization,
@@ -456,6 +469,8 @@ def replenishment_recommendations(request):
                     else default_policy.manual_lead_days
                 ),
                 safety_stock_units=stored_policy.safety_stock_override,
+                service_level_factor=settings.service_level_factor,
+                initial_reference_shipment_count=settings.initial_reference_shipment_count,
             )
         forecast = build_replenishment_forecast(
             organization=organization,
@@ -463,6 +478,7 @@ def replenishment_recommendations(request):
             warehouse=warehouse,
             supplier=sku.product.default_supplier,
             policy=forecast_policy,
+            weights=weights,
         )
         recommendations.append({
             "warehouse": str(warehouse.pk),
@@ -706,6 +722,56 @@ class ProductImageViewSet(viewsets.ModelViewSet):
         _save_serializer(serializer)
 
 
+class UploadedMediaAssetViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
+    serializer_class = UploadedMediaAssetSerializer
+    permission_classes = [OrganizationRolePermission]
+    capability = "catalog"
+    MAX_IMAGE_SIZE = 5 * 1024 * 1024
+    ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
+    def get_queryset(self):
+        return UploadedMediaAsset.objects.filter(organization=request_organization(self.request)).order_by("-created_at")
+
+    def perform_create(self, serializer):
+        uploaded = serializer.validated_data["file"]
+        content_type = (getattr(uploaded, "content_type", "") or "").lower()
+        if content_type not in self.ALLOWED_TYPES:
+            raise ValidationError({"file": "仅支持 JPG、PNG、WebP 图片。"})
+        if uploaded.size > self.MAX_IMAGE_SIZE:
+            raise ValidationError({"file": "图片不能超过 5 MB。"})
+        digest = hashlib.sha256()
+        for chunk in uploaded.chunks():
+            digest.update(chunk)
+        uploaded.seek(0)
+        asset = _save_serializer(
+            serializer,
+            organization=request_organization(self.request),
+            original_name=(getattr(uploaded, "name", "") or "")[:255],
+            content_type=content_type,
+            size=uploaded.size,
+            sha256=digest.hexdigest(),
+        )
+        write_audit(
+            organization=asset.organization, actor=self.request.user,
+            action="media_asset.upload", instance=asset,
+            after={"content_type": asset.content_type, "size": asset.size, "sha256": asset.sha256},
+        )
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def media_asset_content(request, pk):
+    try:
+        asset = UploadedMediaAsset.objects.get(pk=pk)
+    except UploadedMediaAsset.DoesNotExist as exc:
+        raise Http404 from exc
+    if not asset.file:
+        raise Http404
+    response = FileResponse(asset.file.open("rb"), content_type=asset.content_type or "application/octet-stream")
+    response["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
+
 class SupplierViewSet(OrganizationScopedViewSet):
     queryset = Supplier.objects.order_by("code", "id")
     serializer_class = SupplierSerializer
@@ -775,7 +841,7 @@ class ReceiptViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Cr
         return Response(self.get_serializer(receipt).data, status=status.HTTP_201_CREATED)
 
 
-class StockBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+class StockBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin, viewsets.GenericViewSet):
     queryset = StockBalance.objects.select_related("warehouse", "sku").order_by("warehouse_id", "sku_id")
     serializer_class = StockBalanceSerializer
     permission_classes = [OrganizationRolePermission]
@@ -788,6 +854,17 @@ class StockBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, view
     def get_queryset(self):
         return self.queryset.filter(organization=self.get_organization())
 
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        balance = StockBalance.objects.select_for_update().get(pk=instance.pk)
+        if balance.on_hand != 0 or balance.reserved != 0:
+            raise ValidationError("只有在库和锁定数量都为 0 的库存记录才能删除")
+        write_audit(
+            organization=balance.organization, actor=self.request.user, action="inventory.balance.delete", instance=balance,
+            before={"warehouse": str(balance.warehouse_id), "sku": str(balance.sku_id), "on_hand": str(balance.on_hand), "reserved": str(balance.reserved)},
+        )
+        balance.delete()
+
     @action(detail=False, methods=["post"])
     def adjust(self, request):
         data = AdjustmentInputSerializer(data=request.data, context=self.get_serializer_context())
@@ -799,9 +876,29 @@ class StockBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, view
         ledger = _service_call(adjust_inventory, organization=organization, actor=request.user, **values)
         return Response(StockLedgerSerializer(ledger).data, status=status.HTTP_201_CREATED)
 
+    def _manual_move(self, request, direction):
+        data = ManualStockMovementInputSerializer(data=request.data, context=self.get_serializer_context())
+        data.is_valid(raise_exception=True)
+        values = data.validated_data
+        organization = self.get_organization()
+        if values["warehouse"].organization_id != organization.id or values["sku"].organization_id != organization.id:
+            raise ValidationError("仓库或 SKU 不属于当前组织")
+        ledger = _service_call(
+            manual_stock_movement, organization=organization, actor=request.user, direction=direction, **values
+        )
+        return Response(StockLedgerSerializer(ledger).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="manual-inbound")
+    def manual_inbound(self, request):
+        return self._manual_move(request, "inbound")
+
+    @action(detail=False, methods=["post"], url_path="manual-outbound")
+    def manual_outbound(self, request):
+        return self._manual_move(request, "outbound")
+
 
 class StockLedgerViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
-    queryset = StockLedger.objects.select_related("warehouse", "sku", "actor")
+    queryset = StockLedger.objects.select_related("warehouse", "sku", "actor").select_related("reversal__reversal_ledger", "reversal__reversed_by")
     serializer_class = StockLedgerSerializer
     permission_classes = [OrganizationRolePermission]
     capability = "warehouse"
@@ -810,6 +907,16 @@ class StockLedgerViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, views
     def get_queryset(self):
         return self.queryset.filter(organization=self.organization or request_organization(self.request))
 
+    @action(detail=True, methods=["post"], url_path="revoke")
+    def revoke(self, request, pk=None):
+        data = StockLedgerReversalInputSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        reversal = _service_call(
+            reverse_stock_ledger,
+            organization=request_organization(request), ledger=self.get_object(), actor=request.user, **data.validated_data,
+        )
+        return Response({"reversal": str(reversal.pk), "reversal_ledger": StockLedgerSerializer(reversal.reversal_ledger).data})
+
 
 class ReplenishmentPolicyViewSet(OrganizationScopedViewSet):
     queryset = ReplenishmentPolicy.objects.select_related("warehouse", "sku").order_by(
@@ -817,6 +924,22 @@ class ReplenishmentPolicyViewSet(OrganizationScopedViewSet):
     )
     serializer_class = ReplenishmentPolicySerializer
     capability = "replenishment"
+
+
+class ReplenishmentSettingsViewSet(OrganizationScopedViewSet):
+    queryset = ReplenishmentSettings.objects.all()
+    serializer_class = ReplenishmentSettingsSerializer
+    capability = "replenishment"
+
+    def create(self, request, *args, **kwargs):
+        organization = self.get_organization()
+        existing = ReplenishmentSettings.objects.filter(organization=organization).first()
+        if existing is not None:
+            serializer = self.get_serializer(existing, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
+            return Response(serializer.data)
+        return super().create(request, *args, **kwargs)
 
 
 class StockTransferViewSet(OrganizationScopedViewSet):
@@ -1052,6 +1175,131 @@ class CompetitorSnapshotViewSet(viewsets.ModelViewSet):
             **data.validated_data,
         )
         return Response(self.get_serializer(snapshot).data, status=status.HTTP_201_CREATED)
+
+
+class TikTokShopConnectionViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    queryset = TikTokShopConnection.objects.select_related("authorized_by").order_by("-authorized_at", "id")
+    serializer_class = TikTokShopConnectionSerializer
+    permission_classes = [OrganizationRolePermission]
+    owner_only = True
+    organization = None
+
+    def get_queryset(self):
+        return self.queryset.filter(organization=self.organization or request_organization(self.request))
+
+    @action(detail=False, methods=["post"], url_path="authorize")
+    def authorize(self, request):
+        data = TikTokAuthorizationStartSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        authorization_url = integrations.begin_tiktok_authorization(
+            organization=request_organization(request), actor=request.user, region=data.validated_data["region"]
+        )
+        return Response({"authorization_url": authorization_url})
+
+    @action(detail=True, methods=["post"], url_path="refresh")
+    def refresh(self, request, pk=None):
+        connection = integrations.refresh_tiktok_connection(self.get_object())
+        write_audit(organization=connection.organization, actor=request.user, action="tiktok.connection.refresh", instance=connection)
+        return Response(self.get_serializer(connection).data)
+
+    @action(detail=True, methods=["post"], url_path="disconnect")
+    def disconnect(self, request, pk=None):
+        connection = integrations.disconnect_tiktok_connection(self.get_object())
+        write_audit(organization=connection.organization, actor=request.user, action="tiktok.connection.disconnect", instance=connection)
+        return Response(self.get_serializer(connection).data)
+
+    @action(detail=True, methods=["post"], url_path="sync")
+    def sync(self, request, pk=None):
+        data = TikTokSyncStartSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        connection = self.get_object()
+        if connection.status != TikTokShopConnection.Status.CONNECTED:
+            raise ValidationError("店铺未处于已授权状态，不能发起同步")
+        run = TikTokShopSyncRun.objects.create(
+            organization=connection.organization, connection=connection, resource=data.validated_data["resource"],
+            requested_by=request.user, summary={"note": "已预留同步任务；请接入队列 worker 后执行实际同步"},
+        )
+        return Response(TikTokShopSyncRunSerializer(run).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+@transaction.atomic
+def tiktok_shop_oauth_callback(request):
+    if request.query_params.get("error") or not request.query_params.get("code"):
+        return Response({"detail": "TikTok Shop 授权未完成", "error": request.query_params.get("error", "auth_denied")}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        connection = integrations.complete_tiktok_authorization(
+            state=str(request.query_params.get("state", "")), auth_code=str(request.query_params["code"])
+        )
+    except (DjangoValidationError, IntegrityError) as exc:
+        raise ValidationError(exc.message_dict if hasattr(exc, "message_dict") else getattr(exc, "messages", [str(exc)])) from exc
+    return Response({"detail": "TikTok Shop 店铺授权成功，可以关闭此页面返回 ERP", "connection_id": str(connection.pk)})
+
+
+class AIProviderConfigViewSet(OrganizationScopedViewSet):
+    queryset = AIProviderConfig.objects.all().order_by("name", "id")
+    serializer_class = AIProviderConfigSerializer
+    owner_only = True
+
+    @action(detail=True, methods=["post"], url_path="test")
+    def test_connection(self, request, pk=None):
+        provider = self.get_object()
+        result, log = integrations.invoke_ai(
+            provider=provider, feature="connection_test", actor=request.user,
+            messages=[{"role": "user", "content": "Reply with exactly: OK"}],
+        )
+        return Response({"detail": "连接成功", "log_id": str(log.pk), "model": result.get("model", provider.model_name)})
+
+
+class AIInvocationLogViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    queryset = AIInvocationLog.objects.select_related("provider", "requested_by")
+    serializer_class = AIInvocationLogSerializer
+    permission_classes = [OrganizationRolePermission]
+    owner_only = True
+    organization = None
+
+    def get_queryset(self):
+        return self.queryset.filter(organization=self.organization or request_organization(self.request))
+
+
+class AIRecommendationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    queryset = AIRecommendation.objects.select_related("provider", "confirmed_by")
+    serializer_class = AIRecommendationSerializer
+    permission_classes = [OrganizationRolePermission]
+    owner_only = True
+    organization = None
+
+    def get_queryset(self):
+        return self.queryset.filter(organization=self.organization or request_organization(self.request))
+
+    def create(self, request, *args, **kwargs):
+        data = AIRecommendationInputSerializer(data=request.data, context=self.get_serializer_context())
+        data.is_valid(raise_exception=True)
+        recommendation = integrations.create_ai_recommendation(
+            provider=data.validated_data["provider"], kind=data.validated_data["kind"],
+            input_data=data.validated_data["input_data"], actor=request.user,
+        )
+        return Response(self.get_serializer(recommendation).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="confirm")
+    @transaction.atomic
+    def confirm(self, request, pk=None):
+        data = AIRecommendationConfirmationSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        recommendation = AIRecommendation.objects.select_for_update().get(pk=self.get_object().pk)
+        if recommendation.status != AIRecommendation.Status.PROPOSED:
+            raise ValidationError("该 AI 建议已处理，不能重复确认")
+        # Confirmation records the user's decision only.  It intentionally does not post stock.
+        recommendation.status = AIRecommendation.Status.CONFIRMED
+        recommendation.confirmed_by = request.user
+        recommendation.confirmed_at = timezone.now()
+        recommendation.save(update_fields=["status", "confirmed_by", "confirmed_at", "updated_at"])
+        write_audit(
+            organization=recommendation.organization, actor=request.user, action="ai.recommendation.confirm", instance=recommendation,
+            after={"kind": recommendation.kind, "reason": data.validated_data["reason"], "inventory_posted": False},
+        )
+        return Response(self.get_serializer(recommendation).data)
 
 
 class AuditLogViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):

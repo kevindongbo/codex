@@ -20,7 +20,7 @@
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260717-alphashop-selection-1" />
+  <link rel="stylesheet" href="styles.css?v=20260718-erp-operations-1" />
 </head>
 <body>
   <header class="app-header">
@@ -281,7 +281,7 @@
           <div class="panel-title"><div><h2>最近库存流水</h2><p>采购收货、订单出库、盘点调整和报损均会留痕。</p></div><select id="movementProduct"><option value="all">全部 SKU</option></select></div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>时间</th><th>商品</th><th>类型</th><th>数量变化</th><th>变动后在库</th><th>关联单据</th><th>备注</th></tr></thead>
+              <thead><tr><th>时间</th><th>商品</th><th>类型</th><th>数量变化</th><th>变动后在库</th><th>关联单据</th><th>备注</th><th>操作</th></tr></thead>
               <tbody id="movementRows"></tbody>
             </table>
             <div class="empty-state compact" id="movementEmpty"><p>暂无库存流水。</p></div>
@@ -550,7 +550,7 @@
         <div class="line-builder">
           <div class="form-section-title"><strong>采购商品明细</strong><span>一张采购单可包含多个 SKU</span></div>
           <div class="line-entry four"><label>本店 SKU<select id="purchaseLineProduct"></select></label><label>采购数量<input id="purchaseLineQty" type="number" min="1" step="1" /></label><label>实际单价<input id="purchaseLineCost" type="number" min="0" step="0.01" /></label><button class="button secondary" id="addPurchaseLine" type="button">＋ 加入明细</button></div>
-          <div class="line-list" id="purchaseLineList"></div>
+          <div class="line-list purchase-line-list" id="purchaseLineList"></div>
         </div>
         <div class="modal-actions"><button class="button secondary" type="button" data-close="purchaseModal">取消</button><button class="button primary" type="submit">保存采购单</button></div>
       </form>
@@ -560,11 +560,14 @@
   <div class="modal-backdrop" id="receiveModal" aria-hidden="true">
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="receiveModalTitle">
       <button class="modal-close" data-close="receiveModal" aria-label="关闭">×</button>
-      <p class="eyebrow">RECEIVING</p><h2 id="receiveModalTitle">确认收货入库</h2><p class="modal-intro" id="receiveIntro">选择到货商品与数量。</p>
+      <p class="eyebrow">RECEIVING</p><h2 id="receiveModalTitle">确认收货入库</h2><p class="modal-intro" id="receiveIntro">选择采购单后一次填写全部到货商品的本次收货数量。</p>
       <form id="receiveForm">
-        <input id="receivePurchaseId" type="hidden" />
-        <label>采购商品 <span>*</span><select id="receiveLine" required></select></label>
-        <div class="form-grid two"><label>本次收货数量 <span>*</span><input id="receiveQty" type="number" min="1" step="1" required /></label><label>收货时间 <span>*</span><input id="receiveAt" type="datetime-local" required /></label><label class="full">备注<input id="receiveNote" maxlength="100" placeholder="例如：外箱轻微破损，数量无误" /></label></div>
+        <label>采购单 <span>*</span><select id="receivePurchaseId" required></select></label>
+        <div class="line-builder receive-line-builder">
+          <div class="form-section-title"><strong>本次收货明细</strong><span>只填写实际到货的数量；留空或填 0 的商品不会入库。</span></div>
+          <div class="line-list receive-line-list" id="receiveLineList"></div>
+        </div>
+        <div class="form-grid two"><label>收货时间 <span>*</span><input id="receiveAt" type="datetime-local" required /></label><label>备注（可选）<input id="receiveNote" maxlength="100" placeholder="例如：外箱轻微破损，数量无误" /></label></div>
         <div class="last-value" id="receiveHint"></div>
         <div class="modal-actions"><button class="button secondary" type="button" data-close="receiveModal">取消</button><button class="button primary" type="submit">确认收货并入库</button></div>
       </form>
@@ -574,14 +577,14 @@
   <div class="modal-backdrop" id="stockModal" aria-hidden="true">
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="stockModalTitle">
       <button class="modal-close" data-close="stockModal" aria-label="关闭">×</button>
-      <p class="eyebrow">STOCK ADJUSTMENT</p><h2 id="stockModalTitle">库存调整</h2><p class="modal-intro">采购收货和订单出库请走对应单据；此处用于盘点、手动入库和报损。</p>
+      <p class="eyebrow">STOCK ADJUSTMENT</p><h2 id="stockModalTitle">库存调整</h2><p class="modal-intro">采购收货和订单出库请走对应单据；此处可登记手动入库、手动出库与盘点差异。</p>
       <form id="stockForm">
         <label>仓库商品 <span>*</span><select id="stockProduct" required></select></label>
         <div class="form-grid two">
-          <label>调整类型 <span>*</span><select id="stockOperation" required><option value="manual_in">手动入库</option><option value="adjust_add">盘盈增加</option><option value="adjust_sub">盘亏减少</option><option value="damage">报损出库</option></select></label>
+          <label>调整类型 <span>*</span><select id="stockOperation" required><option value="manual_inbound">手动入库</option><option value="manual_outbound">手动出库</option><option value="adjust_add">盘盈增加</option><option value="adjust_sub">盘亏减少</option><option value="damage">报损出库</option></select></label>
           <label>数量 <span>*</span><input id="stockQuantity" type="number" min="1" step="1" required /></label>
           <label>操作时间 <span>*</span><input id="stockAt" type="datetime-local" required /></label>
-          <label>原因/备注 <span>*</span><input id="stockNote" required maxlength="100" placeholder="例如：月末盘点差异" /></label>
+          <label>原因/备注（可选）<input id="stockNote" maxlength="100" placeholder="例如：月末盘点差异" /></label>
         </div>
         <div class="last-value" id="stockHint"></div>
         <div class="modal-actions"><button class="button secondary" type="button" data-close="stockModal">取消</button><button class="button primary" type="submit">保存库存调整</button></div>
@@ -678,7 +681,7 @@
           <label>仓库<select id="teamWarehouse"></select></label>
         </div>
         <div class="session-sync-row"><span id="teamSyncDetail">尚未同步</span><button class="button tiny secondary" id="refreshTeamData" type="button">立即同步</button></div>
-        <div class="session-sync-row" id="ownerAccountActions" hidden><span>主账号可统一管理所有内部成员。</span><div><button class="button tiny secondary" id="openAccountManager" type="button">账号与权限</button><button class="button tiny secondary" id="openOwnerPasswordChange" type="button">修改主账号密码</button></div></div>
+        <div class="session-sync-row" id="ownerAccountActions" hidden><span>主账号可统一管理所有内部成员和外部授权。</span><div><button class="button tiny secondary" id="openAccountManager" type="button">账号与权限</button><button class="button tiny secondary" id="openIntegrations" type="button">店铺与 AI 接口</button><button class="button tiny secondary" id="openOwnerPasswordChange" type="button">修改主账号密码</button></div></div>
         <input id="localBackupFile" type="file" accept=".json,application/json" hidden />
         <div class="session-sync-row"><span>可导入本机商品、竞品、快照与期初库存。</span><button class="button tiny secondary" id="chooseLocalBackup" type="button">导入本机备份</button></div>
         <div class="migration-preview" id="migrationPreview" hidden>
@@ -704,6 +707,19 @@
         <div class="account-list" id="internalAccountRows"></div>
       </section>
 
+      <section id="integrationsPanel" hidden>
+        <div class="form-section-title"><strong>店铺与 AI 接口</strong><span>密钥只会发送到服务器加密保存，页面不会回显。</span></div>
+        <div class="mode-card team"><i></i><div><strong>TikTok Shop 店铺</strong><span>需先在 TikTok Shop Partner Center 配置回调地址与所需权限。</span></div></div>
+        <div class="form-grid two"><label>授权区域<select id="tiktokAuthorizeRegion"><option value="MY">马来西亚 / ROW</option><option value="US">美国</option></select></label><div class="modal-actions"><button class="button primary" id="startTikTokAuthorization" type="button">授权 TikTok Shop</button></div></div>
+        <div class="account-list" id="tiktokConnectionRows"></div>
+        <div class="form-section-title"><strong>外部大模型 API</strong><span>兼容 OpenAI Chat Completions 协议；库存建议只生成待确认方案，不会自动改库存。</span></div>
+        <form id="aiProviderForm">
+          <div class="form-grid two"><label>配置名称 <span>*</span><input id="aiProviderName" required maxlength="120" placeholder="例如：主力模型" /></label><label>API 地址 <span>*</span><input id="aiProviderBaseUrl" type="url" required placeholder="https://api.example.com/v1" /></label><label>模型名称 <span>*</span><input id="aiProviderModel" required maxlength="160" placeholder="例如：gpt-4.1-mini" /></label><label>API Key <span>*</span><input id="aiProviderKey" type="password" required autocomplete="new-password" /></label><label>超时（秒）<input id="aiProviderTimeout" type="number" min="5" max="120" value="30" /></label><label>重试次数<input id="aiProviderRetries" type="number" min="0" max="5" value="2" /></label></div>
+          <div class="modal-actions"><button class="button primary" type="submit">加密保存并测试</button></div>
+        </form>
+        <div class="account-list" id="aiProviderRows"></div>
+      </section>
+
       <section id="ownerPasswordPanel" hidden>
         <div class="form-section-title"><strong>修改主账号密码</strong><span>需先向主账号邮箱发送验证码。子账号没有修改密码的权限。</span></div>
         <form id="ownerPasswordChangeForm">
@@ -719,7 +735,7 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js"></script>
-  <script src="team.js?v=20260717-alphashop-selection-1"></script>
-  <script src="app.js?v=20260717-alphashop-selection-1"></script>
+  <script src="team.js?v=20260718-erp-operations-1"></script>
+  <script src="app.js?v=20260718-erp-operations-1"></script>
 </body>
 </html>

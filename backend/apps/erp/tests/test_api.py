@@ -5,6 +5,7 @@ from django.contrib.auth.models import Group
 from django.contrib import admin
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
@@ -167,6 +168,61 @@ class ApiTests(TestCase):
             format="json", **headers,
         )
         self.assertEqual(rejected.status_code, 400)
+
+    def test_competitor_local_image_upload_uses_formal_media_url(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        image = SimpleUploadedFile("competitor.png", b"fake-png-content", content_type="image/png")
+        uploaded = self.client.post("/api/media-assets/", {"file": image}, **headers)
+        self.assertEqual(uploaded.status_code, 201, uploaded.data)
+        self.assertIn("/api/media-assets/", uploaded.data["url"])
+        competitor = self.client.post(
+            "/api/competitors/",
+            {"name": "本地图片竞品", "url": "https://example.com/product", "image_url": uploaded.data["url"]},
+            format="json", **headers,
+        )
+        self.assertEqual(competitor.status_code, 201, competitor.data)
+        rejected = self.client.post(
+            "/api/competitors/",
+            {"name": "Base64 竞品", "url": "https://example.com/product", "image_url": "data:image/png;base64,AAAA"},
+            format="json", **headers,
+        )
+        self.assertEqual(rejected.status_code, 400)
+
+    def test_manual_stock_movement_revoke_and_zero_balance_delete(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(organization=self.organization, code="MANUAL-WH", name="手动出入库仓")
+        product = Product.objects.create(organization=self.organization, name="手动库存商品", status=Product.Status.ACTIVE)
+        sku = SKU.objects.create(organization=self.organization, product=product, code="MANUAL-SKU", cost="10")
+        inbound = self.client.post(
+            "/api/stock-balances/manual-inbound/",
+            {"warehouse": str(warehouse.pk), "sku": str(sku.pk), "quantity": "5", "reason": "", "idempotency_key": "manual-in-1"},
+            format="json", **headers,
+        )
+        self.assertEqual(inbound.status_code, 201, inbound.data)
+        outbound = self.client.post(
+            "/api/stock-balances/manual-outbound/",
+            {"warehouse": str(warehouse.pk), "sku": str(sku.pk), "quantity": "5", "reason": "", "idempotency_key": "manual-out-1"},
+            format="json", **headers,
+        )
+        self.assertEqual(outbound.status_code, 201, outbound.data)
+        self.assertEqual(StockBalance.objects.get(warehouse=warehouse, sku=sku).on_hand, 0)
+        reversal = self.client.post(f"/api/stock-ledger/{outbound.data['id']}/revoke/", {"reason": "录入错误"}, format="json", **headers)
+        self.assertEqual(reversal.status_code, 200, reversal.data)
+        self.assertEqual(StockBalance.objects.get(warehouse=warehouse, sku=sku).on_hand, 5)
+        duplicate = self.client.post(f"/api/stock-ledger/{outbound.data['id']}/revoke/", {"reason": "重复"}, format="json", **headers)
+        self.assertEqual(duplicate.status_code, 400)
+        final_outbound = self.client.post(
+            "/api/stock-balances/manual-outbound/",
+            {"warehouse": str(warehouse.pk), "sku": str(sku.pk), "quantity": "5", "idempotency_key": "manual-out-2"},
+            format="json", **headers,
+        )
+        self.assertEqual(final_outbound.status_code, 201, final_outbound.data)
+        balance = StockBalance.objects.get(warehouse=warehouse, sku=sku)
+        self.assertEqual(balance.on_hand, 0)
+        deleted = self.client.delete(f"/api/stock-balances/{balance.pk}/", **headers)
+        self.assertEqual(deleted.status_code, 204)
 
     def test_viewer_cannot_modify_or_delete_organization(self):
         viewer = get_user_model().objects.create_user(username="viewer", password="test-pass-123")

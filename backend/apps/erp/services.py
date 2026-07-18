@@ -24,6 +24,7 @@ from .models import (
     ShipmentLine,
     StockBalance,
     StockLedger,
+    StockLedgerReversal,
     StockReservation,
     StockTransfer,
     StockTransferLine,
@@ -412,6 +413,73 @@ def adjust_inventory(*, organization, warehouse, sku, delta, reason, idempotency
             },
         )
     return ledger
+
+
+@transaction.atomic
+def manual_stock_movement(*, organization, warehouse, sku, quantity, direction, reason="", idempotency_key, actor=None):
+    """Post an auditable manual inbound/outbound movement without allowing negative stock."""
+    if direction not in {"inbound", "outbound"}:
+        raise ValidationError("手动库存操作方向无效")
+    quantity = _decimal(quantity)
+    if quantity <= 0:
+        raise ValidationError("手动出入库数量必须大于 0")
+    _validate_warehouse_and_sku(organization, warehouse, sku)
+    if direction == "outbound" and not warehouse.can_ship:
+        raise ValidationError("当前仓库未开放出库")
+    if direction == "inbound" and not warehouse.can_receive:
+        raise ValidationError("当前仓库未开放收货")
+    event_type = StockLedger.Type.MANUAL_INBOUND if direction == "inbound" else StockLedger.Type.MANUAL_OUTBOUND
+    delta = quantity if direction == "inbound" else -quantity
+    key = f"manual-{direction}:{idempotency_key}"
+    existing = StockLedger.objects.filter(organization=organization, idempotency_key=key).first()
+    if existing:
+        return _assert_ledger_replay(
+            existing, warehouse=warehouse, sku=sku, event_type=event_type, on_hand_delta=delta,
+            reserved_delta=0, reference_type="manual_stock_movement", reference_id=idempotency_key,
+        )
+    ledger = post_stock(
+        organization=organization, warehouse=warehouse, sku=sku, event_type=event_type,
+        on_hand_delta=delta, reference_type="manual_stock_movement", reference_id=idempotency_key,
+        idempotency_key=key, actor=actor, reason=reason or "",
+    )
+    write_audit(
+        organization=organization, actor=actor, action=f"inventory.manual_{direction}", instance=ledger,
+        after={"quantity": str(quantity), "reason": reason or ""},
+    )
+    return ledger
+
+
+@transaction.atomic
+def reverse_stock_ledger(*, organization, ledger, reason="", actor=None):
+    """Reverse eligible manual adjustments while retaining both immutable ledger entries."""
+    ledger = StockLedger.objects.select_for_update().select_related("warehouse", "sku").get(
+        pk=ledger.pk, organization=organization
+    )
+    if ledger.event_type not in {
+        StockLedger.Type.ADJUSTMENT,
+        StockLedger.Type.MANUAL_INBOUND,
+        StockLedger.Type.MANUAL_OUTBOUND,
+    }:
+        raise ValidationError("只有手动入库、手动出库或库存调整流水可直接撤回；采购收货和订单出库请通过原业务单据处理")
+    if StockLedgerReversal.objects.filter(original_ledger=ledger).exists():
+        raise ValidationError("该库存流水已撤回，不能重复操作")
+    reverse_key = f"ledger-reversal:{ledger.pk}"
+    reversal_ledger = post_stock(
+        organization=organization, warehouse=ledger.warehouse, sku=ledger.sku,
+        event_type=StockLedger.Type.REVERSAL, on_hand_delta=-ledger.on_hand_delta,
+        reserved_delta=-ledger.reserved_delta, reference_type="stock_ledger_reversal", reference_id=ledger.pk,
+        idempotency_key=reverse_key, actor=actor, reason=reason or f"撤回流水 {ledger.pk}",
+    )
+    reversal = StockLedgerReversal.objects.create(
+        original_ledger=ledger, reversal_ledger=reversal_ledger, reason=reason or "",
+        reversed_by=actor if getattr(actor, "is_authenticated", False) else None,
+    )
+    write_audit(
+        organization=organization, actor=actor, action="inventory.ledger_reverse", instance=reversal,
+        before={"ledger": str(ledger.pk), "on_hand_delta": str(ledger.on_hand_delta)},
+        after={"reversal_ledger": str(reversal_ledger.pk), "reason": reason or ""},
+    )
+    return reversal
 
 
 @transaction.atomic
