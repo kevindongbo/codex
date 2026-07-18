@@ -845,6 +845,66 @@ class ApiTests(TestCase):
         balance = StockBalance.objects.get(warehouse=warehouse, sku=sku)
         self.assertEqual(balance.reserved, 0)
 
+    def test_one_receipt_posts_all_selected_purchase_lines_atomically(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(
+            organization=self.organization, code="BATCH-RECEIVE", name="批量收货仓"
+        )
+        supplier = Supplier.objects.create(
+            organization=self.organization, code="BATCH-SUP", name="批量供应商"
+        )
+        product = Product.objects.create(
+            organization=self.organization, name="批量收货商品", status=Product.Status.ACTIVE
+        )
+        first_sku = SKU.objects.create(
+            organization=self.organization, product=product, code="BATCH-SKU-1", cost="8"
+        )
+        second_sku = SKU.objects.create(
+            organization=self.organization, product=product, code="BATCH-SKU-2", cost="12"
+        )
+        purchase = self.client.post(
+            "/api/purchase-orders/",
+            {
+                "number": "PO-BATCH-RECEIVE", "supplier": str(supplier.pk),
+                "warehouse": str(warehouse.pk), "currency": "CNY",
+                "lines": [
+                    {"sku": str(first_sku.pk), "quantity_ordered": "3", "unit_cost": "8"},
+                    {"sku": str(second_sku.pk), "quantity_ordered": "5", "unit_cost": "12"},
+                ],
+            },
+            format="json", **headers,
+        )
+        self.assertEqual(purchase.status_code, 201, purchase.data)
+        purchase_id = purchase.data["id"]
+        submitted = self.client.post(f"/api/purchase-orders/{purchase_id}/submit/", **headers)
+        self.assertEqual(submitted.status_code, 200, submitted.data)
+        line_ids = {str(line["sku"]): line["id"] for line in submitted.data["lines"]}
+        payload = {
+            "purchase_order": purchase_id,
+            "number": "GRN-BATCH-RECEIVE",
+            "idempotency_key": "batch-receive-001",
+            "lines": [
+                {"purchase_line": line_ids[str(first_sku.pk)], "quantity": "3", "unit_cost": "8"},
+                {"purchase_line": line_ids[str(second_sku.pk)], "quantity": "5", "unit_cost": "12"},
+            ],
+        }
+        received = self.client.post("/api/receipts/", payload, format="json", **headers)
+        self.assertEqual(received.status_code, 201, received.data)
+        self.assertEqual(len(received.data["lines"]), 2)
+        self.assertEqual(
+            PurchaseOrder.objects.get(pk=purchase_id).status,
+            PurchaseOrder.Status.RECEIVED,
+        )
+        self.assertEqual(StockBalance.objects.get(warehouse=warehouse, sku=first_sku).on_hand, 3)
+        self.assertEqual(StockBalance.objects.get(warehouse=warehouse, sku=second_sku).on_hand, 5)
+        replay = self.client.post("/api/receipts/", payload, format="json", **headers)
+        self.assertEqual(replay.status_code, 201, replay.data)
+        self.assertEqual(replay.data["id"], received.data["id"])
+        self.assertEqual(StockLedger.objects.filter(
+            organization=self.organization, event_type=StockLedger.Type.RECEIPT
+        ).count(), 2)
+
     def test_return_must_reference_shipped_quantity_and_support_partial_receipt(self):
         self.client.force_authenticate(self.user)
         headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}

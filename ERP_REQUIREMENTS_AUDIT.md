@@ -7,7 +7,7 @@ This document is the implementation and acceptance record for the ERP operations
 - Release branch: `main`
 - Release commit: `77204a3` (includes `6b4adb5` and `adda3c8`)
 - Local migration validation: `python manage.py makemigrations --check --dry-run` — no changes detected
-- Backend regression: `python manage.py test apps.erp.tests --verbosity 1` — 74 tests passed
+- Backend regression: `python manage.py test apps.erp.tests --verbosity 1` — 75 tests passed
 - Browser/static regression: `node scripts/build-site.mjs && node --test tests/*.test.mjs` — 38 tests passed
 - JavaScript syntax: `node --check app.js && node --check team.js` — passed
 
