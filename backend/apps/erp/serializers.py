@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
 from rest_framework import serializers
 
@@ -684,17 +685,39 @@ class AIProviderConfigSerializer(ScopedSerializer):
     def get_has_api_key(self, obj):
         return bool(obj.api_key_encrypted)
 
+    def validate(self, attrs):
+        base_url = str(attrs.get("api_base_url", getattr(self.instance, "api_base_url", ""))).rstrip("/")
+        parsed = urlparse(base_url)
+        if parsed.scheme not in {"https", "http"} or not parsed.netloc:
+            raise serializers.ValidationError({"api_base_url": "API 地址必须是有效的 HTTP(S) 地址。"})
+        if parsed.netloc.lower() == "api.deepseek.com" and parsed.path.rstrip("/") == "/anthropic":
+            raise serializers.ValidationError({
+                "api_base_url": "当前系统使用 OpenAI Chat Completions；DeepSeek 请填写 https://api.deepseek.com，不要填写 /anthropic。"
+            })
+        model_name = str(attrs.get("model_name", getattr(self.instance, "model_name", ""))).strip()
+        if parsed.netloc.lower() == "api.deepseek.com" and model_name == "deepseek":
+            raise serializers.ValidationError({
+                "model_name": "DeepSeek 模型请填写 deepseek-v4-flash 或 deepseek-v4-pro。"
+            })
+        return attrs
+
     def create(self, validated_data):
         api_key = validated_data.pop("api_key", "")
         if not api_key:
             raise serializers.ValidationError({"api_key": "首次保存必须提供 API Key"})
-        validated_data["api_key_encrypted"] = encrypt_secret(api_key)
+        try:
+            validated_data["api_key_encrypted"] = encrypt_secret(api_key)
+        except ImproperlyConfigured as exc:
+            raise serializers.ValidationError({"api_key": str(exc)}) from exc
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
         api_key = validated_data.pop("api_key", None)
         if api_key is not None:
-            validated_data["api_key_encrypted"] = encrypt_secret(api_key)
+            try:
+                validated_data["api_key_encrypted"] = encrypt_secret(api_key)
+            except ImproperlyConfigured as exc:
+                raise serializers.ValidationError({"api_key": str(exc)}) from exc
         return super().update(instance, validated_data)
 
 

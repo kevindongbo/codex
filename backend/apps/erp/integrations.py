@@ -12,8 +12,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from django.core.exceptions import ImproperlyConfigured, ValidationError
+from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 
 from .models import AIInvocationLog, AIRecommendation, TikTokShopConnection, TikTokShopOAuthState
 from .secure_config import decrypt_secret, encrypt_secret

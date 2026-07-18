@@ -1,3 +1,4 @@
+import os
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -223,6 +224,32 @@ class ApiTests(TestCase):
         self.assertEqual(balance.on_hand, 0)
         deleted = self.client.delete(f"/api/stock-balances/{balance.pk}/", **headers)
         self.assertEqual(deleted.status_code, 204)
+
+    def test_ai_provider_reports_deepseek_format_and_missing_encryption_key(self):
+        owner = get_user_model().objects.create_superuser(username="owner-ai", password="test-pass-123", email="owner@example.com")
+        self.client.force_authenticate(owner)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        anthopic_url = self.client.post(
+            "/api/ai-providers/",
+            {"name": "deepseek", "api_base_url": "https://api.deepseek.com/anthropic", "model_name": "deepseek-v4-flash", "api_key": "sk-test"},
+            format="json", **headers,
+        )
+        self.assertEqual(anthopic_url.status_code, 400, anthopic_url.data)
+        self.assertIn("api_base_url", anthopic_url.data)
+        wrong_model = self.client.post(
+            "/api/ai-providers/",
+            {"name": "deepseek", "api_base_url": "https://api.deepseek.com", "model_name": "deepseek", "api_key": "sk-test"},
+            format="json", **headers,
+        )
+        self.assertEqual(wrong_model.status_code, 400, wrong_model.data)
+        with patch.dict(os.environ, {"INTEGRATION_ENCRYPTION_KEY": ""}, clear=False):
+            no_key = self.client.post(
+                "/api/ai-providers/",
+                {"name": "valid-deepseek", "api_base_url": "https://api.deepseek.com", "model_name": "deepseek-v4-flash", "api_key": "sk-test"},
+                format="json", **headers,
+            )
+        self.assertEqual(no_key.status_code, 400, no_key.data)
+        self.assertIn("api_key", no_key.data)
 
     def test_viewer_cannot_modify_or_delete_organization(self):
         viewer = get_user_model().objects.create_user(username="viewer", password="test-pass-123")

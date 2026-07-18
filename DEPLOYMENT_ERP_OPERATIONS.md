@@ -31,6 +31,8 @@ Generate the encryption key once on the server with the production virtual envir
 
 The TikTok redirect URL must also be registered in TikTok Shop Partner Center. The app must have the relevant Shop authorization scopes approved before a real store can complete OAuth.
 
+For DeepSeek, this application uses the OpenAI-compatible Chat Completions route: set API address to `https://api.deepseek.com` and use `deepseek-v4-flash` or `deepseek-v4-pro`. Do not use DeepSeek's `/anthropic` address in this form.
+
 ## Deployment sequence
 
 1. Put the site into a maintenance window and record the current Git commit.
