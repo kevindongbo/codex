@@ -105,6 +105,9 @@ let aiRecommendations = [];
 let alphashopConfig = null;
 let draftProductSkus = [];
 let draftPurchaseLines = [];
+let draftPurchaseShipments = [];
+let purchaseEditId = '';
+let purchaseMembers = [];
 let draftOrderLines = [];
 let draftTransferLines = [];
 let replenishmentSelectedSkuIds = new Set();
@@ -117,6 +120,8 @@ let pendingMigrationPreview = null;
 let ownerLoginChallengeId = '';
 let ownerPasswordChallengeId = '';
 let ownerPermissionCatalog = {};
+let ownerRoleCatalog = {};
+let ownerWarehouseCatalog = [];
 let internalAccounts = [];
 let selectionState = {
   statusLoaded: false, configured: false, source: 'none', loadingStatus: false,
@@ -1015,22 +1020,52 @@ function handleTeamError(error) {
 function resetInternalAccountForm() {
   $('#internalAccountId').value = '';
   $('#internalAccountUsername').value = '';
+  $('#internalAccountDisplayName').value = '';
   $('#internalAccountPassword').value = '';
   $('#internalAccountPassword').required = true;
   $('#internalAccountPasswordRequired').hidden = false;
   $('#saveInternalAccount').textContent = '新增子账号';
-  $$('#internalAccountPermissions input').forEach(function (input) { input.checked = input.value === 'view'; });
+  $('#internalAccountRole').value = 'viewer';
+  $$('#internalAccountWarehouses input').forEach(function (input) { input.checked = false; });
+  applyInternalAccountRoleDefaults();
+}
+
+function defaultPermissionsForRole(role) {
+  const catalog = {
+    admin: Object.keys(ownerPermissionCatalog),
+    manager: Object.keys(ownerPermissionCatalog),
+    buyer: ['catalog', 'purchase', 'replenishment'],
+    warehouse: ['warehouse', 'order'],
+    viewer: ['view']
+  };
+  return catalog[role] || ['view'];
+}
+
+function applyInternalAccountRoleDefaults() {
+  const selected = new Set(defaultPermissionsForRole($('#internalAccountRole').value));
+  $$('#internalAccountPermissions input').forEach(function (input) { input.checked = selected.has(input.value); });
 }
 
 function renderInternalAccountManager() {
   const permissions = Object.keys(ownerPermissionCatalog);
+  const roleSelect = $('#internalAccountRole');
+  const previousRole = roleSelect.value || 'viewer';
+  roleSelect.innerHTML = Object.keys(ownerRoleCatalog).map(function (key) {
+    return '<option value="' + escapeHtml(key) + '">' + escapeHtml(ownerRoleCatalog[key]) + '</option>';
+  }).join('');
+  roleSelect.value = ownerRoleCatalog[previousRole] ? previousRole : 'viewer';
+  $('#internalAccountWarehouses').innerHTML = ownerWarehouseCatalog.length ? ownerWarehouseCatalog.map(function (warehouse) {
+    const label = warehouse.name + (warehouse.code ? ' · ' + warehouse.code : '') + (warehouse.active ? '' : '（已停用）');
+    return '<label><input type="checkbox" value="' + escapeHtml(warehouse.id) + '"' + (warehouse.active ? '' : ' disabled') + ' />' + escapeHtml(label) + '</label>';
+  }).join('') : '<span class="session-help">请先创建仓库，再为成员授权仓库。</span>';
   $('#internalAccountPermissions').innerHTML = permissions.map(function (key) {
-    return '<label><input type="checkbox" value="' + escapeHtml(key) + '"' + (key === 'view' ? ' checked' : '') + ' />' + escapeHtml(ownerPermissionCatalog[key]) + '</label>';
+    return '<label><input type="checkbox" value="' + escapeHtml(key) + '" />' + escapeHtml(ownerPermissionCatalog[key]) + '</label>';
   }).join('');
   $('#internalAccountRows').innerHTML = internalAccounts.length ? internalAccounts.map(function (account) {
     const status = account.active ? '已启用' : '已停用';
     const access = (account.permissions || []).map(function (key) { return ownerPermissionCatalog[key] || key; }).join('、') || '仅查看';
-    return '<div class="account-row"><div><strong>' + escapeHtml(account.username) + '</strong><small>' + escapeHtml(status + ' · ' + access) + '</small></div><div class="inline-actions">' +
+    const warehouseNames = (account.warehouses || []).map(function (warehouse) { return warehouse.name; }).join('、') || (account.role === 'admin' ? '全部仓库' : '未授权仓库');
+    return '<div class="account-row"><div><strong>' + escapeHtml(account.display_name || account.username) + '</strong><small>' + escapeHtml('账号：' + account.username + ' · ' + (ownerRoleCatalog[account.role] || account.role) + ' · ' + status + ' · 仓库：' + warehouseNames + ' · ' + access) + '</small></div><div class="inline-actions">' +
       '<button class="button tiny secondary" type="button" data-account-action="edit" data-account-id="' + escapeHtml(account.id) + '">编辑</button>' +
       '<button class="button tiny ' + (account.active ? 'danger-outline' : 'secondary') + '" type="button" data-account-action="toggle" data-account-id="' + escapeHtml(account.id) + '">' + (account.active ? '停用' : '启用') + '</button></div></div>';
   }).join('') : '<p class="session-help">还没有子账号。新增后成员可直接登录，无需创建组织。</p>';
@@ -1040,6 +1075,8 @@ async function openInternalAccountManager() {
   if (!teamGateway || !teamGateway.user || !teamGateway.user.is_owner) return;
   const payload = await teamGateway.listInternalAccounts();
   ownerPermissionCatalog = payload.permission_catalog || {};
+  ownerRoleCatalog = payload.roles || {};
+  ownerWarehouseCatalog = payload.warehouses || [];
   internalAccounts = (payload.accounts || []).filter(function (account) { return !account.is_owner; });
   $('#accountManagerPanel').hidden = false;
   $('#ownerPasswordPanel').hidden = true;
@@ -1157,10 +1194,14 @@ function editInternalAccount(id) {
   if (!account) return;
   $('#internalAccountId').value = account.id;
   $('#internalAccountUsername').value = account.username;
+  $('#internalAccountDisplayName').value = account.display_name || account.username;
   $('#internalAccountPassword').value = '';
   $('#internalAccountPassword').required = false;
   $('#internalAccountPasswordRequired').hidden = true;
   $('#saveInternalAccount').textContent = '保存账号设置';
+  $('#internalAccountRole').value = account.role || 'viewer';
+  const warehouseIds = new Set(account.warehouse_ids || []);
+  $$('#internalAccountWarehouses input').forEach(function (input) { input.checked = warehouseIds.has(input.value); });
   $$('#internalAccountPermissions input').forEach(function (input) { input.checked = (account.permissions || []).includes(input.value); });
 }
 
@@ -1643,7 +1684,11 @@ function renderPurchases() {
       return escapeHtml(product ? (product.sku + ' · ' + product.name) : '商品已移除');
     }).join('<br>') + (order.lines.length > 2 ? '<br>等 ' + order.lines.length + ' 项' : '');
     const overdue = purchaseIsOverdue(order);
+    const shipments = order.shipments || [];
+    const tracking = shipments.length ? ('<button class="link-button" data-toggle-purchase-shipments="' + escapeHtml(order.id) + '">' + escapeHtml(shipments[0].trackingNumber) + (shipments.length > 1 ? ' +' + (shipments.length - 1) : '') + '</button>' +
+      (order.showShipments ? '<div class="shipment-summary">' + shipments.map(function (shipment) { return '<div><strong>' + escapeHtml(shipment.trackingNumber) + '</strong>：' + shipment.lines.map(function (line) { const product = productById((order.lines.find(function (item) { return item.id === line.purchaseLineId; }) || {}).productId); return escapeHtml((product && product.sku) || 'SKU') + '×' + integer(line.quantity); }).join('，') + '</div>'; }).join('') + '</div>' : '')) : '<span class="muted">未填写</span>';
     let actions = '';
+    if (teamCapabilityAllowed('purchase') && ['draft', 'ordered', 'transit', 'partial'].includes(order.status)) actions += rowButton('edit-purchase', order.id, '编辑', 'secondary');
     const warehouse = TEAM_MODE ? selectedWarehouse() : warehouseById(order.warehouseId || currentWarehouseId());
     if (teamCapabilityAllowed('purchase') && order.status === 'draft') actions += rowButton('submit-purchase', order.id, '确认下单', 'primary');
     if (teamCapabilityAllowed('purchase') && order.status === 'draft') actions += rowButton('delete-purchase', order.id, '删除', 'danger');
@@ -1653,7 +1698,7 @@ function renderPurchases() {
     const statusClass = overdue ? 'overdue' : order.status;
     const statusLabel = overdue ? '已逾期' : PURCHASE_LABELS[order.status];
     return '<tr><td><strong>' + escapeHtml(order.number) + '</strong><br><small>' + formatDate(order.orderedAt, false) + '</small></td>' +
-      '<td>' + escapeHtml(order.supplier) + '</td><td>' + lines + '</td><td>' + ordered + ' / ' + received + '</td>' +
+      '<td>' + escapeHtml(order.purchaserName || '操作员') + '</td><td>' + tracking + '</td><td>' + lines + '</td><td>' + ordered + ' / ' + received + '</td>' +
       '<td><span class="stock-number transit">' + (isPurchaseOpen(order) ? transit : 0) + '</span></td>' +
       '<td class="' + (overdue ? 'overdue-copy' : '') + '">' + formatDate(order.expectedAt, false) + '</td><td>' + purchaseAmount(order) + '</td>' +
       '<td>' + statusPill(statusLabel, statusClass) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
@@ -2693,6 +2738,21 @@ function renderPurchaseDraft() {
       '<button class="line-remove" data-remove-purchase-line="' + escapeHtml(line.productId) + '" type="button">移除</button></div>';
   }).join('') : '<div class="last-value">请至少加入一条采购明细。</div>';
   renderPurchaseSkuPicker();
+  renderPurchaseShipments();
+}
+
+function renderPurchaseShipments() {
+  const container = $('#purchaseShipmentList');
+  if (!container) return;
+  container.innerHTML = draftPurchaseShipments.length ? draftPurchaseShipments.map(function (shipment, shipmentIndex) {
+    const allocations = draftPurchaseLines.map(function (line) {
+      const product = productById(line.productId);
+      const saved = (shipment.lines || []).find(function (item) { return item.productId === line.productId; }) || {};
+      return '<label>' + escapeHtml(product ? (product.sku + ' · ' + product.name) : 'SKU') +
+        '<input data-shipment-quantity="' + shipmentIndex + ':' + escapeHtml(line.productId) + '" type="number" min="0" step="1" max="' + integer(line.quantity) + '" value="' + (saved.quantity == null ? '' : integer(saved.quantity)) + '" placeholder="本包裹数量"></label>';
+    }).join('');
+    return '<div class="shipment-editor"><div><strong>物流单号：' + escapeHtml(shipment.trackingNumber) + '</strong><button class="line-remove" data-remove-purchase-shipment="' + shipmentIndex + '" type="button">移除</button></div><div class="shipment-line-grid">' + allocations + '</div></div>';
+  }).join('') : '<div class="last-value">尚未填写物流单号。可在创建后继续编辑补充，物流不调用付费接口。</div>';
 }
 function renderPurchaseSkuPicker() {
   const container = $('#purchaseSkuPicker');
@@ -2720,20 +2780,41 @@ function renderPurchaseSkuPicker() {
       '<button class="button secondary" data-add-purchase-sku="' + escapeHtml(product.id) + '" type="button">' + (inDraft ? '更新明细' : '加入明细') + '</button></div></article>';
   }).join('') || '<div class="last-value">没有符合条件的 SKU。请调整搜索条件或先完善商品资料。</div>';
 }
-function openPurchaseEditor() {
+async function openPurchaseEditor(existingOrder) {
   if (!ownProducts(state).filter(function (item) { return !item.needsReview; }).length) {
     showToast('请先在商品中心新增并完善本店 SKU。');
     setRoute('products');
     return;
   }
+  if (TEAM_MODE && !purchaseMembers.length) {
+    purchaseMembers = await teamGateway.listPurchaseMembers();
+  }
   $('#purchaseForm').reset();
-  draftPurchaseLines = [];
-  $('#purchaseNumber').value = 'PO-' + today().replace(/-/g, '') + '-' + String(Date.now()).slice(-4);
-  $('#purchaseStatus').value = 'ordered';
-  $('#purchaseOrderedAt').value = today();
+  purchaseEditId = existingOrder ? existingOrder.id : '';
+  draftPurchaseLines = existingOrder ? existingOrder.lines.map(function (line) {
+    return { productId: line.productId, skuId: line.skuId, purchaseLineId: line.id, quantity: line.orderedQty, unitCost: line.unitCost, receivedQty: line.receivedQty || 0 };
+  }) : [];
+  draftPurchaseShipments = existingOrder ? (existingOrder.shipments || []).map(function (shipment) {
+    return { id: shipment.id, trackingNumber: shipment.trackingNumber, lines: (shipment.lines || []).map(function (line) {
+      const linked = existingOrder.lines.find(function (item) { return item.id === line.purchaseLineId; }) || {};
+      return { productId: linked.productId, skuId: line.skuId || linked.skuId, purchaseLineId: line.purchaseLineId, quantity: line.quantity };
+    }) };
+  }) : [];
+  $('#purchaseNumber').value = existingOrder ? existingOrder.number : ('PO-' + today().replace(/-/g, '') + '-' + String(Date.now()).slice(-4));
+  $('#purchaseSupplier').value = existingOrder ? existingOrder.supplier : '';
+  $('#purchaseStatus').value = existingOrder ? (existingOrder.status === 'draft' ? 'draft' : 'ordered') : 'ordered';
+  $('#purchaseStatus').disabled = Boolean(existingOrder);
+  $('#purchaseOrderedAt').value = existingOrder ? String(existingOrder.orderedAt || '').slice(0, 10) : today();
   const eta = new Date(); eta.setDate(eta.getDate() + 14);
-  $('#purchaseEta').value = localDateTime(eta).slice(0, 10);
-  $('#purchaseExtraCost').value = 0;
+  $('#purchaseEta').value = existingOrder ? String(existingOrder.expectedAt || '').slice(0, 10) : localDateTime(eta).slice(0, 10);
+  $('#purchaseExtraCost').value = existingOrder ? nonNegative(existingOrder.extraCost) : 0;
+  $('#purchaseNote').value = existingOrder ? (existingOrder.note || '') : '';
+  const operator = TEAM_MODE && teamGateway.user ? String(teamGateway.user.id) : '';
+  $('#purchasePurchaser').innerHTML = purchaseMembers.map(function (member) {
+    return '<option value="' + escapeHtml(String(member.user_id)) + '">' + escapeHtml(member.display_name || member.username) + '</option>';
+  }).join('') || '<option value="">当前操作员</option>';
+  $('#purchasePurchaser').value = existingOrder ? (existingOrder.purchaserId || operator) : operator;
+  $('#purchaseModalTitle').textContent = existingOrder ? '编辑采购单' : '创建采购单';
   $('#purchaseSkuSearch').value = '';
   renderPurchaseDraft();
   openModal('purchaseModal');
@@ -3098,6 +3179,9 @@ function openReceiveEditor(purchaseId) {
     return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.number + ' · ' + item.supplier) + '</option>';
   }).join('');
   $('#receivePurchaseId').value = order.id;
+  $('#receiveShipmentId').innerHTML = '<option value="">不指定物流单（按采购单收货）</option>' + (order.shipments || []).map(function (shipment) {
+    return '<option value="' + escapeHtml(shipment.id) + '">' + escapeHtml(shipment.trackingNumber) + '</option>';
+  }).join('');
   $('#receiveAt').value = localDateTime(new Date());
   renderReceiveLines();
   openModal('receiveModal');
@@ -3109,6 +3193,11 @@ function renderReceiveLines() {
     return;
   }
   $('#receiveIntro').textContent = order.number + ' · ' + order.supplier + '：可一次性登记该采购单所有商品。';
+  const selectedShipmentId = $('#receiveShipmentId').value;
+  $('#receiveShipmentId').innerHTML = '<option value="">不指定物流单（按采购单收货）</option>' + (order.shipments || []).map(function (shipment) {
+    return '<option value="' + escapeHtml(shipment.id) + '">' + escapeHtml(shipment.trackingNumber) + '</option>';
+  }).join('');
+  $('#receiveShipmentId').value = selectedShipmentId;
   const lines = order.lines.filter(function (line) { return remainingPurchaseLine(line) > 0; });
   $('#receiveLineList').innerHTML = lines.length ? lines.map(function (line) {
     const product = productById(line.productId);
@@ -3345,21 +3434,29 @@ function handleProductSubmit(event) {
 async function handlePurchaseSubmit(event) {
   event.preventDefault();
   const number = $('#purchaseNumber').value.trim();
-  if (number && state.purchaseOrders.some(function (item) { return item.number.toLowerCase() === number.toLowerCase(); })) return showToast('采购单号不能重复。');
+  if (number && state.purchaseOrders.some(function (item) { return item.id !== purchaseEditId && item.number.toLowerCase() === number.toLowerCase(); })) return showToast('采购单号不能重复。');
   const status = draftPurchaseLines.length ? $('#purchaseStatus').value : 'draft';
   const order = {
-    id: uid('po'), number: number, supplier: $('#purchaseSupplier').value.trim(),
+    id: purchaseEditId || uid('po'), number: number, supplier: $('#purchaseSupplier').value.trim(),
+    purchaserId: $('#purchasePurchaser').value || '',
     warehouseId: currentWarehouseId(), status: status,
     orderedAt: $('#purchaseOrderedAt').value, expectedAt: $('#purchaseEta').value,
     extraCost: nonNegative($('#purchaseExtraCost').value), note: $('#purchaseNote').value.trim(),
     lines: draftPurchaseLines.map(function (line) {
       const product = productById(line.productId);
-      return { id: uid('pol'), productId: line.productId, skuId: product ? product.skuId : '', currency: product ? product.costCurrency : 'CNY', orderedQty: integer(line.quantity), quantity: integer(line.quantity), receivedQty: 0, cancelledQty: 0, unitCost: nonNegative(line.unitCost) };
+      return { id: line.purchaseLineId || uid('pol'), productId: line.productId, skuId: line.skuId || (product ? product.skuId : ''), currency: product ? product.costCurrency : 'CNY', orderedQty: integer(line.quantity), quantity: integer(line.quantity), receivedQty: line.receivedQty || 0, cancelledQty: 0, unitCost: nonNegative(line.unitCost) };
+    }),
+    shipments: draftPurchaseShipments.map(function (shipment) {
+      return { id: shipment.id || '', trackingNumber: shipment.trackingNumber, lines: (shipment.lines || []).map(function (line) {
+        const product = productById(line.productId);
+        const purchaseLine = draftPurchaseLines.find(function (item) { return item.productId === line.productId; }) || {};
+        return { purchaseLineId: line.purchaseLineId || purchaseLine.purchaseLineId || '', skuId: line.skuId || purchaseLine.skuId || (product && product.skuId), quantity: integer(line.quantity) };
+      }).filter(function (line) { return line.quantity > 0; }) };
     }),
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   };
   if (TEAM_MODE) {
-    const savedTeam = await executeTeamCommand(function () { return teamGateway.createPurchase(order); }, status === 'draft' ? '采购草稿已保存，不计入在途。' : '采购单已创建，已自动计入在途。', 'purchase');
+    const savedTeam = await executeTeamCommand(function () { return purchaseEditId ? teamGateway.editPurchase(order) : teamGateway.createPurchase(order); }, purchaseEditId ? '采购单已更新；已收货记录和库存流水保持不变。' : (status === 'draft' ? '采购草稿已保存，不计入在途。' : '采购单已创建，已自动计入在途。'), 'purchase');
     if (savedTeam) closeModal('purchaseModal');
     return;
   }
@@ -3379,7 +3476,7 @@ async function handleReceiveSubmit(event) {
   if (lines.some(function (line) { return line.quantity > line.remaining; })) return showToast('本次收货数量不能超过该商品的未收数量。');
   if (TEAM_MODE) {
     const savedTeam = await executeTeamCommand(function () {
-      return teamGateway.receivePurchase(order, lines);
+      return teamGateway.receivePurchase(order, lines, $('#receiveShipmentId').value || null);
     }, '收货完成：在途已减少，库存已增加。', 'receipt');
     if (savedTeam) closeModal('receiveModal');
     return;
@@ -3657,6 +3754,11 @@ async function handleAction(action, id) {
     if (!order || order.status !== 'draft') throw new Error('采购单不是草稿状态。');
     order.status = 'ordered'; order.updatedAt = new Date().toISOString();
     }, '采购单已确认，开始计入在途。');
+  }
+  if (action === 'edit-purchase') {
+    const order = state.purchaseOrders.find(function (item) { return item.id === id; });
+    if (!order) return;
+    return openPurchaseEditor(order).catch(handleTeamError);
   }
   if (action === 'delete-purchase') {
     const teamOrder = state.purchaseOrders.find(function (item) { return item.id === id; });
@@ -4083,7 +4185,14 @@ function bindEvents() {
     if (!teamGateway || !teamGateway.user || !teamGateway.user.is_owner) return;
     const id = $('#internalAccountId').value;
     const permissions = $$('#internalAccountPermissions input:checked').map(function (input) { return input.value; });
-    const payload = { username: $('#internalAccountUsername').value.trim(), permissions: permissions };
+    const warehouseIds = $$('#internalAccountWarehouses input:checked').map(function (input) { return input.value; });
+    const payload = {
+      username: $('#internalAccountUsername').value.trim(),
+      display_name: $('#internalAccountDisplayName').value.trim(),
+      role: $('#internalAccountRole').value,
+      warehouse_ids: warehouseIds,
+      permissions: permissions
+    };
     const password = $('#internalAccountPassword').value;
     if (password) payload.password = password;
     try {
@@ -4214,7 +4323,42 @@ function bindEvents() {
     if (!$('#purchaseSupplier').value && product.defaultSupplier) $('#purchaseSupplier').value = product.defaultSupplier;
     renderPurchaseDraft();
   });
+  $('#internalAccountRole').addEventListener('change', function () {
+    applyInternalAccountRoleDefaults();
+  });
   $('#purchaseForm').addEventListener('submit', handlePurchaseSubmit);
+  $('#addPurchaseShipment').addEventListener('click', function () {
+    const trackingNumber = $('#purchaseTrackingNumber').value.trim();
+    if (!trackingNumber) return showToast('请先填写物流单号。');
+    if (draftPurchaseShipments.some(function (item) { return item.trackingNumber.toLowerCase() === trackingNumber.toLowerCase(); })) return showToast('同一采购单的物流单号不能重复。');
+    draftPurchaseShipments.push({ id: '', trackingNumber: trackingNumber, lines: [] });
+    $('#purchaseTrackingNumber').value = '';
+    renderPurchaseShipments();
+  });
+  $('#purchaseShipmentList').addEventListener('click', function (event) {
+    const remove = event.target.closest('[data-remove-purchase-shipment]');
+    if (!remove) return;
+    draftPurchaseShipments.splice(Number(remove.dataset.removePurchaseShipment), 1);
+    renderPurchaseShipments();
+  });
+  $('#purchaseShipmentList').addEventListener('input', function (event) {
+    const input = event.target.closest('[data-shipment-quantity]');
+    if (!input) return;
+    const parts = input.dataset.shipmentQuantity.split(':');
+    const shipment = draftPurchaseShipments[Number(parts[0])];
+    if (!shipment) return;
+    const productId = parts.slice(1).join(':');
+    const quantity = Math.max(0, integer(input.value));
+    let line = shipment.lines.find(function (item) { return item.productId === productId; });
+    if (!line && quantity > 0) { line = { productId: productId, quantity: quantity }; shipment.lines.push(line); }
+    if (line) line.quantity = quantity;
+  });
+  $('#purchaseRows').addEventListener('click', function (event) {
+    const toggle = event.target.closest('[data-toggle-purchase-shipments]');
+    if (!toggle) return;
+    const order = state.purchaseOrders.find(function (item) { return item.id === toggle.dataset.togglePurchaseShipments; });
+    if (order) { order.showShipments = !order.showShipments; renderPurchases(); }
+  });
   $('#purchaseLineList').addEventListener('input', function (event) {
     const quantityInput = event.target.closest('[data-purchase-line-quantity]');
     const costInput = event.target.closest('[data-purchase-line-cost]');
@@ -4225,6 +4369,7 @@ function bindEvents() {
     if (costInput) line.unitCost = nonNegative(costInput.value);
   });
   $('#receivePurchaseId').addEventListener('change', renderReceiveLines);
+  $('#receiveShipmentId').addEventListener('change', renderReceiveLines);
   $('#receiveLineList').addEventListener('input', updateReceiveHint);
   $('#receiveForm').addEventListener('submit', handleReceiveSubmit);
   $('#returnLine').addEventListener('change', updateReturnHint);

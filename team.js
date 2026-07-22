@@ -311,6 +311,10 @@
       return this.request('/internal-accounts/');
     }
 
+    async listPurchaseMembers() {
+      return this.listAll('/purchase-members/');
+    }
+
     async createInternalAccount(payload) {
       return this.request('/internal-accounts/', { method: 'POST', body: payload });
     }
@@ -473,6 +477,8 @@
           id: String(item.id), apiStatus: item.status, number: item.number,
           supplier: (supplierById.get(String(item.supplier)) || {}).name || '未命名供应商',
           supplierId: String(item.supplier), warehouseId: LOCAL_WAREHOUSE_ID,
+          purchaserId: item.purchaser ? String(item.purchaser) : '',
+          purchaserName: item.purchaser_display_name || '',
           status: poStatus[item.status] || item.status, orderedAt: item.ordered_at,
           expectedAt: item.expected_at ? String(item.expected_at).slice(0, 10) : '',
           extraCost: number(item.extra_cost), note: item.notes || '', createdAt: item.created_at, updatedAt: item.updated_at,
@@ -483,6 +489,15 @@
               orderedQty: number(line.quantity_ordered), receivedQty: number(line.quantity_received),
               cancelledQty: item.status === 'cancelled' ? Math.max(0, number(line.quantity_ordered) - number(line.quantity_received)) : 0,
               unitCost: number(line.unit_cost)
+            };
+          }),
+          shipments: (item.shipments || []).map(function (shipment) {
+            return {
+              id: String(shipment.id), trackingNumber: shipment.tracking_number || '',
+              lines: (shipment.lines || []).map(function (line) {
+                const purchaseLine = (item.lines || []).find(function (orderLine) { return String(orderLine.id) === String(line.purchase_line); }) || {};
+                return { id: String(line.id), purchaseLineId: String(line.purchase_line), skuId: String(purchaseLine.sku || ''), quantity: number(line.quantity_shipped) };
+              })
             };
           })
         };
@@ -782,15 +797,43 @@
       const supplier = await this.ensureSupplier(order.supplier);
       const payload = {
         number: order.number, supplier: supplier ? supplier.id : null, warehouse: this.warehouseId || null,
+        purchaser: order.purchaserId || (this.user && this.user.id) || null,
         currency: (order.lines[0] && order.lines[0].currency) || 'CNY', extra_cost: order.extraCost || 0,
         ordered_at: iso(order.orderedAt), expected_at: iso(order.expectedAt), notes: order.note || '',
         lines: order.lines.map(function (line) {
           return { sku: line.skuId, quantity_ordered: line.quantity, unit_cost: line.unitCost };
         })
       };
-      const saved = await this.request('/purchase-orders/', { method: 'POST', body: payload });
+      let saved = await this.request('/purchase-orders/', { method: 'POST', body: payload });
+      if ((order.shipments || []).length) {
+        saved = await this.editPurchase(Object.assign({}, order, { id: saved.id, supplierId: supplier ? supplier.id : null }));
+      }
       if (order.status !== 'draft' && order.lines.length) return this.request('/purchase-orders/' + saved.id + '/submit/', { method: 'POST', body: {} });
       return saved;
+    }
+
+    async editPurchase(order) {
+      const supplier = order.supplierId ? { id: order.supplierId } : await this.ensureSupplier(order.supplier);
+      const lineById = new Map((order.lines || []).map(function (line) { return [String(line.id), line]; }));
+      const payload = {
+        number: order.number, supplier: supplier ? supplier.id : null, warehouse: this.warehouseId || null,
+        purchaser: order.purchaserId || null,
+        currency: (order.lines[0] && order.lines[0].currency) || 'CNY', extra_cost: order.extraCost || 0,
+        ordered_at: iso(order.orderedAt), expected_at: iso(order.expectedAt), notes: order.note || '',
+        lines: (order.lines || []).map(function (line) {
+          return { sku: line.skuId, quantity_ordered: line.orderedQty || line.quantity, unit_cost: line.unitCost };
+        }),
+        shipments: (order.shipments || []).map(function (shipment) {
+          return {
+            id: shipment.id || undefined, tracking_number: shipment.trackingNumber,
+            lines: (shipment.lines || []).map(function (line) {
+              const orderLine = lineById.get(String(line.purchaseLineId));
+              return { sku: line.skuId || (orderLine && orderLine.skuId), quantity_shipped: line.quantity };
+            }).filter(function (line) { return line.sku && number(line.quantity) > 0; })
+          };
+        }).filter(function (shipment) { return shipment.tracking_number; })
+      };
+      return this.request('/purchase-orders/' + encodeURIComponent(order.id) + '/edit/', { method: 'POST', body: payload });
     }
 
     async submitPurchase(order) {
@@ -805,7 +848,7 @@
       return this.request('/purchase-orders/' + order.id + '/', { method: 'DELETE' });
     }
 
-    async receivePurchase(order, lines) {
+    async receivePurchase(order, lines, shipmentId) {
       const normalizedLines = (lines || []).map(function (line) {
         return { purchase_line: line.id, quantity: number(line.quantity), unit_cost: line.unitCost };
       }).filter(function (line) { return line.quantity > 0; });
@@ -816,6 +859,7 @@
           method: 'POST',
           body: {
             purchase_order: order.id,
+            purchase_shipment: shipmentId || null,
             number: 'GRN-' + key.value.slice(-24),
             idempotency_key: key.value,
             lines: normalizedLines

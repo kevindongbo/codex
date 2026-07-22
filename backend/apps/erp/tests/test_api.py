@@ -962,6 +962,121 @@ class ApiTests(TestCase):
             organization=self.organization, event_type=StockLedger.Type.RECEIPT
         ).count(), 2)
 
+    def test_purchase_tracking_supports_split_receipts_and_purchaser(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(
+            organization=self.organization, code="TRACK-WH", name="物流跟踪仓"
+        )
+        supplier = Supplier.objects.create(
+            organization=self.organization, code="TRACK-SUP", name="物流供应商"
+        )
+        product = Product.objects.create(
+            organization=self.organization, name="物流跟踪商品", status=Product.Status.ACTIVE
+        )
+        first_sku = SKU.objects.create(
+            organization=self.organization, product=product, code="TRACK-SKU-1", cost="8"
+        )
+        second_sku = SKU.objects.create(
+            organization=self.organization, product=product, code="TRACK-SKU-2", cost="12"
+        )
+        buyer = get_user_model().objects.create_user(username="tracking-buyer", password="test-pass-123")
+        Membership.objects.create(
+            organization=self.organization, user=buyer, role=Membership.Role.BUYER,
+            display_name="采购小王",
+        )
+        created = self.client.post(
+            "/api/purchase-orders/",
+            {
+                "number": "PO-TRACK-SPLIT", "supplier": str(supplier.pk),
+                "warehouse": str(warehouse.pk), "purchaser": buyer.pk,
+                "lines": [
+                    {"sku": str(first_sku.pk), "quantity_ordered": "3", "unit_cost": "8"},
+                    {"sku": str(second_sku.pk), "quantity_ordered": "5", "unit_cost": "12"},
+                ],
+            },
+            format="json", **headers,
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["purchaser_display_name"], "采购小王")
+        edited = self.client.post(
+            f"/api/purchase-orders/{created.data['id']}/edit/",
+            {
+                "number": "PO-TRACK-SPLIT", "supplier": str(supplier.pk),
+                "warehouse": str(warehouse.pk), "purchaser": buyer.pk,
+                "lines": [
+                    {"sku": str(first_sku.pk), "quantity_ordered": "3", "unit_cost": "8"},
+                    {"sku": str(second_sku.pk), "quantity_ordered": "5", "unit_cost": "12"},
+                ],
+                "shipments": [
+                    {"tracking_number": "YT-ONE", "lines": [{"sku": str(first_sku.pk), "quantity_shipped": "3"}]},
+                    {"tracking_number": "YT-TWO", "lines": [{"sku": str(second_sku.pk), "quantity_shipped": "5"}]},
+                ],
+            },
+            format="json", **headers,
+        )
+        self.assertEqual(edited.status_code, 200, edited.data)
+        self.assertEqual(len(edited.data["shipments"]), 2)
+        submitted = self.client.post(f"/api/purchase-orders/{created.data['id']}/submit/", **headers)
+        self.assertEqual(submitted.status_code, 200, submitted.data)
+        line_ids = {str(line["sku"]): line["id"] for line in submitted.data["lines"]}
+        package_one = next(item for item in submitted.data["shipments"] if item["tracking_number"] == "YT-ONE")
+        rejected = self.client.post(
+            "/api/receipts/",
+            {
+                "purchase_order": created.data["id"], "purchase_shipment": package_one["id"],
+                "number": "GRN-TRACK-BAD", "idempotency_key": "track-bad",
+                "lines": [{"purchase_line": line_ids[str(second_sku.pk)], "quantity": "1"}],
+            },
+            format="json", **headers,
+        )
+        self.assertEqual(rejected.status_code, 400, rejected.data)
+        received = self.client.post(
+            "/api/receipts/",
+            {
+                "purchase_order": created.data["id"], "purchase_shipment": package_one["id"],
+                "number": "GRN-TRACK-ONE", "idempotency_key": "track-one",
+                "lines": [{"purchase_line": line_ids[str(first_sku.pk)], "quantity": "3"}],
+            },
+            format="json", **headers,
+        )
+        self.assertEqual(received.status_code, 201, received.data)
+        self.assertEqual(PurchaseOrder.objects.get(pk=created.data["id"]).status, PurchaseOrder.Status.PARTIAL)
+
+    def test_warehouse_member_cannot_write_outside_authorized_warehouse(self):
+        warehouse_allowed = Warehouse.objects.create(
+            organization=self.organization, code="ACCESS-YES", name="授权仓"
+        )
+        warehouse_denied = Warehouse.objects.create(
+            organization=self.organization, code="ACCESS-NO", name="未授权仓"
+        )
+        product = Product.objects.create(
+            organization=self.organization, name="仓库授权商品", status=Product.Status.ACTIVE
+        )
+        sku = SKU.objects.create(organization=self.organization, product=product, code="ACCESS-SKU", cost="5")
+        supplier = Supplier.objects.create(organization=self.organization, code="ACCESS-SUP", name="授权供应商")
+        operator = get_user_model().objects.create_user(username="warehouse-access", password="test-pass-123")
+        membership = Membership.objects.create(
+            organization=self.organization, user=operator, role=Membership.Role.BUYER,
+        )
+        membership.authorized_warehouses.add(warehouse_allowed)
+        self.client.force_authenticate(operator)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        denied = self.client.post(
+            "/api/purchase-orders/",
+            {"number": "PO-DENIED", "supplier": str(supplier.pk), "warehouse": str(warehouse_denied.pk),
+             "lines": [{"sku": str(sku.pk), "quantity_ordered": "1", "unit_cost": "5"}]},
+            format="json", **headers,
+        )
+        self.assertEqual(denied.status_code, 403, denied.data)
+        allowed = self.client.post(
+            "/api/purchase-orders/",
+            {"number": "PO-ALLOWED", "supplier": str(supplier.pk), "warehouse": str(warehouse_allowed.pk),
+             "lines": [{"sku": str(sku.pk), "quantity_ordered": "1", "unit_cost": "5"}]},
+            format="json", **headers,
+        )
+        self.assertEqual(allowed.status_code, 201, allowed.data)
+
     def test_return_must_reference_shipped_quantity_and_support_partial_receipt(self):
         self.client.force_authenticate(self.user)
         headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}

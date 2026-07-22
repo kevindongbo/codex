@@ -11,7 +11,7 @@ from rest_framework import serializers
 
 from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
-    Product, ProductImage, PurchaseOrder, PurchaseOrderLine, Receipt, ReceiptLine,
+    Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReceiptLine,
     ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, StockTransferLine, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
@@ -113,13 +113,16 @@ class MembershipSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Membership
-        fields = ["id", "organization", "user_id", "username", "role", "active", "created_at", "updated_at"]
+        fields = ["id", "organization", "user_id", "username", "role", "display_name", "authorized_warehouses", "active", "created_at", "updated_at"]
         read_only_fields = ["id", "organization", "created_at", "updated_at"]
 
 
 class InternalAccountSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150)
+    display_name = serializers.CharField(max_length=80, required=False, allow_blank=True)
     password = serializers.CharField(write_only=True, required=False, min_length=8)
+    role = serializers.ChoiceField(choices=Membership.Role.choices, required=False)
+    warehouse_ids = serializers.ListField(child=serializers.UUIDField(), required=False, allow_empty=True)
     permissions = serializers.ListField(
         child=serializers.ChoiceField(choices=tuple(PERMISSION_CATALOG)),
         required=False,
@@ -302,9 +305,29 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "quantity_received", "quantity_in_transit", "created_at", "updated_at"]
 
 
+class PurchaseShipmentLineSerializer(serializers.ModelSerializer):
+    sku = serializers.CharField(source="purchase_line.sku.code", read_only=True)
+
+    class Meta:
+        model = PurchaseShipmentLine
+        fields = ["id", "purchase_line", "sku", "quantity_shipped", "created_at", "updated_at"]
+        read_only_fields = ["id", "sku", "created_at", "updated_at"]
+
+
+class PurchaseShipmentSerializer(serializers.ModelSerializer):
+    lines = PurchaseShipmentLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = PurchaseShipment
+        fields = ["id", "tracking_number", "lines", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
 class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
     lines = PurchaseOrderLineSerializer(many=True, required=False)
+    shipments = PurchaseShipmentSerializer(many=True, read_only=True)
     in_transit_quantity = serializers.SerializerMethodField()
+    purchaser_display_name = serializers.SerializerMethodField()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -319,6 +342,17 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
             self.fields["lines"].child.fields["sku"].queryset = SKU.objects.filter(
                 organization=organization, active=True, product__status=Product.Status.ACTIVE
             )
+            self.fields["purchaser"].queryset = get_user_model().objects.filter(
+                erp_memberships__organization=organization,
+                erp_memberships__active=True,
+                is_active=True,
+            ).distinct()
+
+    def get_purchaser_display_name(self, order):
+        if not order.purchaser_id:
+            return ""
+        membership = order.purchaser.erp_memberships.filter(organization=order.organization).first()
+        return (membership.display_name if membership else "") or order.purchaser.get_username()
 
     def get_in_transit_quantity(self, order):
         if order.status not in {PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL}:
@@ -377,6 +411,75 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
         return purchase_order
 
 
+class PurchaseOrderEditLineInputSerializer(serializers.Serializer):
+    sku = serializers.PrimaryKeyRelatedField(queryset=SKU.objects.all())
+    quantity_ordered = serializers.DecimalField(max_digits=14, decimal_places=3, min_value=Decimal("0.001"))
+    unit_cost = serializers.DecimalField(max_digits=14, decimal_places=4, min_value=Decimal("0"))
+
+
+class PurchaseShipmentEditLineInputSerializer(serializers.Serializer):
+    sku = serializers.PrimaryKeyRelatedField(queryset=SKU.objects.all())
+    quantity_shipped = serializers.DecimalField(max_digits=14, decimal_places=3, min_value=Decimal("0.001"))
+
+
+class PurchaseShipmentEditInputSerializer(serializers.Serializer):
+    id = serializers.UUIDField(required=False)
+    tracking_number = serializers.CharField(max_length=120)
+    lines = PurchaseShipmentEditLineInputSerializer(many=True, required=False)
+
+
+class PurchaseOrderEditInputSerializer(OrganizationValidationMixin, serializers.Serializer):
+    number = serializers.CharField(max_length=60, required=False, allow_blank=True)
+    supplier = serializers.PrimaryKeyRelatedField(queryset=Supplier.objects.all(), required=False, allow_null=True)
+    warehouse = serializers.PrimaryKeyRelatedField(queryset=Warehouse.objects.all(), required=False)
+    purchaser = serializers.PrimaryKeyRelatedField(queryset=get_user_model().objects.all(), required=False, allow_null=True)
+    currency = serializers.CharField(max_length=3, required=False)
+    extra_cost = serializers.DecimalField(max_digits=14, decimal_places=4, min_value=Decimal("0"), required=False)
+    ordered_at = serializers.DateTimeField(required=False, allow_null=True)
+    expected_at = serializers.DateTimeField(required=False, allow_null=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    lines = PurchaseOrderEditLineInputSerializer(many=True)
+    shipments = PurchaseShipmentEditInputSerializer(many=True, required=False)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        organization = self.get_organization()
+        if organization is None:
+            return
+        self.fields["supplier"].queryset = Supplier.objects.filter(organization=organization)
+        self.fields["warehouse"].queryset = Warehouse.objects.filter(organization=organization, active=True)
+        self.fields["purchaser"].queryset = get_user_model().objects.filter(
+            erp_memberships__organization=organization,
+            erp_memberships__active=True,
+            is_active=True,
+        ).distinct()
+        self.fields["lines"].child.fields["sku"].queryset = SKU.objects.filter(
+            organization=organization, active=True, product__status=Product.Status.ACTIVE
+        )
+        self.fields["shipments"].child.fields["lines"].child.fields["sku"].queryset = SKU.objects.filter(
+            organization=organization, active=True
+        )
+
+    def validate(self, attrs):
+        seen = set()
+        for line in attrs.get("lines", []):
+            if line["sku"].pk in seen:
+                raise serializers.ValidationError({"lines": "同一个 SKU 只能出现一次。"})
+            seen.add(line["sku"].pk)
+        shipment_numbers = set()
+        for shipment in attrs.get("shipments", []):
+            number = shipment["tracking_number"].strip()
+            if not number:
+                raise serializers.ValidationError({"shipments": "物流单号不能为空。"})
+            if number.lower() in shipment_numbers:
+                raise serializers.ValidationError({"shipments": "同一采购单的物流单号不能重复。"})
+            shipment_numbers.add(number.lower())
+            for shipment_line in shipment.get("lines", []):
+                if shipment_line["sku"].pk not in seen:
+                    raise serializers.ValidationError({"shipments": "物流包裹中只能选择本采购单的 SKU。"})
+        return attrs
+
+
 class ReceiptLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = ReceiptLine
@@ -400,6 +503,9 @@ class ReceiveLineInputSerializer(serializers.Serializer):
 
 class ReceiveInputSerializer(OrganizationValidationMixin, serializers.Serializer):
     purchase_order = serializers.PrimaryKeyRelatedField(queryset=PurchaseOrder.objects.all())
+    purchase_shipment = serializers.PrimaryKeyRelatedField(
+        queryset=PurchaseShipment.objects.all(), required=False, allow_null=True
+    )
     number = serializers.CharField(max_length=60)
     idempotency_key = serializers.CharField(max_length=120)
     lines = ReceiveLineInputSerializer(many=True)
@@ -410,6 +516,9 @@ class ReceiveInputSerializer(OrganizationValidationMixin, serializers.Serializer
         if organization is not None:
             self.fields["purchase_order"].queryset = PurchaseOrder.objects.filter(organization=organization)
             self.fields["lines"].child.fields["purchase_line"].queryset = PurchaseOrderLine.objects.filter(
+                purchase_order__organization=organization
+            )
+            self.fields["purchase_shipment"].queryset = PurchaseShipment.objects.filter(
                 purchase_order__organization=organization
             )
 

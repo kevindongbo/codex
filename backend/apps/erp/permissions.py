@@ -40,6 +40,15 @@ def user_has_capability(user, membership, capability):
     return is_owner(user) or capability in membership_permissions(membership)
 
 
+def allowed_warehouse_ids(user, membership, organization):
+    """Return warehouses visible to a user in the single internal organization."""
+    if is_owner(user) or (membership is not None and membership.role == Membership.Role.ADMIN):
+        return None  # None means every warehouse in the organization.
+    if membership is None:
+        return set()
+    return set(membership.authorized_warehouses.filter(organization=organization).values_list("pk", flat=True))
+
+
 def request_organization(request, *, required=True):
     if not request.user or not request.user.is_authenticated:
         raise PermissionDenied("请先登录")

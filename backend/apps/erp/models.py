@@ -54,7 +54,14 @@ class Membership(TimeStampedModel):
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="memberships", verbose_name="所属组织")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="erp_memberships", verbose_name="用户")
     role = models.CharField("角色", max_length=20, choices=Role.choices, default=Role.VIEWER)
+    display_name = models.CharField("成员名称", max_length=80, blank=True)
     permissions = models.JSONField("权限清单", default=list, blank=True)
+    authorized_warehouses = models.ManyToManyField(
+        "Warehouse",
+        blank=True,
+        related_name="authorized_memberships",
+        verbose_name="可访问仓库",
+    )
     active = models.BooleanField("启用", default=True)
 
     class Meta:
@@ -237,6 +244,14 @@ class PurchaseOrder(OrganizationScopedModel):
     number = models.CharField(max_length=60)
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name="purchase_orders")
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="purchase_orders")
+    purchaser = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="erp_purchase_orders",
+        verbose_name="采购人",
+    )
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     currency = models.CharField(max_length=3, default="CNY")
     extra_cost = models.DecimalField(max_digits=14, decimal_places=4, default=Decimal("0"))
@@ -271,6 +286,42 @@ class PurchaseOrderLine(TimeStampedModel):
         ]
 
 
+class PurchaseShipment(TimeStampedModel):
+    """A manually entered tracking package for a purchase order.
+
+    Logistics providers and tracking status are deliberately not inferred: the
+    operator only records the tracking number, which is free and reliable for
+    split-shipment receiving.
+    """
+
+    purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name="shipments")
+    tracking_number = models.CharField(max_length=120)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["purchase_order", "tracking_number"],
+                name="uniq_purchase_tracking_number",
+            )
+        ]
+        ordering = ["created_at", "id"]
+
+
+class PurchaseShipmentLine(TimeStampedModel):
+    purchase_shipment = models.ForeignKey(PurchaseShipment, on_delete=models.CASCADE, related_name="lines")
+    purchase_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT, related_name="shipment_lines")
+    quantity_shipped = models.DecimalField(max_digits=14, decimal_places=3)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["purchase_shipment", "purchase_line"],
+                name="uniq_purchase_shipment_line",
+            ),
+            models.CheckConstraint(condition=Q(quantity_shipped__gt=0), name="purchase_shipment_qty_positive"),
+        ]
+
+
 class Receipt(OrganizationScopedModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "待收货"
@@ -278,6 +329,13 @@ class Receipt(OrganizationScopedModel):
 
     number = models.CharField(max_length=60)
     purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.PROTECT, related_name="receipts")
+    purchase_shipment = models.ForeignKey(
+        PurchaseShipment,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="receipts",
+    )
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="receipts")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     idempotency_key = models.CharField(max_length=120)

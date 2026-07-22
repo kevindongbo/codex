@@ -12,6 +12,8 @@ from .models import (
     CompetitorSnapshot,
     PurchaseOrder,
     PurchaseOrderLine,
+    PurchaseShipment,
+    PurchaseShipmentLine,
     Receipt,
     ReceiptLine,
     ReturnLine,
@@ -557,8 +559,178 @@ def cancel_purchase(*, purchase_order, actor=None):
     return purchase_order
 
 
+def _purchase_audit_snapshot(purchase_order):
+    return {
+        "number": purchase_order.number,
+        "supplier_id": str(purchase_order.supplier_id),
+        "warehouse_id": str(purchase_order.warehouse_id),
+        "purchaser_id": str(purchase_order.purchaser_id) if purchase_order.purchaser_id else None,
+        "expected_at": purchase_order.expected_at.isoformat() if purchase_order.expected_at else None,
+        "extra_cost": str(purchase_order.extra_cost),
+        "lines": [
+            {
+                "sku": line.sku.code,
+                "ordered": str(line.quantity_ordered),
+                "received": str(line.quantity_received),
+                "cost": str(line.unit_cost),
+            }
+            for line in purchase_order.lines.select_related("sku").order_by("created_at", "id")
+        ],
+        "shipments": [
+            {
+                "id": str(shipment.pk),
+                "tracking_number": shipment.tracking_number,
+                "lines": [
+                    {"sku": item.purchase_line.sku.code, "quantity": str(item.quantity_shipped)}
+                    for item in shipment.lines.select_related("purchase_line__sku").order_by("created_at", "id")
+                ],
+            }
+            for shipment in purchase_order.shipments.prefetch_related("lines__purchase_line__sku").order_by("created_at", "id")
+        ],
+    }
+
+
 @transaction.atomic
-def receive_purchase(*, organization, purchase_order, number, lines, idempotency_key, actor=None):
+def edit_purchase(*, purchase_order, data, actor=None):
+    """Edit only the unreceived part of an open purchase order.
+
+    Receipt rows and stock ledgers are never changed here.  The guards make
+    changes safe even when an operator edits a partially received PO.
+    """
+    purchase_order = PurchaseOrder.objects.select_for_update().select_related(
+        "organization", "supplier", "warehouse", "purchaser"
+    ).get(pk=purchase_order.pk)
+    if purchase_order.status not in {
+        PurchaseOrder.Status.DRAFT,
+        PurchaseOrder.Status.SUBMITTED,
+        PurchaseOrder.Status.PARTIAL,
+    }:
+        raise ValidationError("只有草稿、已下单或部分收货的采购单可以编辑。")
+    before = _purchase_audit_snapshot(purchase_order)
+    organization = purchase_order.organization
+    for key in ("supplier", "warehouse", "purchaser"):
+        value = data.get(key)
+        if value is not None:
+            _assert_organization(organization, **{key: value}) if key != "purchaser" else None
+    if data.get("warehouse") and data["warehouse"].pk != purchase_order.warehouse_id and purchase_order.receipts.exists():
+        raise ValidationError("已有收货记录，不能修改收货仓库。")
+
+    for field in ("number", "supplier", "warehouse", "purchaser", "currency", "extra_cost", "ordered_at", "expected_at", "notes"):
+        if field in data and (data[field] is not None or field in {"purchaser", "ordered_at", "expected_at"}):
+            setattr(purchase_order, field, data[field])
+
+    existing_lines = {
+        str(line.sku_id): line
+        for line in PurchaseOrderLine.objects.select_for_update().select_related("sku").filter(purchase_order=purchase_order)
+    }
+    desired_skus = set()
+    for item in data["lines"]:
+        sku = item["sku"]
+        _assert_organization(organization, sku=sku, product=sku.product)
+        desired_skus.add(str(sku.pk))
+        line = existing_lines.get(str(sku.pk))
+        ordered = _decimal(item["quantity_ordered"])
+        if line:
+            if ordered < line.quantity_received:
+                raise ValidationError(f"SKU {sku.code} 的采购数量不能低于已收货数量。")
+            line.quantity_ordered = ordered
+            line.unit_cost = _decimal(item["unit_cost"])
+            line.save(update_fields=["quantity_ordered", "unit_cost", "updated_at"])
+        else:
+            PurchaseOrderLine.objects.create(
+                purchase_order=purchase_order,
+                sku=sku,
+                quantity_ordered=ordered,
+                unit_cost=_decimal(item["unit_cost"]),
+            )
+    for sku_id, line in existing_lines.items():
+        if sku_id not in desired_skus:
+            if line.quantity_received > 0 or line.shipment_lines.exists():
+                raise ValidationError(f"SKU {line.sku.code} 已有关联收货或物流包裹，不能从采购单移除。")
+            line.delete()
+
+    lines_by_sku = {
+        str(line.sku_id): line
+        for line in PurchaseOrderLine.objects.select_for_update().select_related("sku").filter(purchase_order=purchase_order)
+    }
+    existing_shipments = {
+        str(shipment.pk): shipment
+        for shipment in PurchaseShipment.objects.select_for_update().filter(purchase_order=purchase_order)
+    }
+    desired_shipment_ids = set()
+    for shipment_data in data.get("shipments", []):
+        shipment = existing_shipments.get(str(shipment_data.get("id", "")))
+        if shipment is None:
+            shipment = PurchaseShipment.objects.filter(
+                purchase_order=purchase_order,
+                tracking_number=shipment_data["tracking_number"].strip(),
+            ).first()
+        if shipment is None:
+            shipment = PurchaseShipment.objects.create(
+                purchase_order=purchase_order,
+                tracking_number=shipment_data["tracking_number"].strip(),
+            )
+        else:
+            shipment.tracking_number = shipment_data["tracking_number"].strip()
+            shipment.save(update_fields=["tracking_number", "updated_at"])
+        desired_shipment_ids.add(str(shipment.pk))
+        shipment_lines = {
+            str(item.purchase_line.sku_id): item
+            for item in PurchaseShipmentLine.objects.select_for_update().select_related("purchase_line").filter(purchase_shipment=shipment)
+        }
+        desired_shipment_skus = set()
+        for item in shipment_data.get("lines", []):
+            sku_id = str(item["sku"].pk)
+            line = lines_by_sku.get(sku_id)
+            if line is None:
+                raise ValidationError("物流包裹含有不属于采购单的 SKU。")
+            desired_shipment_skus.add(sku_id)
+            allocation = _decimal(item["quantity_shipped"])
+            receipt_quantity = sum(
+                (receipt_line.quantity for receipt in shipment.receipts.all() for receipt_line in receipt.lines.filter(purchase_line=line)),
+                Decimal("0"),
+            )
+            if allocation < receipt_quantity:
+                raise ValidationError(f"物流单 {shipment.tracking_number} 的 {line.sku.code} 不能低于该包裹已收货数量。")
+            ship_line = shipment_lines.get(sku_id)
+            if ship_line:
+                ship_line.quantity_shipped = allocation
+                ship_line.save(update_fields=["quantity_shipped", "updated_at"])
+            else:
+                PurchaseShipmentLine.objects.create(
+                    purchase_shipment=shipment, purchase_line=line, quantity_shipped=allocation
+                )
+        for sku_id, ship_line in shipment_lines.items():
+            if sku_id not in desired_shipment_skus:
+                if shipment.receipts.filter(lines__purchase_line=ship_line.purchase_line).exists():
+                    raise ValidationError("已收货的物流包裹明细不能删除。")
+                ship_line.delete()
+    for shipment_id, shipment in existing_shipments.items():
+        if shipment_id not in desired_shipment_ids:
+            if shipment.receipts.exists():
+                continue  # preserve received package history even if it is omitted from an edit form
+            shipment.delete()
+
+    for line in PurchaseOrderLine.objects.select_for_update().filter(purchase_order=purchase_order):
+        assigned = sum(
+            PurchaseShipmentLine.objects.filter(purchase_line=line).values_list("quantity_shipped", flat=True), Decimal("0")
+        )
+        if assigned > line.quantity_ordered:
+            raise ValidationError(f"SKU {line.sku.code} 的所有物流包裹数量不能超过采购数量。")
+    purchase_order.save()
+    write_audit(
+        organization=organization,
+        actor=actor,
+        action="purchase.edit",
+        instance=purchase_order,
+        before=before,
+        after=_purchase_audit_snapshot(purchase_order),
+    )
+    return purchase_order
+
+
+@transaction.atomic
+def receive_purchase(*, organization, purchase_order, number, lines, idempotency_key, purchase_shipment=None, actor=None):
     _assert_organization(organization, purchase_order=purchase_order)
     purchase_order = PurchaseOrder.objects.select_for_update().select_related(
         "supplier", "warehouse"
@@ -576,6 +748,8 @@ def receive_purchase(*, organization, purchase_order, number, lines, idempotency
     if existing:
         if existing.purchase_order_id != purchase_order.pk:
             raise ValidationError("幂等键已被其他采购收货占用")
+        if existing.purchase_shipment_id != (purchase_shipment.pk if purchase_shipment else None):
+            raise ValidationError("幂等键对应的物流单号不一致")
         recorded = sorted(
             (str(line.purchase_line_id), line.quantity, line.unit_cost)
             for line in existing.lines.all()
@@ -590,11 +764,16 @@ def receive_purchase(*, organization, purchase_order, number, lines, idempotency
         raise ValidationError("只有已提交或部分收货的采购单可以收货")
     if not lines:
         raise ValidationError("至少需要一条收货明细")
+    if purchase_shipment is not None:
+        if purchase_shipment.purchase_order_id != purchase_order.pk:
+            raise ValidationError("物流单号不属于当前采购单。")
+        purchase_shipment = PurchaseShipment.objects.select_for_update().get(pk=purchase_shipment.pk)
 
     receipt = Receipt.objects.create(
         organization=organization,
         number=number,
         purchase_order=purchase_order,
+        purchase_shipment=purchase_shipment,
         warehouse=purchase_order.warehouse,
         idempotency_key=idempotency_key,
         status=Receipt.Status.DRAFT,
@@ -612,6 +791,22 @@ def receive_purchase(*, organization, purchase_order, number, lines, idempotency
         remaining = purchase_line.quantity_ordered - purchase_line.quantity_received
         if quantity <= 0 or quantity > remaining:
             raise ValidationError(f"SKU {purchase_line.sku.code} 收货数量超出未收数量")
+        if purchase_shipment is not None:
+            shipment_allocations = PurchaseShipmentLine.objects.filter(
+                purchase_shipment=purchase_shipment,
+            )
+            allocated = shipment_allocations.filter(
+                purchase_line=purchase_line,
+            ).values_list("quantity_shipped", flat=True).first()
+            if shipment_allocations.exists() and allocated is None:
+                raise ValidationError(f"SKU {purchase_line.sku.code} 未分配到该物流单号，不能在此包裹收货")
+            if allocated is not None:
+                received_in_package = sum(
+                    (line.quantity for receipt in purchase_shipment.receipts.exclude(pk=receipt.pk) for line in receipt.lines.filter(purchase_line=purchase_line)),
+                    Decimal("0"),
+                )
+                if quantity > allocated - received_in_package:
+                    raise ValidationError(f"SKU {purchase_line.sku.code} 的本次收货超过该物流单的已分配数量。")
         receipt_line = ReceiptLine.objects.create(
             receipt=receipt,
             purchase_line=purchase_line,

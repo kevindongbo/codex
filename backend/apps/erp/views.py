@@ -23,7 +23,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge,
-    LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentPolicy, ReplenishmentSettings,
+    LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
@@ -32,7 +32,7 @@ from .permissions import (
     PERMISSION_CATALOG,
     OrganizationRolePermission,
     is_owner,
-    membership_permissions,
+    allowed_warehouse_ids, LEGACY_ROLE_PERMISSIONS, membership_permissions,
     request_organization,
 )
 from .serializers import (
@@ -41,7 +41,7 @@ from .serializers import (
     CompetitorProductSerializer, CompetitorSnapshotSerializer, InternalAccountSerializer, MembershipSerializer,
     ConfirmAndShipInputSerializer, LocalImportSerializer, OrganizationSerializer,
     ProductImageSerializer, ProductSerializer, QuickSalesSnapshotInputSerializer, UploadedMediaAssetSerializer,
-    PurchaseOrderSerializer, ReceiptSerializer, ReceiveInputSerializer,
+    PurchaseOrderEditInputSerializer, PurchaseOrderSerializer, ReceiptSerializer, ReceiveInputSerializer,
     ReplenishmentPolicySerializer, ReplenishmentRecommendationQuerySerializer, ReplenishmentSettingsSerializer,
     ReturnOrderSerializer, ReturnReceiveInputSerializer, SalesOrderSerializer,
     ShipmentSerializer, ShipInputSerializer, SKUSerializer, StockBalanceSerializer,
@@ -54,7 +54,7 @@ from . import alphashop, integrations
 from .services import (
     adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
     confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
-    dispatch_stock_transfer, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger,
+    dispatch_stock_transfer, edit_purchase, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger,
     reject_return, ship_order, start_picking, submit_purchase, verify_order, write_audit,
 )
 from .local_imports import commit_local_import, validate_local_import
@@ -88,6 +88,28 @@ def _service_call(function, **kwargs):
         raise ValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
     except IntegrityError as exc:
         raise DataConflict() from exc
+
+
+def _require_warehouse_access(request, organization, *warehouses):
+    """Reject writes outside the member's explicit warehouse authorization."""
+    membership = active_internal_membership(request.user)
+    allowed = allowed_warehouse_ids(request.user, membership, organization)
+    if allowed is None:
+        return
+    for warehouse in warehouses:
+        if warehouse is not None and warehouse.pk not in allowed:
+            raise PermissionDenied("当前账号没有该仓库的操作权限。")
+
+
+def _require_serializer_warehouse_access(request, organization, serializer):
+    values = serializer.validated_data
+    _require_warehouse_access(
+        request,
+        organization,
+        values.get("warehouse"),
+        values.get("source_warehouse"),
+        values.get("destination_warehouse"),
+    )
 
 
 @api_view(["GET"])
@@ -248,6 +270,7 @@ def me(request):
         "user": {
             "id": request.user.pk,
             "username": request.user.get_username(),
+            "display_name": ((membership.display_name if membership else "") or request.user.get_username()),
             "email": request.user.email,
             "is_owner": is_owner(request.user),
         },
@@ -280,8 +303,15 @@ def _account_payload(membership):
         "id": str(membership.pk),
         "user_id": user.pk,
         "username": user.get_username(),
+        "display_name": membership.display_name or user.get_username(),
+        "role": membership.role,
         "active": bool(membership.active and user.is_active),
         "permissions": sorted(membership_permissions(membership)),
+        "warehouse_ids": [str(pk) for pk in membership.authorized_warehouses.values_list("pk", flat=True)],
+        "warehouses": [
+            {"id": str(warehouse.pk), "name": warehouse.name, "code": warehouse.code}
+            for warehouse in membership.authorized_warehouses.order_by("code", "id")
+        ],
         "is_owner": bool(user.is_superuser),
         "last_login": user.last_login,
         "created_at": membership.created_at,
@@ -297,6 +327,11 @@ def internal_accounts(request):
         )
         return Response({
             "permission_catalog": PERMISSION_CATALOG,
+            "roles": {key: value for key, value in Membership.Role.choices},
+            "warehouses": [
+                {"id": str(warehouse.pk), "name": warehouse.name, "code": warehouse.code, "active": warehouse.active}
+                for warehouse in Warehouse.objects.filter(organization=organization).order_by("code", "id")
+            ],
             "accounts": [_account_payload(membership) for membership in memberships],
         })
 
@@ -313,25 +348,32 @@ def internal_accounts(request):
     except DjangoValidationError as exc:
         raise ValidationError({"password": list(exc.messages)}) from exc
     with transaction.atomic():
+        warehouse_ids = data.get("warehouse_ids", [])
+        warehouses = list(Warehouse.objects.filter(organization=organization, pk__in=warehouse_ids))
+        if len(warehouses) != len(set(warehouse_ids)):
+            raise ValidationError({"warehouse_ids": "存在不属于当前组织的仓库。"})
         user = user_model.objects.create_user(
             username=data["username"],
             password=data["password"],
             is_active=data.get("active", True),
         )
-        permissions = data.get("permissions", ["view"])
+        role = data.get("role", Membership.Role.VIEWER)
+        permissions = data.get("permissions", [])
         membership = Membership.objects.create(
             organization=organization,
             user=user,
-            role=Membership.Role.VIEWER,
-            permissions=permissions or ["view"],
+            role=role,
+            display_name=data.get("display_name", "").strip(),
+            permissions=permissions,
             active=data.get("active", True),
         )
+        membership.authorized_warehouses.set(warehouses)
         write_audit(
             organization=organization,
             actor=request.user,
             action="account.create",
             instance=membership,
-            after={"username": user.username, "permissions": membership.permissions, "active": membership.active},
+            after={"username": user.username, "display_name": membership.display_name, "role": membership.role, "permissions": sorted(membership_permissions(membership)), "warehouse_ids": [str(item.pk) for item in warehouses], "active": membership.active},
         )
     bump_sync_revision(organization_id=organization.pk)
     return Response(_account_payload(membership), status=status.HTTP_201_CREATED)
@@ -379,8 +421,19 @@ def internal_account_detail(request, membership_id):
         membership.active = data["active"]
         membership.user.is_active = data["active"]
     if "permissions" in data:
-        membership.permissions = data["permissions"] or ["view"]
+        membership.permissions = data["permissions"]
+    if "display_name" in data:
+        membership.display_name = data["display_name"].strip()
+    if "role" in data:
+        membership.role = data["role"]
+        if "permissions" not in data:
+            membership.permissions = []
     with transaction.atomic():
+        if "warehouse_ids" in data:
+            warehouses = list(Warehouse.objects.filter(organization=organization, pk__in=data["warehouse_ids"]))
+            if len(warehouses) != len(set(data["warehouse_ids"])):
+                raise ValidationError({"warehouse_ids": "存在不属于当前组织的仓库。"})
+            membership.authorized_warehouses.set(warehouses)
         membership.user.save()
         membership.save()
         write_audit(
@@ -388,10 +441,31 @@ def internal_account_detail(request, membership_id):
             actor=request.user,
             action="account.update",
             instance=membership,
-            after={"username": membership.user.username, "permissions": membership.permissions, "active": membership.active},
+            after={"username": membership.user.username, "display_name": membership.display_name, "role": membership.role, "permissions": sorted(membership_permissions(membership)), "warehouse_ids": [str(item.pk) for item in membership.authorized_warehouses.all()], "active": membership.active},
         )
         bump_sync_revision(organization_id=organization.pk)
     return Response(_account_payload(membership))
+
+
+@api_view(["GET"])
+@permission_classes([OrganizationRolePermission])
+def purchase_members(request):
+    """Active organization members available as a purchaser on a PO."""
+    organization = request_organization(request)
+    memberships = Membership.objects.filter(
+        organization=organization,
+        active=True,
+        user__is_active=True,
+    ).select_related("user").order_by("display_name", "user__username", "id")
+    return Response([
+        {
+            "user_id": item.user_id,
+            "display_name": item.display_name or item.user.get_username(),
+            "username": item.user.get_username(),
+            "role": item.role,
+        }
+        for item in memberships
+    ])
 
 
 class InternalTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -653,12 +727,26 @@ class OrganizationScopedViewSet(viewsets.ModelViewSet):
         return self.organization or request_organization(self.request)
 
     def get_queryset(self):
-        return self.queryset.filter(organization=self.get_organization())
+        queryset = self.queryset.filter(organization=self.get_organization())
+        allowed = allowed_warehouse_ids(self.request.user, getattr(self, "membership", None), self.get_organization())
+        if allowed is None:
+            return queryset
+        if queryset.model is Warehouse:
+            return queryset.filter(pk__in=allowed)
+        fields = {field.name for field in queryset.model._meta.get_fields()}
+        if "warehouse" in fields:
+            return queryset.filter(warehouse_id__in=allowed)
+        if {"source_warehouse", "destination_warehouse"}.issubset(fields):
+            return queryset.filter(Q(source_warehouse_id__in=allowed) | Q(destination_warehouse_id__in=allowed))
+        return queryset
 
     def perform_create(self, serializer):
-        _save_serializer(serializer, organization=self.get_organization())
+        organization = self.get_organization()
+        _require_serializer_warehouse_access(self.request, organization, serializer)
+        _save_serializer(serializer, organization=organization)
 
     def perform_update(self, serializer):
+        _require_serializer_warehouse_access(self.request, self.get_organization(), serializer)
         _save_serializer(serializer)
 
 
@@ -971,9 +1059,49 @@ class SupplierViewSet(OrganizationScopedViewSet):
 
 
 class PurchaseOrderViewSet(OrganizationScopedViewSet):
-    queryset = PurchaseOrder.objects.select_related("supplier", "warehouse").prefetch_related("lines").order_by("-created_at", "id")
+    queryset = PurchaseOrder.objects.select_related("supplier", "warehouse", "purchaser").prefetch_related(
+        "lines__sku", "shipments__lines__purchase_line__sku", "shipments__receipts__lines"
+    ).order_by("-created_at", "id")
     serializer_class = PurchaseOrderSerializer
     capability = "purchase"
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        organization = self.get_organization()
+        _require_serializer_warehouse_access(self.request, organization, serializer)
+        purchaser = serializer.validated_data.get("purchaser") or self.request.user
+        purchase_order = _save_serializer(
+            serializer,
+            organization=organization,
+            purchaser=purchaser,
+        )
+        write_audit(
+            organization=purchase_order.organization,
+            actor=self.request.user,
+            action="purchase.create",
+            instance=purchase_order,
+            after={"number": purchase_order.number, "purchaser_id": str(purchase_order.purchaser_id)},
+        )
+
+    @action(detail=True, methods=["post"])
+    def edit(self, request, pk=None):
+        input_serializer = PurchaseOrderEditInputSerializer(
+            data=request.data,
+            context=self.get_serializer_context(),
+        )
+        input_serializer.is_valid(raise_exception=True)
+        _require_warehouse_access(
+            request,
+            self.get_organization(),
+            input_serializer.validated_data.get("warehouse") or self.get_object().warehouse,
+        )
+        purchase_order = _service_call(
+            edit_purchase,
+            purchase_order=self.get_object(),
+            data=input_serializer.validated_data,
+            actor=request.user,
+        )
+        return Response(self.get_serializer(purchase_order).data)
 
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
@@ -1018,7 +1146,9 @@ class ReceiptViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Cr
         return self.organization or request_organization(self.request)
 
     def get_queryset(self):
-        return self.queryset.filter(organization=self.get_organization())
+        queryset = self.queryset.filter(organization=self.get_organization())
+        allowed = allowed_warehouse_ids(self.request.user, getattr(self, "membership", None), self.get_organization())
+        return queryset if allowed is None else queryset.filter(warehouse_id__in=allowed)
 
     def create(self, request, *args, **kwargs):
         data = ReceiveInputSerializer(data=request.data, context=self.get_serializer_context())
@@ -1026,6 +1156,7 @@ class ReceiptViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Cr
         values = data.validated_data
         if values["purchase_order"].organization_id != self.get_organization().id:
             raise ValidationError("采购单不属于当前组织")
+        _require_warehouse_access(request, self.get_organization(), values["purchase_order"].warehouse)
         receipt = _service_call(
             receive_purchase,
             organization=self.get_organization(), actor=request.user, **values,
@@ -1044,7 +1175,18 @@ class StockBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixi
         return self.organization or request_organization(self.request)
 
     def get_queryset(self):
-        return self.queryset.filter(organization=self.get_organization())
+        queryset = self.queryset.filter(organization=self.get_organization())
+        allowed = allowed_warehouse_ids(self.request.user, getattr(self, "membership", None), self.get_organization())
+        if allowed is None:
+            return queryset
+        fields = {field.name for field in queryset.model._meta.get_fields()}
+        if queryset.model is Warehouse:
+            return queryset.filter(pk__in=allowed)
+        if "warehouse" in fields:
+            return queryset.filter(warehouse_id__in=allowed)
+        if {"source_warehouse", "destination_warehouse"}.issubset(fields):
+            return queryset.filter(Q(source_warehouse_id__in=allowed) | Q(destination_warehouse_id__in=allowed))
+        return queryset
 
     @transaction.atomic
     def perform_destroy(self, instance):
@@ -1078,6 +1220,7 @@ class StockBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixi
         organization = self.get_organization()
         if values["warehouse"].organization_id != organization.id or values["sku"].organization_id != organization.id:
             raise ValidationError("仓库或 SKU 不属于当前组织")
+        _require_warehouse_access(request, organization, values["warehouse"])
         ledger = _service_call(adjust_inventory, organization=organization, actor=request.user, **values)
         return Response(StockLedgerSerializer(ledger).data, status=status.HTTP_201_CREATED)
 
@@ -1115,6 +1258,7 @@ class StockBalanceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixi
         organization = self.get_organization()
         if values["warehouse"].organization_id != organization.id or values["sku"].organization_id != organization.id:
             raise ValidationError("仓库或 SKU 不属于当前组织")
+        _require_warehouse_access(request, organization, values["warehouse"])
         ledger = _service_call(
             manual_stock_movement, organization=organization, actor=request.user, direction=direction, **values
         )
@@ -1137,7 +1281,10 @@ class StockLedgerViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, views
     organization = None
 
     def get_queryset(self):
-        return self.queryset.filter(organization=self.organization or request_organization(self.request))
+        organization = self.organization or request_organization(self.request)
+        queryset = self.queryset.filter(organization=organization)
+        allowed = allowed_warehouse_ids(self.request.user, getattr(self, "membership", None), organization)
+        return queryset if allowed is None else queryset.filter(warehouse_id__in=allowed)
 
     @action(detail=True, methods=["post"], url_path="revoke")
     def revoke(self, request, pk=None):

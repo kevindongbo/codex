@@ -254,7 +254,7 @@
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>采购单</th><th>供应商</th><th>商品明细</th><th>采购 / 已收</th><th>在途</th><th>预计到货</th><th>采购金额</th><th>状态</th><th>操作</th></tr></thead>
+              <thead><tr><th>采购单</th><th>采购人</th><th>物流单号</th><th>商品明细</th><th>采购 / 已收</th><th>在途</th><th>预计到货</th><th>采购金额</th><th>状态</th><th>操作</th></tr></thead>
               <tbody id="purchaseRows"></tbody>
             </table>
             <div class="empty-state compact" id="purchaseEmpty"><p>还没有采购单。创建采购单后，在途数量会自动计算。</p></div>
@@ -587,6 +587,7 @@
         <div class="form-grid three">
           <label>采购单号 <span>可稍后完善</span><input id="purchaseNumber" /></label>
           <label>供应商 <span>可稍后完善</span><input id="purchaseSupplier" /></label>
+          <label>采购人 <span>*</span><select id="purchasePurchaser"></select></label>
           <label>状态 <span>*</span><select id="purchaseStatus"><option value="ordered">已下单</option><option value="transit">在途</option><option value="draft">草稿</option></select></label>
           <label>下单日期 <span>可稍后完善</span><input id="purchaseOrderedAt" type="date" /></label>
           <label>预计到货日 <span>可稍后完善</span><input id="purchaseEta" type="date" /></label>
@@ -599,6 +600,11 @@
           <div class="purchase-sku-picker" id="purchaseSkuPicker" aria-live="polite"></div>
           <div class="line-list purchase-line-list" id="purchaseLineList"></div>
         </div>
+        <div class="line-builder">
+          <div class="form-section-title"><strong>物流单号（可多条）</strong><span>只记录运单号；每条可填写本包裹中各 SKU 的数量，用于分批收货核对。</span></div>
+          <div class="line-entry two"><label>物流单号<input id="purchaseTrackingNumber" maxlength="120" placeholder="例如：YT123456789" /></label><button class="button secondary" id="addPurchaseShipment" type="button">+ 添加物流单</button></div>
+          <div class="line-list" id="purchaseShipmentList"></div>
+        </div>
         <div class="modal-actions"><button class="button secondary" type="button" data-close="purchaseModal">取消</button><button class="button primary" type="submit">保存采购单</button></div>
       </form>
     </section>
@@ -609,7 +615,7 @@
       <button class="modal-close" data-close="receiveModal" aria-label="关闭">×</button>
       <p class="eyebrow">RECEIVING</p><h2 id="receiveModalTitle">确认收货入库</h2><p class="modal-intro" id="receiveIntro">选择采购单后一次填写全部到货商品的本次收货数量。</p>
       <form id="receiveForm">
-        <label>采购单 <span>*</span><select id="receivePurchaseId" required></select></label>
+        <div class="form-grid two"><label>采购单 <span>*</span><select id="receivePurchaseId" required></select></label><label>对应物流单（可选）<select id="receiveShipmentId"></select></label></div>
         <div class="line-builder receive-line-builder">
           <div class="form-section-title"><strong>本次收货明细</strong><span>只填写实际到货的数量；留空或填 0 的商品不会入库。</span></div>
           <div class="line-list receive-line-list" id="receiveLineList"></div>
@@ -746,8 +752,13 @@
           <input id="internalAccountId" type="hidden" />
           <div class="form-grid two">
             <label>账号名 <span>*</span><input id="internalAccountUsername" autocomplete="username" required /></label>
+            <label>成员名称 <span>*</span><input id="internalAccountDisplayName" maxlength="80" placeholder="例如：小王 / 采购一组" required /></label>
             <label>密码 <span id="internalAccountPasswordRequired">*</span><input id="internalAccountPassword" type="password" autocomplete="new-password" minlength="8" /></label>
+            <label>角色 <span>*</span><select id="internalAccountRole" required></select></label>
           </div>
+          <div class="form-section-title compact"><strong>可访问仓库</strong><span>管理员可访问全部仓库；其他角色仅可查看和操作勾选的仓库。</span></div>
+          <div class="permission-checklist warehouse-checklist" id="internalAccountWarehouses"></div>
+          <div class="form-section-title compact"><strong>功能权限（可按角色微调）</strong><span>切换角色会预填该角色的默认权限，之后可单独勾选调整。</span></div>
           <div class="permission-checklist" id="internalAccountPermissions"></div>
           <div class="modal-actions"><button class="button secondary" id="cancelInternalAccount" type="button">取消</button><button class="button primary" id="saveInternalAccount" type="submit">新增子账号</button></div>
         </form>

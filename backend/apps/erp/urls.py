@@ -47,6 +47,7 @@ urlpatterns = [
     path("product-selection/report/", views.ProductSelectionReportView.as_view(), name="product-selection-report"),
     path("internal-accounts/", views.internal_accounts, name="internal-accounts"),
     path("internal-accounts/<uuid:membership_id>/", views.internal_account_detail, name="internal-account-detail"),
+    path("purchase-members/", views.purchase_members, name="purchase-members"),
     path(
         "replenishment/recommendations/",
         views.replenishment_recommendations,
