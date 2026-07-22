@@ -154,6 +154,26 @@ def _upstream_message(payload):
     return ""
 
 
+def _nested_result(payload):
+    """Return AlphaShop's optional ``result`` envelope as a mapping."""
+    result = payload.get("result") if isinstance(payload, dict) else None
+    return result if isinstance(result, dict) else {}
+
+
+def _response_error_code(payload):
+    """Read both documented AlphaShop response envelope variants."""
+    nested = _nested_result(payload)
+    root_code = str(payload.get("code") or payload.get("resultCode") or "")
+    nested_code = str(nested.get("code") or nested.get("resultCode") or "")
+    # A successful outer gateway envelope may still contain an API business
+    # rejection in ``result``.  In that case the nested code is the useful one.
+    return nested_code if root_code in ("", "SUCCESS") and nested_code else root_code
+
+
+def _response_error_message(payload):
+    return _upstream_message(_nested_result(payload)) or _upstream_message(payload)
+
+
 def _http_error_detail(status_code, code=""):
     """Return a useful, credential-safe diagnosis for an upstream failure."""
     if status_code in (401, 403):
@@ -238,9 +258,14 @@ def _request(endpoint, payload, *, timeout, cache_seconds, organization=None, by
     if not isinstance(result, dict):
         raise AlphaShopError("选品服务返回了异常数据。", code="ALPHASHOP_BAD_RESPONSE")
     success = result.get("success")
-    result_code = str(result.get("code") or result.get("resultCode") or "")
-    if success is False or (result_code and result_code != "SUCCESS"):
-        detail = ERROR_MESSAGES.get(result_code) or "选品服务未能完成本次查询，请检查关键词、地区和接口授权。"
+    nested_success = _nested_result(result).get("success")
+    result_code = _response_error_code(result)
+    if success is False or nested_success is False or (result_code and result_code != "SUCCESS"):
+        detail = (
+            ERROR_MESSAGES.get(result_code)
+            or _response_error_message(result)
+            or "选品服务未能完成本次查询，请检查关键词、地区和接口授权。"
+        )
         status_code = 422 if result_code in ERROR_MESSAGES else 502
         raise AlphaShopError(detail, code=result_code or "ALPHASHOP_REJECTED", status_code=status_code)
 
@@ -253,8 +278,11 @@ def _payload_data(response):
     data = response.get("data")
     if isinstance(data, (dict, list)):
         return data
-    result = response.get("result")
-    if isinstance(result, dict):
+    result = _nested_result(response)
+    nested_data = result.get("data")
+    if isinstance(nested_data, (dict, list)):
+        return nested_data
+    if result:
         return result
     return response
 

@@ -2139,6 +2139,43 @@ class ApiTests(TestCase):
         ALPHASHOP_KEYWORD_CACHE_SECONDS=60,
     )
     @patch("apps.erp.alphashop.urlopen")
+    def test_alphashop_client_accepts_nested_result_data(self, mocked_urlopen):
+        response = MagicMock()
+        response.read.return_value = (
+            b'{"resultCode":"SUCCESS","result":{"success":true,'
+            b'"data":{"keywordList":[{"keyword":"women bag"}]}}}'
+        )
+        mocked_urlopen.return_value.__enter__.return_value = response
+        result = alphashop.search_keywords(
+            platform="tiktok", region="MY", keyword="nested-result-bag", listing_time="90"
+        )
+        self.assertEqual(result["keywords"], [{"keyword": "women bag"}])
+
+    @override_settings(
+        ALPHASHOP_ACCESS_KEY="test-access-key",
+        ALPHASHOP_SECRET_KEY="test-secret-key-that-is-long-enough-for-hs256",
+        ALPHASHOP_API_BASE="https://api.alphashop.cn",
+    )
+    @patch("apps.erp.alphashop.urlopen")
+    def test_alphashop_client_reads_nested_business_failure(self, mocked_urlopen):
+        response = MagicMock()
+        response.read.return_value = (
+            b'{"resultCode":"SUCCESS","result":{"success":false,'
+            b'"code":"KEYWORD_ILLEGAL","message":"invalid keyword"}}'
+        )
+        mocked_urlopen.return_value.__enter__.return_value = response
+        with self.assertRaises(alphashop.AlphaShopError) as captured:
+            alphashop.search_keywords(platform="tiktok", region="MY", keyword="nested-error-bag")
+        self.assertEqual(captured.exception.code, "KEYWORD_ILLEGAL")
+        self.assertEqual(captured.exception.status_code, 422)
+
+    @override_settings(
+        ALPHASHOP_ACCESS_KEY="test-access-key",
+        ALPHASHOP_SECRET_KEY="test-secret-key-that-is-long-enough-for-hs256",
+        ALPHASHOP_API_BASE="https://api.alphashop.cn",
+        ALPHASHOP_KEYWORD_CACHE_SECONDS=60,
+    )
+    @patch("apps.erp.alphashop.urlopen")
     def test_alphashop_connection_test_bypasses_keyword_cache(self, mocked_urlopen):
         response = MagicMock()
         response.read.return_value = b'{"success":true,"code":"SUCCESS","data":{"keywordList":[{"keyword":"bag"}]}}'
