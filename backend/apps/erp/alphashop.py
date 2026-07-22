@@ -301,10 +301,15 @@ def _analyze_report_with_ai(*, provider, platform, region, keyword, summary, pro
             provider=provider,
             feature="product_selection_analysis",
             messages=[{"role": "user", "content": message}],
-            response_format={"type": "json_object"},
         )
         content = ((response.get("choices") or [{}])[0].get("message") or {}).get("content", "")
-        analysis = json.loads(content) if isinstance(content, str) else content
+        if isinstance(content, str):
+            try:
+                analysis = json.loads(content)
+            except json.JSONDecodeError:
+                analysis = {"summary": content, "opportunities": [], "risks": [], "next_actions": []}
+        else:
+            analysis = content
         if not isinstance(analysis, dict):
             raise ValueError("AI response is not an object")
         return {"status": "ready", "provider": provider.name, "analysis": analysis}
