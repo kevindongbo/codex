@@ -122,6 +122,13 @@ let ownerPasswordChallengeId = '';
 let ownerPermissionCatalog = {};
 let ownerRoleCatalog = {};
 let ownerWarehouseCatalog = [];
+const INTERNAL_ROLE_CATALOG = {
+  admin: '管理员',
+  manager: '经理',
+  buyer: '采购',
+  warehouse: '仓库',
+  viewer: '只读',
+};
 let internalAccounts = [];
 let selectionState = {
   statusLoaded: false, configured: false, source: 'none', loadingStatus: false,
@@ -1050,10 +1057,11 @@ function renderInternalAccountManager() {
   const permissions = Object.keys(ownerPermissionCatalog);
   const roleSelect = $('#internalAccountRole');
   const previousRole = roleSelect.value || 'viewer';
-  roleSelect.innerHTML = Object.keys(ownerRoleCatalog).map(function (key) {
-    return '<option value="' + escapeHtml(key) + '">' + escapeHtml(ownerRoleCatalog[key]) + '</option>';
+  const roleCatalog = Object.keys(ownerRoleCatalog).length ? ownerRoleCatalog : INTERNAL_ROLE_CATALOG;
+  roleSelect.innerHTML = Object.keys(roleCatalog).map(function (key) {
+    return '<option value="' + escapeHtml(key) + '">' + escapeHtml(roleCatalog[key]) + '</option>';
   }).join('');
-  roleSelect.value = ownerRoleCatalog[previousRole] ? previousRole : 'viewer';
+  roleSelect.value = roleCatalog[previousRole] ? previousRole : 'viewer';
   $('#internalAccountWarehouses').innerHTML = ownerWarehouseCatalog.length ? ownerWarehouseCatalog.map(function (warehouse) {
     const label = warehouse.name + (warehouse.code ? ' · ' + warehouse.code : '') + (warehouse.active ? '' : '（已停用）');
     return '<label><input type="checkbox" value="' + escapeHtml(warehouse.id) + '"' + (warehouse.active ? '' : ' disabled') + ' />' + escapeHtml(label) + '</label>';
@@ -1065,7 +1073,7 @@ function renderInternalAccountManager() {
     const status = account.active ? '已启用' : '已停用';
     const access = (account.permissions || []).map(function (key) { return ownerPermissionCatalog[key] || key; }).join('、') || '仅查看';
     const warehouseNames = (account.warehouses || []).map(function (warehouse) { return warehouse.name; }).join('、') || (account.role === 'admin' ? '全部仓库' : '未授权仓库');
-    return '<div class="account-row"><div><strong>' + escapeHtml(account.display_name || account.username) + '</strong><small>' + escapeHtml('账号：' + account.username + ' · ' + (ownerRoleCatalog[account.role] || account.role) + ' · ' + status + ' · 仓库：' + warehouseNames + ' · ' + access) + '</small></div><div class="inline-actions">' +
+    return '<div class="account-row"><div><strong>' + escapeHtml(account.display_name || account.username) + '</strong><small>' + escapeHtml('账号：' + account.username + ' · ' + (roleCatalog[account.role] || account.role) + ' · ' + status + ' · 仓库：' + warehouseNames + ' · ' + access) + '</small></div><div class="inline-actions">' +
       '<button class="button tiny secondary" type="button" data-account-action="edit" data-account-id="' + escapeHtml(account.id) + '">编辑</button>' +
       '<button class="button tiny ' + (account.active ? 'danger-outline' : 'secondary') + '" type="button" data-account-action="toggle" data-account-id="' + escapeHtml(account.id) + '">' + (account.active ? '停用' : '启用') + '</button></div></div>';
   }).join('') : '<p class="session-help">还没有子账号。新增后成员可直接登录，无需创建组织。</p>';
@@ -1075,7 +1083,7 @@ async function openInternalAccountManager() {
   if (!teamGateway || !teamGateway.user || !teamGateway.user.is_owner) return;
   const payload = await teamGateway.listInternalAccounts();
   ownerPermissionCatalog = payload.permission_catalog || {};
-  ownerRoleCatalog = payload.roles || {};
+  ownerRoleCatalog = Object.assign({}, INTERNAL_ROLE_CATALOG, payload.roles || {});
   ownerWarehouseCatalog = payload.warehouses || [];
   internalAccounts = (payload.accounts || []).filter(function (account) { return !account.is_owner; });
   $('#accountManagerPanel').hidden = false;
@@ -1688,7 +1696,10 @@ function renderPurchases() {
     const tracking = shipments.length ? ('<button class="link-button" data-toggle-purchase-shipments="' + escapeHtml(order.id) + '">' + escapeHtml(shipments[0].trackingNumber) + (shipments.length > 1 ? ' +' + (shipments.length - 1) : '') + '</button>' +
       (order.showShipments ? '<div class="shipment-summary">' + shipments.map(function (shipment) { return '<div><strong>' + escapeHtml(shipment.trackingNumber) + '</strong>：' + shipment.lines.map(function (line) { const product = productById((order.lines.find(function (item) { return item.id === line.purchaseLineId; }) || {}).productId); return escapeHtml((product && product.sku) || 'SKU') + '×' + integer(line.quantity); }).join('，') + '</div>'; }).join('') + '</div>' : '')) : '<span class="muted">未填写</span>';
     let actions = '';
-    if (teamCapabilityAllowed('purchase') && ['draft', 'ordered', 'transit', 'partial'].includes(order.status)) actions += rowButton('edit-purchase', order.id, '编辑', 'secondary');
+    const canEditPurchase = TEAM_MODE
+      ? !['completed', 'cancelled', 'received'].includes(order.status)
+      : ['draft', 'ordered', 'transit', 'partial'].includes(order.status);
+    if (teamCapabilityAllowed('purchase') && canEditPurchase) actions += rowButton('edit-purchase', order.id, '编辑', 'secondary');
     const warehouse = TEAM_MODE ? selectedWarehouse() : warehouseById(order.warehouseId || currentWarehouseId());
     if (teamCapabilityAllowed('purchase') && order.status === 'draft') actions += rowButton('submit-purchase', order.id, '确认下单', 'primary');
     if (teamCapabilityAllowed('purchase') && order.status === 'draft') actions += rowButton('delete-purchase', order.id, '删除', 'danger');
