@@ -806,7 +806,8 @@ class AlphaShopConfigSerializer(ScopedSerializer):
         model = AlphaShopConfig
         fields = [
             "id", "organization", "access_key", "secret_key", "has_access_key", "has_secret_key",
-            "api_base_url", "enabled", "configured_by", "last_configured_at", "created_at", "updated_at",
+            "api_base_url", "enabled", "analysis_provider", "analysis_enabled",
+            "configured_by", "last_configured_at", "created_at", "updated_at",
         ]
         read_only_fields = ScopedSerializer.Meta.read_only_fields + [
             "has_access_key", "has_secret_key", "configured_by", "last_configured_at",
@@ -825,10 +826,24 @@ class AlphaShopConfigSerializer(ScopedSerializer):
             raise serializers.ValidationError("选品 API 地址必须是有效的 HTTPS 地址。")
         return base_url
 
+    def validate_analysis_provider(self, value):
+        if value is None:
+            return value
+        organization = _context_organization(self)
+        if organization is not None and value.organization_id != organization.pk:
+            raise serializers.ValidationError("只能选择当前组织已保存的大模型配置。")
+        if not value.enabled or not value.api_key_encrypted:
+            raise serializers.ValidationError("请选择已启用且已保存 API Key 的大模型配置。")
+        return value
+
     def validate(self, attrs):
         creating = self.instance is None
         if creating and (not attrs.get("access_key") or not attrs.get("secret_key")):
             raise serializers.ValidationError({"access_key": "首次保存需要同时填写 Access Key 和 Secret Key。"})
+        provider = attrs.get("analysis_provider", getattr(self.instance, "analysis_provider", None))
+        enabled = attrs.get("analysis_enabled", getattr(self.instance, "analysis_enabled", False))
+        if enabled and provider is None:
+            raise serializers.ValidationError({"analysis_provider": "启用选品大模型分析时，请选择一个模型。"})
         return attrs
 
     def _encrypt_keys(self, validated_data):

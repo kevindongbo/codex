@@ -769,7 +769,7 @@
         <div class="form-section-title"><strong>店铺与 AI 接口</strong><span>密钥只会发送到服务器加密保存，页面不会回显。</span></div>
         <div class="mode-card team"><i></i><div><strong>AlphaShop 智能选品</strong><span>仅主账号可配置；保存后系统会优先使用此配置，子账号只能使用选品功能。</span></div></div>
         <form id="alphashopConfigForm">
-          <div class="form-grid two"><label>Access Key <span>*</span><input id="alphashopAccessKey" type="password" autocomplete="new-password" /></label><label>Secret Key <span>*</span><input id="alphashopSecretKey" type="password" autocomplete="new-password" /></label><label>API 地址 <span>*</span><input id="alphashopApiBaseUrl" type="url" required value="https://api.alphashop.cn" /></label><label class="check-label"><input id="alphashopEnabled" type="checkbox" checked /> 启用智能选品接口</label></div>
+          <div class="form-grid two"><label>Access Key <span>*</span><input id="alphashopAccessKey" type="password" autocomplete="new-password" /></label><label>Secret Key <span>*</span><input id="alphashopSecretKey" type="password" autocomplete="new-password" /></label><label>API 地址 <span>*</span><input id="alphashopApiBaseUrl" type="url" required value="https://api.alphashop.cn" /></label><label class="check-label"><input id="alphashopEnabled" type="checkbox" checked /> 启用智能选品接口</label><label>选品分析模型（可选）<select id="alphashopAnalysisProvider"><option value="">不调用大模型，仅展示选品接口数据</option></select></label><label class="check-label"><input id="alphashopAnalysisEnabled" type="checkbox" /> 用所选大模型分析选品报告</label></div>
           <p class="session-help" id="alphashopConfigHint">密钥只在本次提交时发送，保存后不会再显示。首次保存需要同时填写两个密钥。</p>
           <div class="modal-actions"><button class="button primary" type="submit">加密保存选品配置</button></div>
         </form>
@@ -814,7 +814,7 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js"></script>
-  <script src="team.js?v=20260722-purchase-logistics-roles-1"></script>
-  <script src="app.js?v=20260722-purchase-logistics-roles-1"></script>
+  <script src="team.js?v=20260722-selection-ai-1"></script>
+  <script src="app.js?v=20260722-selection-ai-1"></script>
 </body>
 </html>

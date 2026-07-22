@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
 
@@ -65,6 +66,9 @@ from .replenishment import (
 from .replenishment_automation import schedule_replenishment_ai_analysis
 from .single_tenant import active_internal_membership, ensure_internal_organization, internal_organization
 from .sync import bump_sync_revision
+
+
+logger = logging.getLogger(__name__)
 
 
 class DataConflict(APIException):
@@ -227,6 +231,12 @@ class ProductSelectionKeywordView(APIView):
             return Response(alphashop.search_keywords(**values, organization=organization))
         except alphashop.AlphaShopError as exc:
             return Response({"code": exc.code, "detail": exc.detail}, status=exc.status_code)
+        except Exception:
+            logger.exception("Unexpected product selection keyword error")
+            return Response({
+                "code": "ALPHASHOP_UNEXPECTED_ERROR",
+                "detail": "选品查询暂时失败。请检查选品接口配置后重试；详细诊断已安全写入服务器日志。",
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 class ProductSelectionReportView(APIView):
@@ -246,6 +256,12 @@ class ProductSelectionReportView(APIView):
             return Response(alphashop.generate_report(**values, organization=organization))
         except alphashop.AlphaShopError as exc:
             return Response({"code": exc.code, "detail": exc.detail}, status=exc.status_code)
+        except Exception:
+            logger.exception("Unexpected product selection report error")
+            return Response({
+                "code": "ALPHASHOP_UNEXPECTED_ERROR",
+                "detail": "选品报告暂时失败。请检查选品接口或大模型配置后重试；详细诊断已安全写入服务器日志。",
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 @api_view(["GET"])

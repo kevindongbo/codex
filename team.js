@@ -40,7 +40,12 @@
 
   function errorMessage(data, fallback) {
     if (!data) return fallback || '请求失败，请重试。';
-    if (typeof data === 'string') return data;
+    if (typeof data === 'string') {
+      // Reverse proxies sometimes return an HTML 500 page. Never show raw server
+      // HTML to an operator because it is both unhelpful and may disclose internals.
+      if (/^\s*<(?:!doctype|html|body|head)\b/i.test(data)) return fallback || '服务器暂时异常，请稍后重试。';
+      return data;
+    }
     if (typeof data.detail === 'string') return data.detail;
     if (Array.isArray(data)) return data.map(function (item) { return errorMessage(item, ''); }).filter(Boolean).join('；');
     const messages = [];

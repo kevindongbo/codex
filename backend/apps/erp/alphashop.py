@@ -5,7 +5,9 @@ authenticated ERP endpoints declared in ``views.py``.
 """
 
 import json
+import logging
 import socket
+import ssl
 import time
 from dataclasses import dataclass
 from hashlib import sha256
@@ -13,12 +15,17 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import jwt
+from jwt import PyJWTError
 from django.conf import settings
 from django.core.cache import cache
-from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError as DjangoValidationError
 
+from . import integrations
 from .models import AlphaShopConfig
 from .secure_config import decrypt_secret
+
+
+logger = logging.getLogger(__name__)
 
 
 PLATFORM_REGIONS = {
@@ -66,7 +73,7 @@ def _resolve_credentials(organization=None):
             try:
                 access_key = decrypt_secret(config.access_key_encrypted)
                 secret_key = decrypt_secret(config.secret_key_encrypted)
-            except DjangoValidationError as exc:
+            except (DjangoValidationError, ImproperlyConfigured) as exc:
                 raise AlphaShopError(
                     "系统保存的选品密钥无法解密，请由主账号重新保存配置。",
                     code="ALPHASHOP_CONFIG_INVALID", status_code=422,
@@ -133,6 +140,19 @@ def _decode_error_body(exc):
         return {}
 
 
+def _http_error_detail(status_code, code=""):
+    """Return a useful, credential-safe diagnosis for an upstream failure."""
+    if status_code in (401, 403):
+        return "选品接口鉴权失败，请核对 Access Key、Secret Key 和账号授权状态。"
+    if status_code == 404:
+        return "选品接口地址不存在，请核对 API 地址是否为 AlphaShop 官方基础地址。"
+    if status_code == 429:
+        return "选品接口调用过于频繁或额度不足，请稍后重试并检查接口套餐。"
+    if 500 <= status_code <= 599:
+        return "选品服务暂时异常，请稍后重试；系统没有泄露接口密钥。"
+    return "选品服务拒绝了本次请求，请检查关键词、地区和接口配置。"
+
+
 def _request(endpoint, payload, *, timeout, cache_seconds, organization=None):
     credentials = _resolve_credentials(organization)
     if credentials is None:
@@ -163,11 +183,11 @@ def _request(endpoint, payload, *, timeout, cache_seconds, organization=None):
     except HTTPError as exc:
         upstream = _decode_error_body(exc)
         code = str(upstream.get("code") or upstream.get("resultCode") or "ALPHASHOP_HTTP_ERROR")
-        detail = ERROR_MESSAGES.get(code) or upstream.get("msg") or upstream.get("message") or "上游选品服务请求失败。"
+        detail = ERROR_MESSAGES.get(code) or _http_error_detail(exc.code, code)
         raise AlphaShopError(detail, code=code, status_code=502) from exc
-    except (URLError, socket.timeout, TimeoutError) as exc:
+    except (URLError, socket.timeout, TimeoutError, ssl.SSLError, OSError) as exc:
         raise AlphaShopError("连接选品服务超时，请稍后重试。", code="ALPHASHOP_TIMEOUT", status_code=504) from exc
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, PyJWTError) as exc:
         raise AlphaShopError("选品服务返回了无法解析的数据。", code="ALPHASHOP_BAD_RESPONSE") from exc
 
     if not isinstance(result, dict):
@@ -175,7 +195,7 @@ def _request(endpoint, payload, *, timeout, cache_seconds, organization=None):
     success = result.get("success")
     result_code = str(result.get("code") or result.get("resultCode") or "")
     if success is False or (result_code and result_code != "SUCCESS"):
-        detail = ERROR_MESSAGES.get(result_code) or result.get("msg") or result.get("message") or "选品服务未能完成本次查询。"
+        detail = ERROR_MESSAGES.get(result_code) or "选品服务未能完成本次查询，请检查关键词、地区和接口授权。"
         status_code = 422 if result_code in ERROR_MESSAGES else 502
         raise AlphaShopError(detail, code=result_code or "ALPHASHOP_REJECTED", status_code=status_code)
 
@@ -242,4 +262,52 @@ def generate_report(
     data = _payload_data(response)
     summary = data.get("keywordSummary") if isinstance(data.get("keywordSummary"), dict) else {}
     products = data.get("productList") if isinstance(data.get("productList"), list) else []
-    return {"keyword_summary": summary, "products": products, "cached": was_cached}
+    result = {"keyword_summary": summary, "products": products, "cached": was_cached}
+    config = AlphaShopConfig.objects.select_related("analysis_provider").filter(organization=organization).first() if organization else None
+    provider = config.analysis_provider if config and config.analysis_enabled else None
+    if provider is not None:
+        result["ai_analysis"] = _analyze_report_with_ai(
+            provider=provider, platform=platform, region=region, keyword=keyword,
+            summary=summary, products=products,
+        )
+    return result
+
+
+def _analyze_report_with_ai(*, provider, platform, region, keyword, summary, products):
+    """Use an optional LLM only to explain AlphaShop data; it never replaces it."""
+    compact_products = []
+    for product in products[:20]:
+        if not isinstance(product, dict):
+            continue
+        compact_products.append({
+            key: product.get(key) for key in (
+                "title", "productId", "price", "priceRange", "soldCnt30d", "rating", "reviewCnt", "listingDays"
+            ) if product.get(key) is not None
+        })
+    prompt = {
+        "platform": platform,
+        "region": region,
+        "keyword": keyword,
+        "market_summary": summary,
+        "sample_products": compact_products,
+    }
+    message = (
+        "你是跨境电商选品分析助手。仅依据以下 AlphaShop 原始数据给出中文分析，"
+        "不要编造销量或价格，不要把建议当成事实。返回 JSON 对象，字段为 summary、opportunities、risks、next_actions。\n"
+        + json.dumps(prompt, ensure_ascii=False)
+    )
+    try:
+        response, _ = integrations.invoke_ai(
+            provider=provider,
+            feature="product_selection_analysis",
+            messages=[{"role": "user", "content": message}],
+            response_format={"type": "json_object"},
+        )
+        content = ((response.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        analysis = json.loads(content) if isinstance(content, str) else content
+        if not isinstance(analysis, dict):
+            raise ValueError("AI response is not an object")
+        return {"status": "ready", "provider": provider.name, "analysis": analysis}
+    except Exception:  # AI analysis must never make the already successful raw report fail.
+        logger.warning("Optional product-selection AI analysis failed", exc_info=True)
+        return {"status": "unavailable", "provider": provider.name, "detail": "已取得选品原始数据，但本次大模型分析未完成。"}

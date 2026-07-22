@@ -2048,6 +2048,19 @@ class ApiTests(TestCase):
         )
         self.assertEqual(denied.status_code, 403, denied.data)
 
+    @patch("apps.erp.views.alphashop.search_keywords", side_effect=RuntimeError("unexpected upstream state"))
+    def test_product_selection_unexpected_error_is_safe_json_not_html_500(self, _search_keywords):
+        self.client.force_authenticate(self.user)
+        response = self.client.post(
+            "/api/product-selection/keywords/",
+            {"platform": "tiktok", "region": "MY", "keyword": "women bag", "listing_time": "90"},
+            format="json", HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(response.status_code, 503, response.data)
+        self.assertEqual(response.data["code"], "ALPHASHOP_UNEXPECTED_ERROR")
+        self.assertIn("选品查询暂时失败", response.data["detail"])
+        self.assertNotIn("unexpected upstream state", response.data["detail"])
+
     @override_settings(
         ALPHASHOP_ACCESS_KEY="test-access-key",
         ALPHASHOP_SECRET_KEY="test-secret-key-that-is-long-enough-for-hs256",
@@ -2067,3 +2080,15 @@ class ApiTests(TestCase):
         self.assertTrue(request.get_header("Authorization").startswith("Bearer "))
         self.assertNotIn("test-secret-key-that-is-long-enough-for-hs256", request.get_header("Authorization"))
         self.assertEqual(request.full_url, "https://api.alphashop.cn/opp.selection.keyword.search/1.0")
+
+    @override_settings(
+        ALPHASHOP_ACCESS_KEY="test-access-key",
+        ALPHASHOP_SECRET_KEY="test-secret-key-that-is-long-enough-for-hs256",
+        ALPHASHOP_API_BASE="https://api.alphashop.cn",
+    )
+    @patch("apps.erp.alphashop.urlopen", side_effect=OSError("TLS connection reset"))
+    def test_alphashop_network_failure_has_safe_diagnosis(self, _urlopen):
+        with self.assertRaises(alphashop.AlphaShopError) as captured:
+            alphashop.search_keywords(platform="tiktok", region="MY", keyword="safe-test-bag")
+        self.assertEqual(captured.exception.code, "ALPHASHOP_TIMEOUT")
+        self.assertNotIn("TLS connection reset", captured.exception.detail)

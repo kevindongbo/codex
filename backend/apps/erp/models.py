@@ -983,6 +983,11 @@ class AlphaShopConfig(OrganizationScopedModel):
     secret_key_encrypted = models.TextField(blank=True)
     api_base_url = models.URLField(max_length=1000, default="https://api.alphashop.cn")
     enabled = models.BooleanField(default=True)
+    analysis_provider = models.ForeignKey(
+        "AIProviderConfig", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="alphashop_selection_configs", verbose_name="选品分析模型",
+    )
+    analysis_enabled = models.BooleanField("启用选品大模型分析", default=False)
     configured_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="configured_alphashop_connections",

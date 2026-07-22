@@ -1099,6 +1099,13 @@ function renderIntegrationManager() {
   $('#alphashopConfigHint').textContent = sourceText + '。密钥不会回显；如需更新密钥，填写对应字段后保存即可。';
   $('#alphashopApiBaseUrl').value = alpha.api_base_url || 'https://api.alphashop.cn';
   $('#alphashopEnabled').checked = alpha.enabled !== false;
+  const selectedAnalysisProvider = alpha.analysis_provider || '';
+  const analysisProviders = aiProviderConfigs.filter(function (provider) { return provider.enabled && provider.has_api_key; });
+  $('#alphashopAnalysisProvider').innerHTML = '<option value="">不调用大模型，仅展示选品接口数据</option>' + analysisProviders.map(function (provider) {
+    return '<option value="' + escapeHtml(provider.id) + '">' + escapeHtml(provider.name + ' · ' + provider.model_name) + '</option>';
+  }).join('');
+  $('#alphashopAnalysisProvider').value = analysisProviders.some(function (provider) { return String(provider.id) === String(selectedAnalysisProvider); }) ? selectedAnalysisProvider : '';
+  $('#alphashopAnalysisEnabled').checked = Boolean(alpha.analysis_enabled && $('#alphashopAnalysisProvider').value);
   $('#alphashopAccessKey').value = '';
   $('#alphashopSecretKey').value = '';
   $('#alphashopAccessKey').required = !alpha.has_access_key;
@@ -2405,7 +2412,7 @@ function selectionSummaryHtml(summary) {
 function renderSelectionReport() {
   const report = selectionState.report;
   $('#selectionReportLoading').hidden = !selectionState.loadingReport;
-  $('#selectionSummary').innerHTML = report ? selectionSummaryHtml(report.keyword_summary || {}) : '';
+  $('#selectionSummary').innerHTML = report ? selectionSummaryHtml(report.keyword_summary || {}) + selectionAIAnalysisHtml(report.ai_analysis) : '';
   const products = report && Array.isArray(report.products) ? report.products : [];
   $('#selectionProducts').innerHTML = products.map(function (product, index) {
     const image = safeImageUrl(product.mainImgUrl || product.imageUrl || product.image || '');
@@ -2750,6 +2757,21 @@ function renderPurchaseDraft() {
   }).join('') : '<div class="last-value">请至少加入一条采购明细。</div>';
   renderPurchaseSkuPicker();
   renderPurchaseShipments();
+}
+
+function selectionAIAnalysisHtml(payload) {
+  if (!payload) return '';
+  if (payload.status !== 'ready' || !payload.analysis) {
+    return '<section class="selection-market-summary"><div class="selection-summary-head"><div><h3>大模型选品分析未完成</h3><p>' + escapeHtml(payload.detail || '原始选品数据仍可正常使用。') + '</p></div></div></section>';
+  }
+  const analysis = payload.analysis || {};
+  const rows = [
+    ['机会', analysis.opportunities], ['风险', analysis.risks], ['下一步', analysis.next_actions]
+  ].map(function (entry) {
+    const value = Array.isArray(entry[1]) ? entry[1].join('；') : entry[1];
+    return value ? '<p><b>' + escapeHtml(entry[0]) + '：</b>' + escapeHtml(String(value)) + '</p>' : '';
+  }).join('');
+  return '<section class="selection-market-summary"><div class="selection-summary-head"><div><h3>大模型选品分析</h3><p>' + escapeHtml(String(analysis.summary || '已基于选品接口原始数据完成分析。')) + '</p>' + rows + '</div><div class="selection-summary-score"><strong>AI</strong><span>' + escapeHtml(payload.provider || '已配置模型') + '</span></div></div></section>';
 }
 
 function renderPurchaseShipments() {
@@ -4082,7 +4104,9 @@ function bindEvents() {
     try {
       const payload = {
         api_base_url: $('#alphashopApiBaseUrl').value.trim(),
-        enabled: $('#alphashopEnabled').checked
+        enabled: $('#alphashopEnabled').checked,
+        analysis_provider: $('#alphashopAnalysisProvider').value || null,
+        analysis_enabled: $('#alphashopAnalysisEnabled').checked && Boolean($('#alphashopAnalysisProvider').value)
       };
       const accessKey = $('#alphashopAccessKey').value;
       const secretKey = $('#alphashopSecretKey').value;
