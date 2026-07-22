@@ -46,7 +46,14 @@
       if (/^\s*<(?:!doctype|html|body|head)\b/i.test(data)) return fallback || '服务器暂时异常，请稍后重试。';
       return data;
     }
-    if (typeof data.detail === 'string') return data.detail;
+    if (typeof data.detail === 'string') {
+      const diagnostics = [];
+      if (Number.isInteger(data.upstream_status)) diagnostics.push('上游 HTTP ' + data.upstream_status);
+      if (typeof data.diagnostic_id === 'string' && /^[a-f0-9]{8,64}$/i.test(data.diagnostic_id)) {
+        diagnostics.push('诊断编号 ' + data.diagnostic_id);
+      }
+      return data.detail + (diagnostics.length ? '（' + diagnostics.join('；') + '）' : '');
+    }
     if (Array.isArray(data)) return data.map(function (item) { return errorMessage(item, ''); }).filter(Boolean).join('；');
     const messages = [];
     Object.keys(data).forEach(function (key) {
@@ -168,9 +175,19 @@
       const contentType = response.headers.get('content-type') || '';
       let payload = null;
       if (response.status !== 204) {
-        payload = contentType.includes('application/json') ? await response.json() : await response.text();
+        const responseText = await response.text();
+        if (contentType.includes('application/json') && responseText) {
+          try { payload = JSON.parse(responseText); } catch (_) { payload = responseText; }
+        } else {
+          payload = responseText;
+        }
       }
-      if (!response.ok) throw new ApiError(errorMessage(payload, '请求失败。'), response.status, payload);
+      if (!response.ok) {
+        const fallback = response.status
+          ? ('请求失败（HTTP ' + response.status + '），请稍后重试。')
+          : '请求失败，请稍后重试。';
+        throw new ApiError(errorMessage(payload, fallback), response.status, payload);
+      }
       return payload;
     }
 

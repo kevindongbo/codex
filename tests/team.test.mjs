@@ -323,6 +323,20 @@ test('replenishment recommendations are requested for the selected warehouse', a
   assert.equal(recommendations[0].suggested_order_quantity, 24);
 });
 
+test('API error shows the safe upstream status and diagnostic reference', async () => {
+  const Team = await loadTeam(async () => response(502, {
+    detail: '选品服务暂时异常，请稍后重试。',
+    upstream_status: 503,
+    diagnostic_id: 'a1b2c3d4e5f6',
+  }));
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+
+  await assert.rejects(
+    () => gateway.searchProductSelectionKeywords({ platform: 'tiktok', region: 'MY', keyword: 'bag' }),
+    /选品服务暂时异常.*上游 HTTP 503.*诊断编号 a1b2c3d4e5f6/,
+  );
+});
+
 test('organization replenishment settings can be loaded and saved independently of SKU overrides', async () => {
   const calls = [];
   const Team = await loadTeam(async (url, options) => {

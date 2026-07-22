@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import uuid
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
 
@@ -230,12 +231,17 @@ class ProductSelectionKeywordView(APIView):
         try:
             return Response(alphashop.search_keywords(**values, organization=organization))
         except alphashop.AlphaShopError as exc:
-            return Response({"code": exc.code, "detail": exc.detail}, status=exc.status_code)
+            payload = {"code": exc.code, "detail": exc.detail}
+            if exc.upstream_status:
+                payload["upstream_status"] = exc.upstream_status
+            return Response(payload, status=exc.status_code)
         except Exception:
-            logger.exception("Unexpected product selection keyword error")
+            diagnostic_id = uuid.uuid4().hex[:12]
+            logger.exception("Unexpected product selection keyword error diagnostic_id=%s", diagnostic_id)
             return Response({
                 "code": "ALPHASHOP_UNEXPECTED_ERROR",
                 "detail": "选品查询暂时失败。请检查选品接口配置后重试；详细诊断已安全写入服务器日志。",
+                "diagnostic_id": diagnostic_id,
             }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
@@ -255,12 +261,17 @@ class ProductSelectionReportView(APIView):
         try:
             return Response(alphashop.generate_report(**values, organization=organization))
         except alphashop.AlphaShopError as exc:
-            return Response({"code": exc.code, "detail": exc.detail}, status=exc.status_code)
+            payload = {"code": exc.code, "detail": exc.detail}
+            if exc.upstream_status:
+                payload["upstream_status"] = exc.upstream_status
+            return Response(payload, status=exc.status_code)
         except Exception:
-            logger.exception("Unexpected product selection report error")
+            diagnostic_id = uuid.uuid4().hex[:12]
+            logger.exception("Unexpected product selection report error diagnostic_id=%s", diagnostic_id)
             return Response({
                 "code": "ALPHASHOP_UNEXPECTED_ERROR",
                 "detail": "选品报告暂时失败。请检查选品接口或大模型配置后重试；详细诊断已安全写入服务器日志。",
+                "diagnostic_id": diagnostic_id,
             }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 

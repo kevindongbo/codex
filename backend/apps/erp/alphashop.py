@@ -47,11 +47,12 @@ ERROR_MESSAGES = {
 
 
 class AlphaShopError(Exception):
-    def __init__(self, detail, *, code="ALPHASHOP_ERROR", status_code=502):
+    def __init__(self, detail, *, code="ALPHASHOP_ERROR", status_code=502, upstream_status=None):
         super().__init__(detail)
         self.detail = detail
         self.code = code
         self.status_code = status_code
+        self.upstream_status = upstream_status
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,19 @@ def _decode_error_body(exc):
         return {}
 
 
+def _upstream_message(payload):
+    """Extract a safe upstream message without ever exposing credentials."""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("msg", "message", "detail", "error"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            message = " ".join(value.split()).strip()
+            if message and len(message) <= 240:
+                return message
+    return ""
+
+
 def _http_error_detail(status_code, code=""):
     """Return a useful, credential-safe diagnosis for an upstream failure."""
     if status_code in (401, 403):
@@ -177,18 +191,48 @@ def _request(endpoint, payload, *, timeout, cache_seconds, organization=None):
             "User-Agent": "DongboERP/1.0",
         },
     )
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        upstream = _decode_error_body(exc)
-        code = str(upstream.get("code") or upstream.get("resultCode") or "ALPHASHOP_HTTP_ERROR")
-        detail = ERROR_MESSAGES.get(code) or _http_error_detail(exc.code, code)
-        raise AlphaShopError(detail, code=code, status_code=502) from exc
-    except (URLError, socket.timeout, TimeoutError, ssl.SSLError, OSError) as exc:
-        raise AlphaShopError("连接选品服务超时，请稍后重试。", code="ALPHASHOP_TIMEOUT", status_code=504) from exc
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, PyJWTError) as exc:
-        raise AlphaShopError("选品服务返回了无法解析的数据。", code="ALPHASHOP_BAD_RESPONSE") from exc
+    # AlphaShop is a synchronous AI service.  It can transiently return a
+    # gateway error while the model is warming up, so retry only transport and
+    # 5xx errors.  4xx responses are configuration/input errors and must be
+    # returned immediately rather than spending quota on duplicate calls.
+    transient_statuses = {408, 425, 429, 500, 502, 503, 504}
+    last_network_error = None
+    for attempt in range(1, 3):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as exc:
+            if exc.code in transient_statuses and attempt < 2:
+                logger.warning(
+                    "AlphaShop transient HTTP failure; retrying endpoint=%s status=%s attempt=%s",
+                    endpoint, exc.code, attempt,
+                )
+                time.sleep(attempt)
+                continue
+            upstream = _decode_error_body(exc)
+            code = str(upstream.get("code") or upstream.get("resultCode") or "ALPHASHOP_HTTP_ERROR")
+            message = _upstream_message(upstream)
+            detail = ERROR_MESSAGES.get(code) or message or _http_error_detail(exc.code, code)
+            raise AlphaShopError(
+                detail, code=code, status_code=502, upstream_status=exc.code,
+            ) from exc
+        except (URLError, socket.timeout, TimeoutError, ssl.SSLError, OSError) as exc:
+            last_network_error = exc
+            if attempt < 2:
+                logger.warning(
+                    "AlphaShop transient network failure; retrying endpoint=%s attempt=%s error=%s",
+                    endpoint, attempt, exc.__class__.__name__,
+                )
+                time.sleep(attempt)
+                continue
+            raise AlphaShopError(
+                "连接选品服务超时，请稍后重试。", code="ALPHASHOP_TIMEOUT", status_code=504,
+            ) from exc
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, PyJWTError) as exc:
+            raise AlphaShopError("选品服务返回了无法解析的数据。", code="ALPHASHOP_BAD_RESPONSE") from exc
+    else:  # Defensive guard for future retry-loop changes.
+        raise AlphaShopError("连接选品服务失败，请稍后重试。", code="ALPHASHOP_NETWORK_ERROR", status_code=504) from last_network_error
 
     if not isinstance(result, dict):
         raise AlphaShopError("选品服务返回了异常数据。", code="ALPHASHOP_BAD_RESPONSE")
@@ -205,7 +249,7 @@ def _request(endpoint, payload, *, timeout, cache_seconds, organization=None):
 
 def _payload_data(response):
     data = response.get("data")
-    if isinstance(data, dict):
+    if isinstance(data, (dict, list)):
         return data
     result = response.get("result")
     if isinstance(result, dict):
@@ -225,7 +269,12 @@ def search_keywords(*, platform, region, keyword, listing_time=None, organizatio
         organization=organization,
     )
     data = _payload_data(response)
-    keywords = data.get("keywordList")
+    if isinstance(data, list):
+        keywords = data
+    elif isinstance(data, dict):
+        keywords = data.get("keywordList")
+    else:
+        keywords = None
     if not isinstance(keywords, list):
         keywords = response.get("model") if isinstance(response.get("model"), list) else []
     return {"keywords": keywords, "cached": was_cached}

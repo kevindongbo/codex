@@ -2060,6 +2060,26 @@ class ApiTests(TestCase):
         self.assertEqual(response.data["code"], "ALPHASHOP_UNEXPECTED_ERROR")
         self.assertIn("选品查询暂时失败", response.data["detail"])
         self.assertNotIn("unexpected upstream state", response.data["detail"])
+        self.assertRegex(response.data["diagnostic_id"], r"^[a-f0-9]{12}$")
+
+    @patch(
+        "apps.erp.views.alphashop.search_keywords",
+        side_effect=alphashop.AlphaShopError(
+            "选品服务拒绝了本次请求，请检查关键词、地区和接口配置。",
+            code="ALPHASHOP_HTTP_ERROR",
+            upstream_status=401,
+        ),
+    )
+    def test_product_selection_exposes_safe_upstream_status(self, _search_keywords):
+        self.client.force_authenticate(self.user)
+        response = self.client.post(
+            "/api/product-selection/keywords/",
+            {"platform": "tiktok", "region": "MY", "keyword": "women bag", "listing_time": "90"},
+            format="json", HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(response.status_code, 502, response.data)
+        self.assertEqual(response.data["code"], "ALPHASHOP_HTTP_ERROR")
+        self.assertEqual(response.data["upstream_status"], 401)
 
     @override_settings(
         ALPHASHOP_ACCESS_KEY="test-access-key",
@@ -2080,6 +2100,22 @@ class ApiTests(TestCase):
         self.assertTrue(request.get_header("Authorization").startswith("Bearer "))
         self.assertNotIn("test-secret-key-that-is-long-enough-for-hs256", request.get_header("Authorization"))
         self.assertEqual(request.full_url, "https://api.alphashop.cn/opp.selection.keyword.search/1.0")
+
+    @override_settings(
+        ALPHASHOP_ACCESS_KEY="test-access-key",
+        ALPHASHOP_SECRET_KEY="test-secret-key-that-is-long-enough-for-hs256",
+        ALPHASHOP_API_BASE="https://api.alphashop.cn",
+        ALPHASHOP_KEYWORD_CACHE_SECONDS=60,
+    )
+    @patch("apps.erp.alphashop.urlopen")
+    def test_alphashop_client_accepts_keyword_data_list(self, mocked_urlopen):
+        response = MagicMock()
+        response.read.return_value = b'{"success":true,"code":"SUCCESS","data":[{"keyword":"bag"}]}'
+        mocked_urlopen.return_value.__enter__.return_value = response
+        result = alphashop.search_keywords(
+            platform="tiktok", region="MY", keyword="unique-list-bag", listing_time="90"
+        )
+        self.assertEqual(result["keywords"], [{"keyword": "bag"}])
 
     @override_settings(
         ALPHASHOP_ACCESS_KEY="test-access-key",
