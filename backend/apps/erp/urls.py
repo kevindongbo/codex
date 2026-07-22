@@ -42,6 +42,7 @@ urlpatterns = [
     path("integrations/tiktok-shop/callback/", views.tiktok_shop_oauth_callback, name="tiktok-shop-oauth-callback"),
     path("media-assets/<uuid:pk>/content/", views.media_asset_content, name="media-asset-content"),
     path("alphashop-config/", views.AlphaShopConfigurationView.as_view(), name="alphashop-config"),
+    path("alphashop-config/test/", views.AlphaShopConfigurationTestView.as_view(), name="alphashop-config-test"),
     path("product-selection/status/", views.ProductSelectionStatusView.as_view(), name="product-selection-status"),
     path("product-selection/keywords/", views.ProductSelectionKeywordView.as_view(), name="product-selection-keywords"),
     path("product-selection/report/", views.ProductSelectionReportView.as_view(), name="product-selection-report"),

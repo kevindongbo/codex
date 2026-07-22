@@ -351,6 +351,7 @@
 
     async getAlphaShopConfig() { return this.request('/alphashop-config/'); }
     async saveAlphaShopConfig(payload) { return this.request('/alphashop-config/', { method: 'PUT', body: payload }); }
+    async testAlphaShopConfig() { return this.request('/alphashop-config/test/', { method: 'POST', body: {} }); }
 
     async searchProductSelectionKeywords(payload) {
       return this.request('/product-selection/keywords/', { method: 'POST', body: payload });

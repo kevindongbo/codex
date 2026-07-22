@@ -1966,6 +1966,21 @@ class ApiTests(TestCase):
             platform="tiktok", region="MY", keyword="bag", listing_time="90", organization=self.organization,
         )
 
+    @patch("apps.erp.views.alphashop.test_connection")
+    def test_owner_can_explicitly_test_alphashop_connection(self, test_connection):
+        owner = get_user_model().objects.create_superuser(
+            username="selection-test-owner", email="selection-test-owner@example.com", password="test-pass-123"
+        )
+        self.client.force_authenticate(owner)
+        test_connection.return_value = {"ok": True, "keyword_count": 3}
+        response = self.client.post(
+            "/api/alphashop-config/test/", {}, format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data, {"ok": True, "keyword_count": 3})
+        test_connection.assert_called_once_with(organization=self.organization)
+
     @patch.dict(os.environ, {"INTEGRATION_ENCRYPTION_KEY": "6WYxq_NVKo0Eq8o3EoYh5uEVEGTN8KlPJbwc_EW8ujY="})
     def test_owner_can_save_encrypted_alphashop_config_without_key_echo(self):
         owner = get_user_model().objects.create_superuser(
@@ -2116,6 +2131,28 @@ class ApiTests(TestCase):
             platform="tiktok", region="MY", keyword="unique-list-bag", listing_time="90"
         )
         self.assertEqual(result["keywords"], [{"keyword": "bag"}])
+
+    @override_settings(
+        ALPHASHOP_ACCESS_KEY="test-access-key",
+        ALPHASHOP_SECRET_KEY="test-secret-key-that-is-long-enough-for-hs256",
+        ALPHASHOP_API_BASE="https://api.alphashop.cn",
+        ALPHASHOP_KEYWORD_CACHE_SECONDS=60,
+    )
+    @patch("apps.erp.alphashop.urlopen")
+    def test_alphashop_connection_test_bypasses_keyword_cache(self, mocked_urlopen):
+        response = MagicMock()
+        response.read.return_value = b'{"success":true,"code":"SUCCESS","data":{"keywordList":[{"keyword":"bag"}]}}'
+        mocked_urlopen.return_value.__enter__.return_value = response
+        cache_key = alphashop._cache_key(
+            "opp.selection.keyword.search/1.0",
+            {"platform": "tiktok", "region": "MY", "keyword": "bag", "listingTime": "90"},
+            "environment",
+        )
+        from django.core.cache import cache
+        cache.set(cache_key, {"success": True, "code": "SUCCESS", "data": {"keywordList": []}}, 60)
+        result = alphashop.test_connection()
+        self.assertEqual(result, {"ok": True, "keyword_count": 1})
+        self.assertTrue(mocked_urlopen.called)
 
     @override_settings(
         ALPHASHOP_ACCESS_KEY="test-access-key",

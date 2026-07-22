@@ -167,7 +167,7 @@ def _http_error_detail(status_code, code=""):
     return "选品服务拒绝了本次请求，请检查关键词、地区和接口配置。"
 
 
-def _request(endpoint, payload, *, timeout, cache_seconds, organization=None):
+def _request(endpoint, payload, *, timeout, cache_seconds, organization=None, bypass_cache=False):
     credentials = _resolve_credentials(organization)
     if credentials is None:
         raise AlphaShopError(
@@ -175,9 +175,10 @@ def _request(endpoint, payload, *, timeout, cache_seconds, organization=None):
             code="ALPHASHOP_NOT_CONFIGURED", status_code=503,
         )
     key = _cache_key(endpoint, payload, credentials.cache_scope)
-    cached = cache.get(key)
-    if cached is not None:
-        return cached, True
+    if not bypass_cache:
+        cached = cache.get(key)
+        if cached is not None:
+            return cached, True
 
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     request = Request(
@@ -243,7 +244,8 @@ def _request(endpoint, payload, *, timeout, cache_seconds, organization=None):
         status_code = 422 if result_code in ERROR_MESSAGES else 502
         raise AlphaShopError(detail, code=result_code or "ALPHASHOP_REJECTED", status_code=status_code)
 
-    cache.set(key, result, cache_seconds)
+    if cache_seconds and not bypass_cache:
+        cache.set(key, result, cache_seconds)
     return result, False
 
 
@@ -257,7 +259,7 @@ def _payload_data(response):
     return response
 
 
-def search_keywords(*, platform, region, keyword, listing_time=None, organization=None):
+def search_keywords(*, platform, region, keyword, listing_time=None, organization=None, bypass_cache=False):
     payload = {"platform": platform, "region": region, "keyword": keyword}
     if listing_time:
         payload["listingTime"] = listing_time
@@ -267,6 +269,7 @@ def search_keywords(*, platform, region, keyword, listing_time=None, organizatio
         timeout=settings.ALPHASHOP_KEYWORD_TIMEOUT,
         cache_seconds=settings.ALPHASHOP_KEYWORD_CACHE_SECONDS,
         organization=organization,
+        bypass_cache=bypass_cache,
     )
     data = _payload_data(response)
     if isinstance(data, list):
@@ -278,6 +281,15 @@ def search_keywords(*, platform, region, keyword, listing_time=None, organizatio
     if not isinstance(keywords, list):
         keywords = response.get("model") if isinstance(response.get("model"), list) else []
     return {"keywords": keywords, "cached": was_cached}
+
+
+def test_connection(*, organization=None):
+    """Perform one uncached owner-triggered request to validate saved credentials."""
+    result = search_keywords(
+        platform="tiktok", region="MY", keyword="bag", listing_time="90",
+        organization=organization, bypass_cache=True,
+    )
+    return {"ok": True, "keyword_count": len(result["keywords"])}
 
 
 def generate_report(

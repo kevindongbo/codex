@@ -1095,8 +1095,8 @@ async function openInternalAccountManager() {
 
 function renderIntegrationManager() {
   const alpha = alphashopConfig || {};
-  const sourceText = alpha.source === 'system' ? '已由系统加密保存' : (alpha.source === 'environment' ? '正在使用旧版服务器配置；保存本表单后会切换为系统配置' : '尚未配置');
-  $('#alphashopConfigHint').textContent = sourceText + '。密钥不会回显；如需更新密钥，填写对应字段后保存即可。';
+  const sourceText = alpha.source === 'system' ? '已由系统加密保存（尚未验证连接）' : (alpha.source === 'environment' ? '正在使用旧版服务器配置；保存本表单后会切换为系统配置' : '尚未配置');
+  $('#alphashopConfigHint').textContent = sourceText + '。密钥不会回显；如需更新密钥，填写对应字段后保存即可。点击“测试连接”会真实调用一次选品接口，可能消耗接口额度。';
   $('#alphashopApiBaseUrl').value = alpha.api_base_url || 'https://api.alphashop.cn';
   $('#alphashopEnabled').checked = alpha.enabled !== false;
   const selectedAnalysisProvider = alpha.analysis_provider || '';
@@ -2340,7 +2340,7 @@ function renderSelectionStatus() {
   if (!TEAM_MODE) node.innerHTML = '<i></i><div><strong>仅团队服务器可用</strong><span>本机模式不会暴露或保存 API 密钥</span></div>';
   else if (!teamAuthenticated()) node.innerHTML = '<i></i><div><strong>请先登录</strong><span>登录后检查服务器接口配置</span></div>';
   else if (selectionState.loadingStatus) node.innerHTML = '<i></i><div><strong>正在检查接口</strong><span>密钥只保存在服务器</span></div>';
-  else if (selectionState.configured) node.innerHTML = '<i></i><div><strong>选品接口已就绪</strong><span>' + (selectionState.source === 'system' ? '主账号系统配置 · 密钥已加密保存' : '服务端鉴权 · 前端不保存密钥') + '</span></div>';
+  else if (selectionState.configured) node.innerHTML = '<i></i><div><strong>选品接口已保存</strong><span>' + (selectionState.source === 'system' ? '主账号系统配置 · 密钥已加密保存；请在配置页测试连接' : '服务端鉴权 · 前端不保存密钥') + '</span></div>';
   else node.innerHTML = '<i></i><div><strong>服务器尚未配置密钥</strong><span>主账号可点击“配置选品接口”完成加密保存</span></div>';
 }
 
@@ -4119,6 +4119,13 @@ function bindEvents() {
       await loadProductSelectionStatus();
       renderIntegrationManager();
       showToast('AlphaShop 选品配置已加密保存。');
+    } catch (error) { handleTeamError(error); }
+  });
+  $('#testAlphaShopConfig').addEventListener('click', async function () {
+    if (!window.confirm('测试会真实调用一次 AlphaShop 选品接口，可能消耗接口额度。是否继续？')) return;
+    try {
+      const result = await teamGateway.testAlphaShopConfig();
+      showToast('选品接口连接成功：已收到 ' + Number(result.keyword_count || 0) + ' 个候选关键词。');
     } catch (error) { handleTeamError(error); }
   });
   $('#startTikTokAuthorization').addEventListener('click', async function () {

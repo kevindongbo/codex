@@ -215,6 +215,42 @@ class AlphaShopConfigurationView(APIView):
         return Response(data)
 
 
+class AlphaShopConfigurationTestView(APIView):
+    """Owner-triggered connection test; saved credentials never leave the server."""
+
+    permission_classes = [OrganizationRolePermission]
+    owner_only = True
+
+    def post(self, request):
+        organization = request_organization(request)
+        try:
+            result = alphashop.test_connection(organization=organization)
+        except alphashop.AlphaShopError as exc:
+            payload = {"ok": False, "code": exc.code, "detail": exc.detail}
+            if exc.upstream_status:
+                payload["upstream_status"] = exc.upstream_status
+            return Response(payload, status=exc.status_code)
+        except Exception:
+            diagnostic_id = uuid.uuid4().hex[:12]
+            logger.exception("Unexpected AlphaShop connection test error diagnostic_id=%s", diagnostic_id)
+            return Response({
+                "ok": False,
+                "code": "ALPHASHOP_UNEXPECTED_ERROR",
+                "detail": "选品接口测试暂时失败，详细诊断已安全写入服务器日志。",
+                "diagnostic_id": diagnostic_id,
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        config = AlphaShopConfig.objects.filter(organization=organization).first()
+        if config is not None:
+            write_audit(
+                organization=organization,
+                actor=request.user,
+                action="alphashop.config.test",
+                instance=config,
+                after={"result": "success", "keyword_count": result["keyword_count"]},
+            )
+        return Response(result)
+
+
 class ProductSelectionKeywordView(APIView):
     permission_classes = [OrganizationRolePermission]
     capability = "catalog"
