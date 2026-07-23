@@ -105,6 +105,9 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /reserved > balance\.onHand/);
   assert.match(scriptText, /modal\.classList\.add\('open'\)/);
   assert.match(scriptText, /modal\.classList\.remove\('open'\)/);
+  assert.match(scriptText, /event\.target\.closest\('#openPurchaseModal'\)/);
+  assert.match(scriptText, /Purchase form controls are missing from the page/);
+  assert.match(scriptText, /renderSelects\(\);/);
   assert.doesNotMatch(scriptText, /modal-backdrop\.show/);
   assert.match(scriptText, /saveProductFromForm/);
   assert.match(scriptText, /draft && current && current\.kind === 'own' && hasBusinessReferences\(current\.id\)/);

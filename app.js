@@ -2280,12 +2280,26 @@ function renderPurchaseDraft() {
   }).join('') : '<div class="last-value">请至少加入一条采购明细。</div>';
 }
 function openPurchaseEditor() {
-  if (!ownProducts(state).filter(function (item) { return !item.needsReview; }).length) {
+  const availableProducts = ownProducts(state).filter(function (item) { return !item.needsReview; });
+  if (!availableProducts.length) {
     showToast('请先在商品中心新增并完善本店 SKU。');
     setRoute('products');
     return;
   }
-  $('#purchaseForm').reset();
+  // Rebuild the select when a warehouse has just been switched.  More
+  // importantly, keep this path defensive: the create button must not become
+  // a silent no-op if a static asset is temporarily out of sync.
+  const form = $('#purchaseForm');
+  const lineProduct = $('#purchaseLineProduct');
+  const lineCost = $('#purchaseLineCost');
+  const lineList = $('#purchaseLineList');
+  if (!form || !lineProduct || !lineCost || !lineList) {
+    console.error('Purchase form controls are missing from the page.');
+    showToast('采购页面尚未完整加载，请刷新页面后重试。');
+    return;
+  }
+  form.reset();
+  renderSelects();
   draftPurchaseLines = [];
   $('#purchaseNumber').value = 'PO-' + today().replace(/-/g, '') + '-' + String(Date.now()).slice(-4);
   $('#purchaseStatus').value = 'ordered';
@@ -2293,9 +2307,10 @@ function openPurchaseEditor() {
   const eta = new Date(); eta.setDate(eta.getDate() + 14);
   $('#purchaseEta').value = localDateTime(eta).slice(0, 10);
   $('#purchaseExtraCost').value = 0;
-  const first = productById($('#purchaseLineProduct').value);
+  const first = productById(lineProduct.value) || availableProducts[0];
+  if (first && !lineProduct.value) lineProduct.value = first.id;
   $('#purchaseSupplier').value = first ? first.defaultSupplier : '';
-  $('#purchaseLineCost').value = first ? first.standardCost : '';
+  lineCost.value = first ? first.standardCost : '';
   renderPurchaseDraft();
   openModal('purchaseModal');
 }
@@ -3104,6 +3119,13 @@ function bindEvents() {
   document.addEventListener('click', function (event) {
     const sideLink = event.target.closest('[data-side-link]');
     if (sideLink) return handleSideLink(sideLink);
+    // Keep the primary purchase entry point delegated.  This remains available
+    // even when another optional modal control fails to bind during startup.
+    const purchaseStarter = event.target.closest('#openPurchaseModal');
+    if (purchaseStarter) {
+      event.preventDefault();
+      return openPurchaseEditor();
+    }
     const moduleButton = event.target.closest('[data-module]');
     if (moduleButton) return setRoute(moduleButton.dataset.module);
     const warehouseTab = event.target.closest('[data-warehouse-tab]');
@@ -3407,7 +3429,6 @@ function bindEvents() {
   });
   $('#productForm').addEventListener('submit', handleProductSubmit);
   if ($('#saveProductDraft')) $('#saveProductDraft').addEventListener('click', function () { saveProductFromForm(true); });
-  $('#openPurchaseModal').addEventListener('click', openPurchaseEditor);
   $('#purchaseLineProduct').addEventListener('change', function () {
     const product = productById(this.value);
     if (product) {
