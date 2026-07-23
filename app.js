@@ -2889,7 +2889,14 @@ async function openPurchaseEditor(existingOrder) {
     return;
   }
   if (TEAM_MODE && !purchaseMembers.length) {
-    purchaseMembers = await teamGateway.listPurchaseMembers();
+    try {
+      purchaseMembers = await teamGateway.listPurchaseMembers();
+    } catch (error) {
+      // The purchaser list is optional. A temporary member API failure must not
+      // prevent a user from opening and creating a purchase order.
+      console.warn('Unable to load purchase members; using the operator fallback.', error);
+      purchaseMembers = [];
+    }
   }
   $('#purchaseForm').reset();
   purchaseEditId = existingOrder ? existingOrder.id : '';
@@ -4464,7 +4471,12 @@ function bindEvents() {
   $('#removeProductImage').addEventListener('click', function () { pendingProductImage = ''; $('#productImageUrl').value = ''; $('#productImageStatus').textContent = ''; updateProductImagePreview(); });
   $('#productForm').addEventListener('submit', handleProductSubmit);
   if ($('#saveProductDraft')) $('#saveProductDraft').addEventListener('click', function () { saveProductFromForm(true); });
-  $('#openPurchaseModal').addEventListener('click', openPurchaseEditor);
+  $('#openPurchaseModal').addEventListener('click', function () {
+    openPurchaseEditor().catch(function (error) {
+      console.error('Unable to open the purchase editor.', error);
+      showToast('无法打开采购单，请稍后重试。');
+    });
+  });
   $('#openReceiveModal').addEventListener('click', function () { openReceiveEditor(); });
   $('#purchaseSkuSearch').addEventListener('input', renderPurchaseSkuPicker);
   $('#purchaseSkuPicker').addEventListener('click', function (event) {
