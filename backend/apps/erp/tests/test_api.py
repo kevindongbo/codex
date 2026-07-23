@@ -152,6 +152,44 @@ class ApiTests(TestCase):
         self.assertEqual(saved_profile.linked_product, saved_product)
         self.assertEqual(saved_profile.market, "MY")
 
+    def test_add_existing_own_product_to_monitoring_and_delete_profile(self):
+        """Removing monitoring must not delete the own product, SKU or stock."""
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        product = Product.objects.create(
+            organization=self.organization,
+            name="Existing own product",
+            status=Product.Status.ACTIVE,
+            source_url="https://example.com/own-product",
+        )
+        sku = SKU.objects.create(organization=self.organization, product=product, code="OWN-MONITOR-SKU", cost="12")
+
+        response = self.client.post(
+            "/api/competitors/add-own-products/", {"product_ids": [str(product.pk)]}, format="json", **headers
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["created_product_ids"], [str(product.pk)])
+        profile = CompetitorProduct.objects.get(organization=self.organization, linked_product=product)
+        self.assertTrue(Product.objects.get(pk=product.pk).monitoring_enabled)
+
+        # The endpoint is idempotent: selecting an already monitored own product
+        # cannot create a second profile.
+        duplicate = self.client.post(
+            "/api/competitors/add-own-products/", {"product_ids": [str(product.pk)]}, format="json", **headers
+        )
+        self.assertEqual(duplicate.status_code, 200, duplicate.data)
+        self.assertEqual(CompetitorProduct.objects.filter(linked_product=product).count(), 1)
+        CompetitorSnapshot.objects.create(product=profile, captured_at=timezone.now(), price="9.9", sold_count=15)
+
+        deleted = self.client.delete(f"/api/competitors/{profile.pk}/", **headers)
+        self.assertEqual(deleted.status_code, 204, deleted.data)
+        self.assertFalse(CompetitorProduct.objects.filter(pk=profile.pk).exists())
+        self.assertFalse(CompetitorSnapshot.objects.filter(product_id=profile.pk).exists())
+        self.assertTrue(Product.objects.filter(pk=product.pk).exists())
+        self.assertTrue(SKU.objects.filter(pk=sku.pk).exists())
+        self.assertFalse(Product.objects.get(pk=product.pk).monitoring_enabled)
+        self.assertTrue(AuditLog.objects.filter(action="competitor.delete").exists())
+
     def test_product_image_accepts_compressed_local_upload_for_team_sync(self):
         self.client.force_authenticate(self.user)
         headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}

@@ -1587,6 +1587,114 @@ class CompetitorProductViewSet(OrganizationScopedViewSet):
     serializer_class = CompetitorProductSerializer
     capability = "catalog"
 
+    @action(detail=False, methods=["post"], url_path="add-own-products")
+    @transaction.atomic
+    def add_own_products(self, request):
+        """Create (or reactivate) monitoring profiles for existing own products.
+
+        The product master, its SKU records and warehouse balances are deliberately
+        left untouched.  This endpoint only manages the separate monitoring profile.
+        """
+        raw_ids = request.data.get("product_ids", [])
+        if not isinstance(raw_ids, list) or not raw_ids:
+            raise ValidationError({"product_ids": "请至少选择一个本店商品。"})
+        product_ids = [str(item) for item in raw_ids if str(item).strip()]
+        if not product_ids:
+            raise ValidationError({"product_ids": "请至少选择一个本店商品。"})
+
+        organization = self.get_organization()
+        products = list(
+            Product.objects.filter(organization=organization, pk__in=product_ids)
+            .prefetch_related("images")
+            .order_by("name", "id")
+        )
+        found_ids = {str(product.pk) for product in products}
+        missing_ids = [product_id for product_id in product_ids if product_id not in found_ids]
+        if missing_ids:
+            raise ValidationError({"product_ids": "包含不存在或无权访问的本店商品。"})
+
+        created = []
+        reactivated = []
+        profiles = []
+        for product in products:
+            image = next(iter(product.images.all()), None)
+            # ProductImage can temporarily contain a browser-side data URL.  A
+            # monitoring profile stores only a real URL, so never copy that
+            # value into the URL field (and never make adding a product fail
+            # because an old product image has not been uploaded yet).
+            image_url = str(image.url or "") if image else ""
+            if not image_url.startswith(("https://", "http://")):
+                image_url = ""
+            defaults = {
+                "name": product.name,
+                "kind": CompetitorProduct.Kind.DIRECT,
+                "platform": "own",
+                "market": product.market,
+                "url": product.source_url,
+                "image_url": image_url,
+                "seller": product.seller,
+                "currency": product.sales_currency,
+                "active": True,
+            }
+            profile, was_created = CompetitorProduct.objects.get_or_create(
+                organization=organization,
+                linked_product=product,
+                defaults=defaults,
+            )
+            changed = False
+            if not profile.active:
+                profile.active = True
+                changed = True
+            if changed:
+                profile.save(update_fields=["active", "updated_at"])
+                reactivated.append(str(product.pk))
+            if was_created:
+                created.append(str(product.pk))
+            if not product.monitoring_enabled:
+                product.monitoring_enabled = True
+                product.save(update_fields=["monitoring_enabled", "updated_at"])
+            profiles.append(profile)
+
+        write_audit(
+            organization=organization,
+            actor=request.user,
+            action="competitor.add_own_products",
+            instance=profiles[0],
+            after={"product_ids": [str(product.pk) for product in products], "created": created, "reactivated": reactivated},
+        )
+        bump_sync_revision(organization_id=organization.pk)
+        return Response({
+            "created_product_ids": created,
+            "reactivated_product_ids": reactivated,
+            "profiles": self.get_serializer(profiles, many=True).data,
+        }, status=status.HTTP_200_OK)
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        # A monitoring profile is independent from the own-store product.  Deleting
+        # it removes its snapshots but must never delete the linked Product, SKU or
+        # warehouse data.
+        linked_product = instance.linked_product
+        snapshot_count = instance.snapshots.count()
+        before = {
+            "name": instance.name,
+            "linked_product_id": str(linked_product.pk) if linked_product else "",
+            "snapshot_count": snapshot_count,
+        }
+        if linked_product is not None and linked_product.monitoring_enabled:
+            linked_product.monitoring_enabled = False
+            linked_product.save(update_fields=["monitoring_enabled", "updated_at"])
+        organization = instance.organization
+        write_audit(
+            organization=organization,
+            actor=self.request.user,
+            action="competitor.delete",
+            instance=instance,
+            before=before,
+        )
+        instance.delete()
+        bump_sync_revision(organization_id=organization.pk)
+
 
 class CompetitorSnapshotViewSet(viewsets.ModelViewSet):
     serializer_class = CompetitorSnapshotSerializer

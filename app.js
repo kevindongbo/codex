@@ -111,6 +111,8 @@ let purchaseMembers = [];
 let draftOrderLines = [];
 let draftTransferLines = [];
 let replenishmentSelectedSkuIds = new Set();
+let monitoringPickerTerm = '';
+let monitoringPickerSelected = new Set();
 let toastTimer = null;
 let teamBusy = false;
 let teamLastSyncedAt = '';
@@ -893,7 +895,7 @@ function renderModeControls() {
     $$(selector).forEach(function (node) { node.hidden = TEAM_MODE; });
   });
   const capabilityControls = {
-    catalog: ['#openProductModal', '#tableAddProduct', '#emptyAddProduct', '#competitorAddProduct', '#competitorTableAdd', '#saveProductDraft', '#productForm button[type="submit"]', '#selectionKeywordButton'],
+    catalog: ['#openProductModal', '#tableAddProduct', '#emptyAddProduct', '#competitorAddProduct', '#competitorTableAdd', '#competitorAddOwnProduct', '#competitorTableAddOwn', '#confirmAddOwnMonitoring', '#saveProductDraft', '#productForm button[type="submit"]', '#selectionKeywordButton'],
     purchase: ['#openPurchaseModal', '#purchaseForm button[type="submit"]'],
     receipt: ['#receiveForm button[type="submit"]'],
     inventory: ['#openStockModal', '#stockForm button[type="submit"]'],
@@ -1582,6 +1584,7 @@ function renderProducts() {
     const available = product.kind === 'own' ? availableFor(product.id) : 0;
     let actions = teamCapabilityAllowed('catalog') ? rowButton('edit-product', product.id, product.status === 'draft' ? '继续完善' : '编辑', 'primary') : '';
     if (product.kind === 'own' && product.status === 'active' && !product.needsReview) actions += rowButton('open-warehouse', product.id, '看库存');
+    if (teamCapabilityAllowed('catalog') && product.kind === 'own' && product.status === 'active' && !product.needsReview && !product.monitoringEnabled) actions += rowButton('add-own-monitoring', product.id, '加入竞品监控');
     if (teamCapabilityAllowed('competitor') && product.status === 'active' && (product.kind !== 'own' || product.monitoringEnabled)) actions += rowButton('add-snapshot', product.id, '更新销量');
     if (teamCapabilityAllowed('catalog') && product.status !== 'draft') actions += rowButton(product.status === 'active' ? 'deactivate-product' : 'activate-product', product.id, product.status === 'active' ? '停用' : '启用');
     if (teamCapabilityAllowed('catalog')) actions += rowButton('delete-product', product.id, '删除', 'danger');
@@ -2083,15 +2086,81 @@ function snapshotChange(productId) {
     reviews: pair.latest && pair.previous ? pair.latest.reviews - pair.previous.reviews : null
   };
 }
+function monitoringPickerProducts() {
+  const term = monitoringPickerTerm.trim().toLowerCase();
+  return ownProducts(state, true).filter(function (product) {
+    if (product.status !== 'active' || product.needsReview) return false;
+    if (!term) return true;
+    return [product.name, product.sku, product.seller, product.market].some(function (value) {
+      return String(value || '').toLowerCase().includes(term);
+    });
+  });
+}
+function renderMonitoringProductPicker() {
+  const container = $('#monitoringProductPicker');
+  if (!container) return;
+  const products = monitoringPickerProducts();
+  const selectable = products.filter(function (product) { return !product.monitoringEnabled; });
+  Array.from(monitoringPickerSelected).forEach(function (productId) {
+    if (!selectable.some(function (product) { return product.id === productId; })) monitoringPickerSelected.delete(productId);
+  });
+  const allSelected = selectable.length > 0 && selectable.every(function (product) { return monitoringPickerSelected.has(product.id); });
+  const selectAll = $('#monitoringProductSelectAll');
+  if (selectAll) {
+    selectAll.checked = allSelected;
+    selectAll.disabled = selectable.length === 0;
+  }
+  setText('#monitoringProductPickerHint', products.length
+    ? '已选择 ' + monitoringPickerSelected.size + ' 个商品；加入后可在竞品监控里录入快照和销量。'
+    : '没有匹配的可用本店商品。');
+  const confirm = $('#confirmAddOwnMonitoring');
+  if (confirm) confirm.disabled = monitoringPickerSelected.size === 0;
+  container.innerHTML = products.map(function (product) {
+    const monitored = Boolean(product.monitoringEnabled);
+    const checked = monitoringPickerSelected.has(product.id);
+    const image = safeImageUrl(product.image);
+    return '<label class="monitoring-product-picker-item' + (monitored ? ' monitored' : '') + '">' +
+      '<input type="checkbox" data-monitoring-product-id="' + escapeHtml(product.id) + '"' + (checked ? ' checked' : '') + (monitored ? ' disabled' : '') + ' />' +
+      '<span class="monitoring-product-picker-image">' + (image ? '<img src="' + escapeHtml(image) + '" alt="" />' : '暂无图') + '</span>' +
+      '<span class="monitoring-product-picker-copy"><strong>' + escapeHtml(product.name) + '</strong><small>' + escapeHtml([product.sku, product.seller, product.market].filter(Boolean).join(' · ') || '本店商品') + '</small></span>' +
+      '<em>' + (monitored ? '已在监控' : '可加入') + '</em></label>';
+  }).join('') || '<div class="monitoring-picker-empty">没有找到可加入监控的本店商品。</div>';
+}
+function openOwnProductMonitoringPicker() {
+  monitoringPickerTerm = '';
+  monitoringPickerSelected = new Set();
+  const search = $('#monitoringProductSearch');
+  if (search) search.value = '';
+  renderMonitoringProductPicker();
+  openModal('competitorOwnProductModal');
+}
+async function submitOwnProductsToMonitoring() {
+  const selected = Array.from(monitoringPickerSelected);
+  if (!selected.length) return showToast('请至少选择一个本店商品。');
+  if (TEAM_MODE) {
+    const applied = await executeTeamCommand(function () { return teamGateway.addOwnProductsToMonitoring(selected); }, '已将选中的本店商品加入竞品监控。', 'catalog');
+    if (applied) closeModal('competitorOwnProductModal');
+    return;
+  }
+  commit(function (next) {
+    selected.forEach(function (productId) {
+      const product = productById(productId, next);
+      if (product && product.kind === 'own') product.monitoringEnabled = true;
+    });
+  }, '已将选中的本店商品加入竞品监控。');
+  closeModal('competitorOwnProductModal');
+}
 function renderCompetitorProducts() {
   const products = monitoredProducts(state).filter(function (product) { return searchMatches(product); });
   $('#competitorRows').innerHTML = products.map(function (product) {
     const change = snapshotChange(product.id);
     const latest = change.pair.latest;
     const salesClass = change.sales == null ? 'neutral' : (change.sales >= 0 ? 'up' : 'down');
+    const isOwnProduct = product.kind === 'own';
     const actions = (teamCapabilityAllowed('competitor') ? rowButton('add-snapshot', product.id, '更新销量', 'primary') : '') +
-      '<a class="row-action" href="' + escapeHtml(product.productUrl) + '" target="_blank" rel="noopener">打开链接</a>' +
-      (teamCapabilityAllowed('catalog') ? rowButton('edit-product', product.id, '编辑') : '');
+      (product.productUrl ? '<a class="row-action" href="' + escapeHtml(product.productUrl) + '" target="_blank" rel="noopener">打开链接</a>' : '') +
+      (teamCapabilityAllowed('catalog') ? rowButton('edit-product', product.id, '编辑') : '') +
+      (teamCapabilityAllowed('catalog') ? rowButton(isOwnProduct ? 'remove-own-monitoring' : 'delete-competitor', product.id, isOwnProduct ? '移出监控' : '删除', 'danger') : '');
     return '<tr><td>' + productMedia(product) + '</td><td><span class="type-pill ' + product.kind + '">' + KIND_LABELS[product.kind] + '</span></td>' +
       '<td>' + (latest ? formatDate(latest.at, true) : '未记录') + '</td><td>' + (latest ? money(latest.price, latest.currency) : '—') + '</td>' +
       '<td>' + (latest ? latest.sold.toLocaleString('zh-CN') : '—') + '</td><td><span class="delta-pill ' + salesClass + '">' + (change.sales == null ? '—' : (change.sales > 0 ? '+' : '') + change.sales) + '</span></td>' +
@@ -3689,6 +3758,36 @@ async function handleAction(action, id) {
     return;
   }
   if (action === 'edit-product') return openProductEditor(id);
+  if (action === 'add-own-monitoring') {
+    const product = productById(id);
+    if (!product || product.kind !== 'own') return;
+    if (product.monitoringEnabled) return showToast('该本店商品已在竞品监控中。');
+    if (TEAM_MODE) return executeTeamCommand(function () { return teamGateway.addOwnProductsToMonitoring([product.apiProductId || product.id]); }, '本店商品已加入竞品监控，可直接记录并对比销量。', 'catalog');
+    return commit(function (next) { const item = productById(id, next); if (item) item.monitoringEnabled = true; }, '本店商品已加入竞品监控。');
+  }
+  if (action === 'remove-own-monitoring') {
+    const product = productById(id);
+    if (!product || product.kind !== 'own') return;
+    return askConfirm('二次确认：将“' + product.name + '”移出竞品监控，并删除其监控快照？本店商品、SKU、库存、采购和订单都不会删除。', function () {
+      if (TEAM_MODE) return executeTeamCommand(function () { return teamGateway.removeMonitoringProfile(product); }, '商品已移出竞品监控；本店商品和库存未受影响。', 'catalog');
+      return commit(function (next) {
+        const item = productById(id, next);
+        if (item) item.monitoringEnabled = false;
+        next.snapshots = next.snapshots.filter(function (snapshot) { return snapshot.productId !== id; });
+      }, '商品已移出竞品监控。');
+    });
+  }
+  if (action === 'delete-competitor') {
+    const product = productById(id);
+    if (!product || product.kind === 'own') return;
+    return askConfirm('二次确认：彻底删除竞品“' + product.name + '”及其全部监控快照？此操作不可恢复。', function () {
+      if (TEAM_MODE) return executeTeamCommand(function () { return teamGateway.deleteProduct(product); }, '竞品及其监控快照已彻底删除。', 'catalog');
+      return commit(function (next) {
+        next.products = next.products.filter(function (item) { return item.id !== id; });
+        next.snapshots = next.snapshots.filter(function (snapshot) { return snapshot.productId !== id; });
+      }, '竞品及其监控快照已彻底删除。');
+    });
+  }
   if (action === 'open-warehouse') {
     setRoute('warehouse', 'inventory');
     setTimeout(function () {
@@ -4312,6 +4411,28 @@ function bindEvents() {
   ['#competitorAddProduct', '#competitorTableAdd'].forEach(function (selector) {
     $(selector).addEventListener('click', function () { openProductEditor('', 'direct'); });
   });
+  ['#competitorAddOwnProduct', '#competitorTableAddOwn'].forEach(function (selector) {
+    $(selector).addEventListener('click', openOwnProductMonitoringPicker);
+  });
+  $('#monitoringProductSearch').addEventListener('input', function (event) {
+    monitoringPickerTerm = event.target.value || '';
+    renderMonitoringProductPicker();
+  });
+  $('#monitoringProductSelectAll').addEventListener('change', function (event) {
+    monitoringPickerProducts().filter(function (product) { return !product.monitoringEnabled; }).forEach(function (product) {
+      if (event.target.checked) monitoringPickerSelected.add(product.id);
+      else monitoringPickerSelected.delete(product.id);
+    });
+    renderMonitoringProductPicker();
+  });
+  $('#monitoringProductPicker').addEventListener('change', function (event) {
+    const checkbox = event.target.closest('[data-monitoring-product-id]');
+    if (!checkbox) return;
+    if (checkbox.checked) monitoringPickerSelected.add(checkbox.dataset.monitoringProductId);
+    else monitoringPickerSelected.delete(checkbox.dataset.monitoringProductId);
+    renderMonitoringProductPicker();
+  });
+  $('#confirmAddOwnMonitoring').addEventListener('click', submitOwnProductsToMonitoring);
   $('#productKind').addEventListener('change', toggleProductFields);
   $('#productKind').addEventListener('change', renderProductSkuEditor);
   $('#addProductSku').addEventListener('click', function () {

@@ -816,6 +816,17 @@
       return this.request(path, { method: 'DELETE' });
     }
 
+    async addOwnProductsToMonitoring(productIds) {
+      return this.request('/competitors/add-own-products/', {
+        method: 'POST', body: { product_ids: productIds }
+      });
+    }
+
+    async removeMonitoringProfile(product) {
+      const profileId = product.apiCompetitorId || product.id;
+      return this.request('/competitors/' + profileId + '/', { method: 'DELETE' });
+    }
+
     async createPurchase(order) {
       const supplier = await this.ensureSupplier(order.supplier);
       const payload = {

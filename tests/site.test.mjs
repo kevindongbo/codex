@@ -36,9 +36,9 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260718-purchase-card-picker-3/);
-  assert.match(html, /team\.js\?v=20260718-purchase-card-picker-3/);
-  assert.match(html, /app\.js\?v=20260718-purchase-card-picker-3/);
+  assert.match(html, /styles\.css\?v=20260723-competitor-monitoring-1/);
+  assert.match(html, /team\.js\?v=20260723-competitor-monitoring-1/);
+  assert.match(html, /app\.js\?v=20260723-competitor-monitoring-1/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
@@ -76,7 +76,9 @@ test("contains product, warehouse, order and monitoring workflows", async () => 
     "aiProviderId", "aiProviderParameters", "aiProviderEnabled", "resetAIProvider", "aiUsageSummary",
     "aiRecommendationForm", "aiRecommendationProvider", "aiRecommendationKind", "aiRecommendationInput",
     "aiRecommendationRows", "aiInvocationRows",
-    "snapshotAdvanced",
+    "snapshotAdvanced", "competitorAddOwnProduct", "competitorTableAddOwn",
+    "competitorOwnProductModal", "monitoringProductSearch", "monitoringProductSelectAll",
+    "monitoringProductPicker", "confirmAddOwnMonitoring",
   ];
 
   requiredIds.forEach((id) => assert.match(html, new RegExp(`id="${id}"`)));
@@ -126,6 +128,10 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /delete-purchase/);
   assert.match(scriptText, /teamGateway\.deletePurchase/);
   assert.match(scriptText, /teamGateway\.deleteProduct\(product, true\)/);
+  assert.match(scriptText, /addOwnProductsToMonitoring/);
+  assert.match(scriptText, /removeMonitoringProfile/);
+  assert.match(scriptText, /remove-own-monitoring/);
+  assert.match(scriptText, /delete-competitor/);
   assert.match(scriptText, /teamGateway\.deleteStockBalance\(balance, true\)/);
   assert.doesNotMatch(scriptText, /团队版会保留本店 SKU 主档/);
   assert.match(scriptText, /inventoryBalances/);
@@ -170,6 +176,7 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(teamText, /receive-from-order/);
   assert.match(teamText, /confirmAndShipOrder/);
   assert.match(teamText, /quick-sales/);
+  assert.match(teamText, /competitors\/add-own-products/);
   assert.match(teamText, /stock-transfers/);
   assert.match(teamText, /replenishment/);
   assert.match(teamText, /local-imports\/validate/);

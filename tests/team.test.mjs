@@ -323,6 +323,26 @@ test('replenishment recommendations are requested for the selected warehouse', a
   assert.equal(recommendations[0].suggested_order_quantity, 24);
 });
 
+test('team adapter adds existing own products to monitoring and deletes only the profile', async () => {
+  const calls = [];
+  const Team = await loadTeam(async (url, options) => {
+    calls.push({ url, options });
+    return response(options.method === 'DELETE' ? 204 : 200, {});
+  });
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.accessToken = 'access-token';
+  gateway.organizationId = 'org-1';
+
+  await gateway.addOwnProductsToMonitoring(['product-a', 'product-b']);
+  await gateway.removeMonitoringProfile({ apiCompetitorId: 'profile-a' });
+
+  assert.equal(calls[0].url, '/api/competitors/add-own-products/');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].options.body), { product_ids: ['product-a', 'product-b'] });
+  assert.equal(calls[1].url, '/api/competitors/profile-a/');
+  assert.equal(calls[1].options.method, 'DELETE');
+});
+
 test('API error shows the safe upstream status and diagnostic reference', async () => {
   const Team = await loadTeam(async () => response(502, {
     detail: '选品服务暂时异常，请稍后重试。',

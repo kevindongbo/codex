@@ -20,7 +20,7 @@
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260718-purchase-card-picker-3" />
+  <link rel="stylesheet" href="styles.css?v=20260723-competitor-monitoring-1" />
 </head>
 <body>
   <header class="app-header">
@@ -355,13 +355,13 @@
           <h1>竞品监控</h1>
           <p>竞品公开销量、价格和评价数据与真实仓库库存完全分开。</p>
         </div>
-        <div class="page-actions"><button class="button primary" id="competitorAddProduct">＋ 添加竞品</button></div>
+        <div class="page-actions"><button class="button secondary" id="competitorAddOwnProduct">＋ 加入本店商品</button><button class="button primary" id="competitorAddProduct">＋ 添加竞品</button></div>
       </div>
 
       <section class="subpage active" data-competitor-page="products">
         <div class="subpage-heading">
           <div><h2>竞品商品</h2><p>直接竞品、间接竞品以及参与对比的本店商品。</p></div>
-          <button class="button primary" id="competitorTableAdd">＋ 添加竞品</button>
+          <div class="inline-actions"><button class="button secondary" id="competitorTableAddOwn">＋ 加入本店商品</button><button class="button primary" id="competitorTableAdd">＋ 添加竞品</button></div>
         </div>
         <section class="panel">
           <div class="table-wrap">
@@ -414,6 +414,22 @@
       </section>
     </section>
     </main>
+  </div>
+
+  <div class="modal-backdrop" id="competitorOwnProductModal" aria-hidden="true">
+    <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="competitorOwnProductModalTitle">
+      <button class="modal-close" data-close="competitorOwnProductModal" aria-label="关闭">×</button>
+      <p class="eyebrow">本店商品</p>
+      <h2 id="competitorOwnProductModalTitle">加入竞品监控</h2>
+      <p class="modal-intro">选择已启用的本店商品后，即可在竞品监控中录入公开销量、价格和评价。此操作不会创建新商品，也不会变更 SKU 或库存。</p>
+      <div class="monitoring-picker-toolbar">
+        <label>搜索商品 / SKU<input id="monitoringProductSearch" type="search" placeholder="输入商品名、SKU、店铺或市场" /></label>
+        <label class="monitoring-select-all"><input id="monitoringProductSelectAll" type="checkbox" /> 全选当前筛选结果</label>
+      </div>
+      <p class="monitoring-picker-hint" id="monitoringProductPickerHint"></p>
+      <div class="monitoring-product-picker" id="monitoringProductPicker"></div>
+      <div class="modal-actions"><button class="button secondary" type="button" data-close="competitorOwnProductModal">取消</button><button class="button primary" id="confirmAddOwnMonitoring" type="button">加入竞品监控</button></div>
+    </section>
   </div>
 
   <div class="modal-backdrop" id="productModal" aria-hidden="true">
@@ -814,7 +830,7 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js"></script>
-  <script src="team.js?v=20260722-selection-ai-1"></script>
-  <script src="app.js?v=20260722-selection-ai-1"></script>
+  <script src="team.js?v=20260723-competitor-monitoring-1"></script>
+  <script src="app.js?v=20260723-competitor-monitoring-1"></script>
 </body>
 </html>
