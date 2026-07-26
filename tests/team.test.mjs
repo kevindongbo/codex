@@ -164,6 +164,30 @@ test('team gateway hard-deletes an eligible product and a draft purchase', async
   assert.deepEqual(calls.map((call) => call.options.method), ['DELETE', 'DELETE']);
 });
 
+test('second purchase edit normalizes legacy tracking data before it reaches the API', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.warehouseId = 'warehouse-1';
+  let requestCall;
+  gateway.request = async (path, options = {}) => {
+    requestCall = { path, options };
+    return { id: 'purchase-1' };
+  };
+
+  await gateway.editPurchase({
+    id: 'purchase-1', number: 'PO-SECOND-EDIT', supplierId: 'supplier-1', purchaserId: '',
+    orderedAt: '2026-07-24', expectedAt: '2026-07-30', note: '', extraCost: 0,
+    lines: [{ id: 'line-1', skuId: 'sku-1', orderedQty: 10, unitCost: 9.06, currency: 'CNY' }],
+    shipments: [{ id: 'browser-draft-shipment', trackingNumber: ' 2313441232 ', lines: [] }],
+  });
+
+  const body = requestCall.options.body;
+  assert.equal(requestCall.path, '/purchase-orders/purchase-1/edit/');
+  assert.equal(body.shipments[0].tracking_number, '2313441232');
+  assert.equal(Object.hasOwn(body.shipments[0], 'id'), false);
+  assert.equal(Object.hasOwn(body, 'purchaser'), false);
+});
+
 test('unknown network outcome reuses the same inventory idempotency key', async () => {
   const bodies = [];
   let attempt = 0;

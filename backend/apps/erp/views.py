@@ -1148,23 +1148,32 @@ class PurchaseOrderViewSet(OrganizationScopedViewSet):
 
     @action(detail=True, methods=["post"])
     def edit(self, request, pk=None):
-        input_serializer = PurchaseOrderEditInputSerializer(
-            data=request.data,
-            context=self.get_serializer_context(),
-        )
-        input_serializer.is_valid(raise_exception=True)
-        _require_warehouse_access(
-            request,
-            self.get_organization(),
-            input_serializer.validated_data.get("warehouse") or self.get_object().warehouse,
-        )
-        purchase_order = _service_call(
-            edit_purchase,
-            purchase_order=self.get_object(),
-            data=input_serializer.validated_data,
-            actor=request.user,
-        )
-        return Response(self.get_serializer(purchase_order).data)
+        try:
+            input_serializer = PurchaseOrderEditInputSerializer(
+                data=request.data,
+                context=self.get_serializer_context(),
+            )
+            input_serializer.is_valid(raise_exception=True)
+            _require_warehouse_access(
+                request,
+                self.get_organization(),
+                input_serializer.validated_data.get("warehouse") or self.get_object().warehouse,
+            )
+            purchase_order = _service_call(
+                edit_purchase,
+                purchase_order=self.get_object(),
+                data=input_serializer.validated_data,
+                actor=request.user,
+            )
+            return Response(self.get_serializer(purchase_order).data)
+        except APIException:
+            raise
+        except Exception:
+            # Keep the API response safe, but retain the actionable traceback in
+            # the service log when an old purchase record exposes an unexpected
+            # data shape during its second edit.
+            logger.exception("Purchase order edit failed", extra={"purchase_order_id": str(pk), "actor_id": request.user.pk})
+            raise
 
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):

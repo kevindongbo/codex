@@ -1259,14 +1259,23 @@ async function executeTeamCommand(command, successMessage, capability) {
   renderRuntimeState();
   try {
     await command();
-    const loaded = await teamGateway.loadState();
-    const currentUi = clone(state.ui);
-    state = normalizeV5(loaded);
-    state.ui = currentUi;
-    teamLastSyncedAt = new Date().toISOString();
-    render();
-    renderRuntimeState();
-    if (successMessage) showToast(successMessage);
+    try {
+      const loaded = await teamGateway.loadState();
+      const currentUi = clone(state.ui);
+      state = normalizeV5(loaded);
+      state.ui = currentUi;
+      teamLastSyncedAt = new Date().toISOString();
+      render();
+      renderRuntimeState();
+      if (successMessage) showToast(successMessage);
+    } catch (refreshError) {
+      // A completed write must never be presented as a failed save merely
+      // because one of the dashboard refresh endpoints is temporarily down.
+      // In particular, this used to make a successful purchase edit look like
+      // an HTTP 500 and invited the operator to submit it again.
+      console.error('Team state refresh failed after a successful command.', refreshError);
+      showToast('保存成功，但页面数据刷新失败。请刷新页面后确认最新采购单。');
+    }
     return true;
   } catch (error) {
     try {
@@ -3542,6 +3551,20 @@ function handleProductSubmit(event) {
 
 async function handlePurchaseSubmit(event) {
   event.preventDefault();
+  // Treat the currently typed tracking number as a pending logistics record.
+  // Requiring a separate click on "add logistics" made the save button look
+  // broken: the operator could see the number in the field while the payload
+  // silently omitted it.  A shipment without per-SKU allocations is valid and
+  // can be allocated later before a partial receipt.
+  const pendingTrackingNumber = $('#purchaseTrackingNumber').value.trim();
+  if (pendingTrackingNumber) {
+    const duplicateTracking = draftPurchaseShipments.some(function (item) {
+      return String(item.trackingNumber || '').trim().toLowerCase() === pendingTrackingNumber.toLowerCase();
+    });
+    if (duplicateTracking) return showToast('同一采购单的物流单号不能重复。');
+    draftPurchaseShipments.push({ id: '', trackingNumber: pendingTrackingNumber, lines: [] });
+    $('#purchaseTrackingNumber').value = '';
+  }
   const number = $('#purchaseNumber').value.trim();
   if (number && state.purchaseOrders.some(function (item) { return item.id !== purchaseEditId && item.number.toLowerCase() === number.toLowerCase(); })) return showToast('采购单号不能重复。');
   const status = draftPurchaseLines.length ? $('#purchaseStatus').value : 'draft';

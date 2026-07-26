@@ -165,6 +165,10 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /route \+= '\/low'/);
   assert.match(scriptText, /inventorySection = parts\[2\] === 'movements'/);
   assert.match(scriptText, /executeTeamCommand/);
+  assert.match(scriptText, /Treat the currently typed tracking number as a pending logistics record/);
+  assert.match(scriptText, /const pendingTrackingNumber = \$\('#purchaseTrackingNumber'\)\.value\.trim\(\)/);
+  assert.match(scriptText, /draftPurchaseShipments\.push\(\{ id: '', trackingNumber: pendingTrackingNumber, lines: \[\] \}\)/);
+  assert.match(scriptText, /保存成功，但页面数据刷新失败/);
   assert.match(scriptText, /initializeTeamMode/);
   assert.match(scriptText, /searchSelectionKeywords/);
   assert.match(scriptText, /generateSelectionReport/);
