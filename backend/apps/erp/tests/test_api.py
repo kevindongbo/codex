@@ -1124,13 +1124,16 @@ class ApiTests(TestCase):
         self.assertEqual(shipment["tracking_number"], "2313441232")
 
         payload["shipments"][0]["id"] = shipment["id"]
+        payload["shipments"].append({"tracking_number": "YT-SECOND", "lines": []})
         payload["notes"] = "补充采购备注"
         second = self.client.post(
             f"/api/purchase-orders/{created.data['id']}/edit/", payload, format="json", **headers
         )
         self.assertEqual(second.status_code, 200, second.data)
-        self.assertEqual(len(second.data["shipments"]), 1)
-        self.assertEqual(second.data["shipments"][0]["tracking_number"], "2313441232")
+        self.assertEqual(
+            {item["tracking_number"] for item in second.data["shipments"]},
+            {"2313441232", "YT-SECOND"},
+        )
 
     def test_warehouse_member_cannot_write_outside_authorized_warehouse(self):
         warehouse_allowed = Warehouse.objects.create(
