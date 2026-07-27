@@ -590,6 +590,19 @@ def _purchase_audit_snapshot(purchase_order):
     }
 
 
+def purchase_order_for_update_queryset():
+    """Lock only the purchase order and its non-nullable joins.
+
+    PostgreSQL rejects ``FOR UPDATE`` when Django adds a LEFT OUTER JOIN for the
+    nullable purchaser relation.  Keeping that relation out of this locking
+    query preserves the row lock without attempting to lock the nullable side
+    of an outer join.
+    """
+    return PurchaseOrder.objects.select_for_update().select_related(
+        "organization", "supplier", "warehouse"
+    )
+
+
 @transaction.atomic
 def edit_purchase(*, purchase_order, data, actor=None):
     """Edit only the unreceived part of an open purchase order.
@@ -597,9 +610,7 @@ def edit_purchase(*, purchase_order, data, actor=None):
     Receipt rows and stock ledgers are never changed here.  The guards make
     changes safe even when an operator edits a partially received PO.
     """
-    purchase_order = PurchaseOrder.objects.select_for_update().select_related(
-        "organization", "supplier", "warehouse", "purchaser"
-    ).get(pk=purchase_order.pk)
+    purchase_order = purchase_order_for_update_queryset().get(pk=purchase_order.pk)
     if purchase_order.status not in {
         PurchaseOrder.Status.DRAFT,
         PurchaseOrder.Status.SUBMITTED,

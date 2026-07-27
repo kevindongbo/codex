@@ -1135,6 +1135,18 @@ class ApiTests(TestCase):
             {"2313441232", "YT-SECOND"},
         )
 
+    def test_purchase_edit_lock_does_not_join_nullable_purchaser(self):
+        """PostgreSQL cannot apply FOR UPDATE to a nullable outer-join target."""
+        from apps.erp.services import purchase_order_for_update_queryset
+
+        query = purchase_order_for_update_queryset().query
+
+        self.assertTrue(query.select_for_update)
+        self.assertEqual(
+            set(query.select_related),
+            {"organization", "supplier", "warehouse"},
+        )
+
     def test_warehouse_member_cannot_write_outside_authorized_warehouse(self):
         warehouse_allowed = Warehouse.objects.create(
             organization=self.organization, code="ACCESS-YES", name="授权仓"
