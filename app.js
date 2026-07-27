@@ -1244,7 +1244,8 @@ async function refreshTeamState(successMessage) {
   }
 }
 
-async function executeTeamCommand(command, successMessage, capability) {
+async function executeTeamCommand(command, successMessage, capability, options) {
+  const settings = Object.assign({ applyResult: null, refreshOnError: true }, options || {});
   if (!TEAM_MODE) return false;
   if (!teamAuthenticated()) {
     openModal('sessionModal');
@@ -1258,9 +1259,16 @@ async function executeTeamCommand(command, successMessage, capability) {
   teamBusy = true;
   renderRuntimeState();
   try {
-    await command();
+    const result = await command();
     try {
-      const loaded = await teamGateway.loadState();
+      // Some write endpoints already return the complete updated resource.  In
+      // that case consume the response directly instead of synchronously
+      // loading every dashboard collection (including competitor monitoring
+      // and replenishment).  Those unrelated APIs must never delay or overturn
+      // a successful purchase tracking save.
+      const loaded = settings.applyResult
+        ? settings.applyResult(result)
+        : await teamGateway.loadState();
       const currentUi = clone(state.ui);
       state = normalizeV5(loaded);
       state.ui = currentUi;
@@ -1278,14 +1286,16 @@ async function executeTeamCommand(command, successMessage, capability) {
     }
     return true;
   } catch (error) {
-    try {
-      const loaded = await teamGateway.loadState();
-      const currentUi = clone(state.ui);
-      state = normalizeV5(loaded);
-      state.ui = currentUi;
-      teamLastSyncedAt = new Date().toISOString();
-      render();
-    } catch (_) { /* keep the last synchronized view when refresh also fails */ }
+    if (settings.refreshOnError) {
+      try {
+        const loaded = await teamGateway.loadState();
+        const currentUi = clone(state.ui);
+        state = normalizeV5(loaded);
+        state.ui = currentUi;
+        teamLastSyncedAt = new Date().toISOString();
+        render();
+      } catch (_) { /* keep the last synchronized view when refresh also fails */ }
+    }
     return handleTeamError(error);
   } finally {
     teamBusy = false;
@@ -3588,7 +3598,15 @@ async function handlePurchaseSubmit(event) {
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   };
   if (TEAM_MODE) {
-    const savedTeam = await executeTeamCommand(function () { return purchaseEditId ? teamGateway.editPurchase(order) : teamGateway.createPurchase(order); }, purchaseEditId ? '采购单已更新；已收货记录和库存流水保持不变。' : (status === 'draft' ? '采购草稿已保存，不计入在途。' : '采购单已创建，已自动计入在途。'), 'purchase');
+    const savedTeam = await executeTeamCommand(
+      function () { return purchaseEditId ? teamGateway.editPurchase(order) : teamGateway.createPurchase(order); },
+      purchaseEditId ? '采购单已更新；已收货记录和库存流水保持不变。' : (status === 'draft' ? '采购草稿已保存，不计入在途。' : '采购单已创建，已自动计入在途。'),
+      'purchase',
+      {
+        applyResult: function (savedPurchase) { return teamGateway.applyPurchaseOrderResult(savedPurchase); },
+        refreshOnError: false
+      }
+    );
     if (savedTeam) closeModal('purchaseModal');
     return;
   }

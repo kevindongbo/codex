@@ -39,6 +39,14 @@ function response(status, payload, contentType = 'application/json') {
   };
 }
 
+function emptyRawState() {
+  return {
+    products: [], suppliers: [], purchaseOrders: [], balances: [], ledger: [],
+    orders: [], shipments: [], returns: [], competitors: [], snapshots: [],
+    transfers: [], replenishmentPolicies: [], replenishmentRecommendations: [],
+  };
+}
+
 test('API pagination keeps authorization and organization scope', async () => {
   const calls = [];
   const Team = await loadTeam(async (url, options) => {
@@ -186,6 +194,33 @@ test('second purchase edit normalizes legacy tracking data before it reaches the
   assert.equal(body.shipments[0].tracking_number, '2313441232');
   assert.equal(Object.hasOwn(body.shipments[0], 'id'), false);
   assert.equal(Object.hasOwn(body, 'purchaser'), false);
+});
+
+test('purchase save response updates cached purchases without loading monitoring APIs', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.warehouseId = 'warehouse-1';
+  gateway.warehouses = [{ id: 'warehouse-1', name: '采购仓' }];
+  gateway.cache = emptyRawState();
+  gateway.cache.products = [{
+    id: 'product-1', name: '商品', kind: 'own', status: 'active', currency: 'CNY',
+    images: [], skus: [{ id: 'sku-1', code: 'SKU-1', active: true, cost: '1.00', currency: 'CNY' }]
+  }];
+  gateway.cache.suppliers = [{ id: 'supplier-1', name: '供应商' }];
+
+  const state = gateway.applyPurchaseOrderResult({
+    id: 'purchase-1', number: 'PO-CACHED', status: 'submitted', supplier: 'supplier-1',
+    warehouse: 'warehouse-1', purchaser: null, ordered_at: '2026-07-27T00:00:00Z',
+    expected_at: null, extra_cost: '0', notes: '', created_at: '2026-07-27T00:00:00Z',
+    updated_at: '2026-07-27T00:00:00Z',
+    lines: [{ id: 'line-1', sku: 'sku-1', quantity_ordered: '2', quantity_received: '0', unit_cost: '1.00' }],
+    shipments: [{ id: 'shipment-1', tracking_number: 'YT-SECOND', lines: [] }]
+  });
+
+  assert.equal(state.purchaseOrders.length, 1);
+  assert.equal(state.purchaseOrders[0].shipments[0].trackingNumber, 'YT-SECOND');
+  assert.equal(gateway.cache.competitors.length, 0);
+  assert.equal(gateway.cache.snapshots.length, 0);
 });
 
 test('unknown network outcome reuses the same inventory idempotency key', async () => {

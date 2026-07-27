@@ -426,6 +426,19 @@
       return this.adaptState(raw);
     }
 
+    applyPurchaseOrderResult(purchaseOrder) {
+      if (!purchaseOrder || !purchaseOrder.id) {
+        throw new ApiError('采购单保存成功，但服务器未返回采购单数据。', 0, purchaseOrder);
+      }
+      const purchases = Array.isArray(this.cache.purchaseOrders) ? this.cache.purchaseOrders.slice() : [];
+      const id = String(purchaseOrder.id);
+      const index = purchases.findIndex(function (item) { return String(item.id) === id; });
+      if (index >= 0) purchases[index] = purchaseOrder;
+      else purchases.push(purchaseOrder);
+      this.cache.purchaseOrders = purchases;
+      return this.adaptState(this.cache);
+    }
+
     adaptState(raw) {
       const supplierById = new Map(raw.suppliers.map(function (item) { return [String(item.id), item]; }));
       const productBySku = new Map();
