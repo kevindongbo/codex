@@ -57,6 +57,19 @@ from .replenishment import (
     ReplenishmentPolicy as ForecastPolicy,
     build_replenishment_forecast,
 )
+from .profit_calculator import (
+    AFFILIATE_SOURCE,
+    CATEGORY_RULES,
+    COMMISSION_SOURCE,
+    PLATFORM_SUPPORT_FEE,
+    RULE_EFFECTIVE_DATE,
+    SUPPORT_FEE_SOURCE,
+    TRANSACTION_RATE,
+    TRANSACTION_SOURCE,
+    category_config,
+    calculate_profit,
+)
+from .profit_serializers import ProfitCalculationSerializer
 from .single_tenant import active_internal_membership, ensure_internal_organization, internal_organization
 from .sync import bump_sync_revision
 
@@ -91,6 +104,35 @@ def health(request):
         cursor.execute("SELECT 1")
         cursor.fetchone()
     return Response({"status": "ok", "database": "ok"})
+
+
+@api_view(["GET"])
+def profit_calculator_config(request):
+    """Expose versioned fee rules without relying on another calculator site."""
+    return Response({
+        "countries": [{"code": "MY", "label": "马来西亚", "currency": "MYR"}],
+        "shop_identities": [
+            {"code": "marketplace", "label": "Marketplace"},
+            {"code": "mall", "label": "Mall"},
+        ],
+        "categories": category_config(),
+        "transaction_rate": str(TRANSACTION_RATE),
+        "platform_support_fee": str(PLATFORM_SUPPORT_FEE),
+        "rule_effective_date": str(RULE_EFFECTIVE_DATE),
+        "sources": {
+            "commission": COMMISSION_SOURCE,
+            "transaction": TRANSACTION_SOURCE,
+            "affiliate": AFFILIATE_SOURCE,
+            "platform_support": SUPPORT_FEE_SOURCE,
+        },
+    })
+
+
+@api_view(["POST"])
+def profit_calculator_calculate(request):
+    serializer = ProfitCalculationSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    return Response(calculate_profit(serializer.validated_data))
 
 
 _PRODUCT_IMAGE_SIGNATURES = {

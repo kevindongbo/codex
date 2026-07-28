@@ -309,7 +309,7 @@ function normalizeV5(saved) {
   base.migrationIssues = Array.isArray(saved.migrationIssues) ? saved.migrationIssues : [];
   base.selectedProductId = saved.selectedProductId || '';
   const savedUi = saved.ui && typeof saved.ui === 'object' ? saved.ui : {};
-  if (['products', 'warehouse', 'competitors'].includes(savedUi.module)) base.ui.module = savedUi.module;
+  if (['products', 'warehouse', 'competitors', 'profit'].includes(savedUi.module)) base.ui.module = savedUi.module;
   if (['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(savedUi.warehouseTab)) base.ui.warehouseTab = savedUi.warehouseTab;
   if (['products', 'snapshots', 'trends', 'alerts'].includes(savedUi.competitorTab)) base.ui.competitorTab = savedUi.competitorTab;
   const activeWarehouse = base.warehouses.find(function (item) { return item.active && item.id === savedUi.warehouseId; }) ||
@@ -513,7 +513,7 @@ function restoreUiPreferences() {
   if (!TEAM_MODE) return;
   try {
     const saved = JSON.parse(localStorage.getItem(UI_STORAGE_KEY) || '{}');
-    if (saved.ui && ['products', 'warehouse', 'competitors'].includes(saved.ui.module)) state.ui.module = saved.ui.module;
+    if (saved.ui && ['products', 'warehouse', 'competitors', 'profit'].includes(saved.ui.module)) state.ui.module = saved.ui.module;
     if (saved.ui && ['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(saved.ui.warehouseTab)) state.ui.warehouseTab = saved.ui.warehouseTab;
     if (saved.ui && saved.ui.warehouseId) state.ui.warehouseId = saved.ui.warehouseId;
     if (saved.ui && ['products', 'snapshots', 'trends', 'alerts'].includes(saved.ui.competitorTab)) state.ui.competitorTab = saved.ui.competitorTab;
@@ -1272,7 +1272,7 @@ function setRoute(module, subtab) {
 }
 function applyHashRoute() {
   const parts = location.hash.replace(/^#/, '').split('/');
-  if (['products', 'warehouse', 'competitors'].includes(parts[0])) state.ui.module = parts[0];
+  if (['products', 'warehouse', 'competitors', 'profit'].includes(parts[0])) state.ui.module = parts[0];
   if (parts[0] === 'products') productFilter = ['own', 'direct', 'indirect', 'inactive'].includes(parts[1]) ? parts[1] : 'all';
   if (parts[0] === 'warehouse' && ['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(parts[1])) {
     state.ui.warehouseTab = parts[1];
@@ -1337,6 +1337,9 @@ function renderSidebar() {
     if (state.ui.module === 'competitors' && button.dataset.competitorView) {
       active = button.dataset.competitorView === state.ui.competitorTab;
     }
+    if (state.ui.module === 'profit' && button.dataset.scrollTarget) {
+      active = button.dataset.scrollTarget === 'profitInputPanel';
+    }
     button.classList.toggle('active', active);
     if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
   });
@@ -1398,6 +1401,10 @@ function handleSideLink(button) {
     return;
   }
   if (button.dataset.competitorView) setRoute('competitors', button.dataset.competitorView);
+  if (state.ui.module === 'profit' && button.dataset.scrollTarget) {
+    closeSidebar();
+    scrollToPanel(button.dataset.scrollTarget);
+  }
 }
 
 function renderProductSummary() {

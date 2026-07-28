@@ -31,6 +31,8 @@ router.register("local-imports", views.LocalImportViewSet, basename="local-impor
 
 urlpatterns = [
     path("health/", views.health, name="health"),
+    path("profit-calculator/config/", views.profit_calculator_config, name="profit-calculator-config"),
+    path("profit-calculator/calculate/", views.profit_calculator_calculate, name="profit-calculator-calculate"),
     path("uploads/product-images/", views.upload_product_image, name="product-image-upload"),
     path("uploads/product-images/<str:filename>/", views.serve_product_image, name="product-image-file"),
     path("sync/version/", views.sync_version, name="sync-version"),

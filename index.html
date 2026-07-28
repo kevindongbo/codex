@@ -33,6 +33,7 @@
       <button class="primary-nav-item active" data-module="products"><span>商品中心</span><b id="navProductCount">0</b></button>
       <button class="primary-nav-item" data-module="warehouse"><span>仓配中心</span><b id="navWarehouseCount">0</b></button>
       <button class="primary-nav-item" data-module="competitors"><span>竞品监控</span><b id="navAlertCount">0</b></button>
+      <button class="primary-nav-item" data-module="profit"><span>利润试算</span></button>
     </nav>
 
     <div class="header-tools">
@@ -103,6 +104,21 @@
             <p>分析洞察</p>
             <button class="side-link" type="button" data-side-link data-competitor-view="trends" data-competitor-tab="trends"><span class="side-icon">↗</span><span>趋势对比</span></button>
             <button class="side-link" type="button" data-side-link data-competitor-view="alerts" data-competitor-tab="alerts"><span class="side-icon">!</span><span>变化提醒</span><b id="competitorAlertCount">0</b></button>
+          </div>
+        </nav>
+      </section>
+
+      <section class="sidebar-module" data-sidebar-module="profit">
+        <div class="sidebar-heading"><span>利润试算</span><small>TIKTOK SHOP MY</small></div>
+        <nav class="sidebar-nav" aria-label="利润试算功能">
+          <div class="sidebar-group">
+            <p>结算测算</p>
+            <button class="side-link active" type="button" data-side-link data-scroll-target="profitInputPanel"><span class="side-icon">▦</span><span>商品试算</span></button>
+            <button class="side-link" type="button" data-side-link data-scroll-target="profitResultPanel"><span class="side-icon">∑</span><span>费用明细</span></button>
+          </div>
+          <div class="sidebar-group">
+            <p>核算口径</p>
+            <button class="side-link" type="button" data-side-link data-scroll-target="profitRuleNotice"><span class="side-icon">i</span><span>规则与说明</span></button>
           </div>
         </nav>
       </section>
@@ -349,6 +365,79 @@
       <section class="subpage" data-competitor-page="alerts" hidden>
         <div class="subpage-heading"><div><h2>变化提醒</h2><p>根据最近快照自动识别价格、销量、评价与更新异常。</p></div></div>
         <section class="alert-grid" id="changeList"></section>
+      </section>
+    </section>
+
+    <section class="module-page profit-page" id="module-profit" data-module-page="profit" hidden>
+      <div class="page-heading profit-heading">
+        <div>
+          <p class="eyebrow">TIKTOK SHOP 结算预估</p>
+          <div class="profit-title-row"><h1>利润试算</h1><span class="profit-rule-badge">✓ 马来西亚规则 · 2026-02-15 生效</span></div>
+          <p>按平台官方计费基数逐项计算，并展示盈亏平衡 CPA 与 ROAS。</p>
+        </div>
+        <label class="profit-rate-card">人民币换算汇率 <small>手动汇率，以收款平台为准</small><span>1 MYR = <input id="profitExchangeRate" type="number" min="0.000001" step="0.000001" value="1.680000" inputmode="decimal" /> CNY</span></label>
+      </div>
+
+      <aside class="profit-rule-notice" id="profitRuleNotice">
+        <strong>计算边界</strong>
+        <span>按正常平台费率估算；不包含临时补贴、活动减免、退款调整和商家自行申报税费。广告花费仅在你填写后计入。</span>
+      </aside>
+
+      <form id="profitCalculatorForm">
+        <section class="panel profit-config-panel">
+          <div class="panel-title"><div><h2>计算配置</h2><p>当前先启用已核验的马来西亚规则。</p></div></div>
+          <div class="profit-config-grid">
+            <label>销售国家<select id="profitCountry"><option value="MY">马来西亚 MY</option></select></label>
+            <label>店铺类型<select id="profitSellerType"><option value="cross_border">跨境店铺</option><option value="local">本土店铺</option></select></label>
+            <label>店铺身份<select id="profitShopIdentity"><option value="marketplace">Marketplace</option><option value="mall">Mall</option></select></label>
+            <label>计算币种<select disabled><option>MYR · RM</option></select></label>
+            <label class="profit-switch"><input id="profitBxp" type="checkbox" /><span><strong>参加 BXP</strong><small>将增加 4.86% BXP 服务费，并使用 BXP 佣金档</small></span></label>
+          </div>
+        </section>
+
+        <section class="panel profit-input-panel" id="profitInputPanel">
+          <div class="panel-title"><div><h2>商品信息</h2><p>同一张试算单可放多个 SKU；平台支持费每单只计算一次。</p></div><button class="button tiny secondary" id="profitAddSku" type="button">＋ 添加 SKU</button></div>
+          <div class="profit-table-wrap">
+            <table class="profit-input-table">
+              <thead><tr><th>SKU 名称</th><th>数量</th><th>产品类目</th><th>商品成本(CNY)</th><th>售价(MYR)</th><th>卖家折扣</th><th>买家运费</th><th>卖家运费</th><th>达人佣金</th><th></th></tr></thead>
+              <tbody id="profitSkuRows"></tbody>
+            </table>
+          </div>
+          <details class="profit-advanced">
+            <summary>高级计费字段 <span>平台优惠、商品税、其他成本、广告花费</span></summary>
+            <div id="profitAdvancedRows" class="profit-advanced-list"></div>
+          </details>
+          <div class="profit-form-footer">
+            <p id="profitFormStatus" role="status">费率将从你的服务器读取，不调用参考网站的接口。</p>
+            <button class="button primary profit-calculate" type="submit"><span aria-hidden="true">▦</span> 计算利润</button>
+          </div>
+        </section>
+      </form>
+
+      <section class="profit-results" id="profitResultPanel" hidden>
+        <div class="summary-strip profit-summary">
+          <article><span>预计净利润</span><strong id="profitNet">RM 0.00</strong><small id="profitNetCny">≈ CNY 0.00</small></article>
+          <article><span>利润率</span><strong id="profitMargin">0.00%</strong><small>净利润 ÷ 结算收入</small></article>
+          <article><span>盈亏平衡 CPA</span><strong id="profitCpa">RM 0.00</strong><small>单笔广告成本上限</small></article>
+          <article><span>盈亏平衡 ROAS</span><strong id="profitRoas">—</strong><small>广告回报率下限</small></article>
+        </div>
+
+        <div class="profit-result-grid">
+          <section class="panel profit-breakdown-panel">
+            <div class="panel-title"><div><h2>费用明细</h2><p id="profitResultVersion">等待计算</p></div></div>
+            <div class="table-wrap"><table><thead><tr><th>费用项</th><th>计费基数</th><th>费率</th><th>金额(MYR)</th><th>规则来源</th></tr></thead><tbody id="profitBreakdownRows"></tbody></table></div>
+          </section>
+          <aside class="panel profit-formula-card">
+            <h2>计算公式</h2>
+            <strong>净利润 = 收入 − 商品成本 − 平台费用 − 达人佣金 − 运费 − 其他成本 − 广告花费</strong>
+            <dl>
+              <div><dt>结算收入</dt><dd id="profitRevenue">RM 0.00</dd></div>
+              <div><dt>总成本与费用</dt><dd id="profitTotalCosts">RM 0.00</dd></div>
+              <div><dt>预计净利润</dt><dd id="profitFormulaNet">RM 0.00</dd></div>
+            </dl>
+            <div id="profitWarnings" class="profit-warnings"></div>
+          </aside>
+        </div>
       </section>
     </section>
     </main>
@@ -657,8 +746,9 @@
   <div class="confirm-bar" id="confirmBar" aria-hidden="true"><span id="confirmText"></span><div><button class="button tiny secondary" id="cancelConfirm">取消</button><button class="button tiny danger" id="acceptConfirm">确认</button></div></div>
   <div class="toast" id="toast" role="status"></div>
 
-  <script src="runtime-config.js?v=20260723-purchase-open"></script>
-  <script src="team.js?v=20260723-purchase-open"></script>
-  <script src="app.js?v=20260723-purchase-open"></script>
+  <script src="runtime-config.js?v=20260728-profit-calculator-1"></script>
+  <script src="team.js?v=20260728-profit-calculator-1"></script>
+  <script src="profit-calculator.js?v=20260728-profit-calculator-1"></script>
+  <script src="app.js?v=20260728-profit-calculator-1"></script>
 </body>
 </html>
