@@ -68,12 +68,17 @@ from .replenishment_automation import schedule_replenishment_ai_analysis
 from .profit_calculator import (
     AFFILIATE_SOURCE,
     COMMISSION_SOURCE,
+    LVG_RATE,
+    LVG_TAX_SOURCE,
     PLATFORM_SUPPORT_FEE,
     RULE_EFFECTIVE_DATE,
+    SHIPPING_CALCULATION_SOURCE,
+    SHIPPING_SOURCE,
     SUPPORT_FEE_SOURCE,
     TRANSACTION_RATE,
     TRANSACTION_SOURCE,
     category_config,
+    category_tree,
     calculate_profit,
 )
 from .profit_serializers import ProfitCalculationSerializer
@@ -148,14 +153,19 @@ def profit_calculator_config(request):
             {"code": "mall", "label": "Mall"},
         ],
         "categories": category_config(),
+        "category_tree": category_tree(),
         "transaction_rate": str(TRANSACTION_RATE),
         "platform_support_fee": str(PLATFORM_SUPPORT_FEE),
+        "lvg_rate": str(LVG_RATE),
         "rule_effective_date": str(RULE_EFFECTIVE_DATE),
         "sources": {
             "commission": COMMISSION_SOURCE,
             "transaction": TRANSACTION_SOURCE,
             "affiliate": AFFILIATE_SOURCE,
             "platform_support": SUPPORT_FEE_SOURCE,
+            "shipping": SHIPPING_SOURCE,
+            "shipping_calculation": SHIPPING_CALCULATION_SOURCE,
+            "lvg_tax": LVG_TAX_SOURCE,
         },
     })
 
