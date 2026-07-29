@@ -632,7 +632,9 @@ form input:focus, form select:focus { border-color: rgba(15,139,141,.7); box-sha
 #teamSessionPanel:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(220px, .85fr); gap: 12px; }
 #teamSessionPanel > .mode-card, #teamSessionPanel > .form-grid { margin: 0; }
 #teamSessionPanel > .session-sync-row, #teamSessionPanel > .migration-preview, #teamSessionPanel > .modal-actions, #teamSessionPanel > input { grid-column: 1 / -1; }
-#teamSessionPanel > .form-grid { padding: 13px; border: 1px solid #dce4ec; border-radius: 11px; background: #fbfcfe; }
+#teamSessionPanel > .form-grid { padding: 13px; border: 1px solid #dce4ec; border-radius: 11px; background: #fbfcfe; grid-template-columns: 1fr; }
+#teamSessionPanel > .form-grid label { display: block; color: var(--navy); font-size: 11px; font-weight: 750; }
+#teamSessionPanel > .form-grid select { display: block; width: 100%; height: 42px; margin-top: 6px; padding: 0 11px; border: 1px solid #d4dfe9; border-radius: 9px; color: var(--navy); background: white; font-size: 11px; }
 #ownerAccountActions { background: linear-gradient(135deg, #f3faf9, #f8fbfd); border-color: #cbe5e3; }
 #accountManagerPanel, #integrationManagerPanel, #ownerPasswordChangePanel { margin-top: 18px; padding: 17px; border: 1px solid var(--line); border-radius: 12px; background: #f8fafc; }
 .migration-preview { margin-top: 13px; padding: 14px; border: 1px solid #cfe4e2; border-radius: 10px; background: #f3faf9; }
@@ -706,9 +708,9 @@ body.team-readonly [data-team-write] { opacity: .5; pointer-events: none; }
 .purchase-detail-list p { margin: 0; color: #596d82; font-size: 11px; line-height: 1.55; }
 .purchase-detail-list p + p { margin-top: 4px; }
 .replenishment-velocity-detail, .replenishment-qty-detail { margin-top: 4px; min-width: 128px; text-align: left; white-space: normal; }
-.replenishment-velocity-detail summary, .replenishment-qty-detail summary { color: var(--teal-dark); cursor: pointer; font-size: 10px; font-weight: 750; }
+.replenishment-velocity-detail summary, .replenishment-qty-detail summary { color: var(--teal-dark); cursor: pointer; font-size: 11px; font-weight: 750; }
 .replenishment-velocity-detail span, .replenishment-qty-detail span { margin-top: 4px; color: #66788d; display: block; font-size: 11px; line-height: 1.55; }
-.replenishment-qty-detail ul { margin: 5px 0 0; padding-left: 17px; color: #66788d; font-size: 10px; }
+.replenishment-qty-detail ul { margin: 5px 0 0; padding-left: 17px; color: #66788d; font-size: 11px; }
 .replenishment-weight-group { margin: 0 0 16px; padding: 14px; border: 1px solid #cde4e2; border-radius: 11px; background: #f3faf9; }
 .replenishment-weight-group legend { padding: 0 6px; color: var(--navy); font-size: 12px; font-weight: 820; }
 .replenishment-weight-group p { margin: 0 0 10px; color: #617577; font-size: 10px; }
