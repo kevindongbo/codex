@@ -20,7 +20,7 @@
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260729-profit-category-layout-5" />
+  <link rel="stylesheet" href="styles.css?v=20260729-profit-rules-layout-6" />
 </head>
 <body>
   <header class="app-header">
@@ -129,12 +129,12 @@
         <nav class="sidebar-nav" aria-label="利润试算功能">
           <div class="sidebar-group">
             <p>结算测算</p>
-            <button class="side-link active" type="button" data-side-link data-scroll-target="profitInputPanel"><span class="side-icon">▦</span><span>商品试算</span></button>
-            <button class="side-link" type="button" data-side-link data-scroll-target="profitResultPanel"><span class="side-icon">∑</span><span>费用明细</span></button>
+            <button class="side-link active" type="button" data-side-link data-profit-view="calculator" data-scroll-target="profitInputPanel"><span class="side-icon">▦</span><span>商品试算</span></button>
+            <button class="side-link" type="button" data-side-link data-profit-view="calculator" data-scroll-target="profitResultPanel"><span class="side-icon">∑</span><span>费用明细</span></button>
           </div>
           <div class="sidebar-group">
             <p>核算口径</p>
-            <button class="side-link" type="button" data-side-link data-scroll-target="profitRuleNotice"><span class="side-icon">i</span><span>规则与说明</span></button>
+            <button class="side-link" type="button" data-side-link data-profit-view="rules"><span class="side-icon">i</span><span>规则与说明</span></button>
           </div>
         </nav>
       </section>
@@ -431,6 +431,7 @@
     </section>
 
     <section class="module-page profit-page" id="module-profit" data-module-page="profit" hidden>
+      <section class="profit-view-page" data-profit-view-page="calculator">
       <div class="page-heading profit-heading">
         <div class="profit-heading-copy">
           <div class="profit-title-row">
@@ -447,11 +448,6 @@
           <div class="profit-currency-toggle" role="group" aria-label="结果显示币种"><button class="active" type="button" data-profit-currency="MYR">马币 MYR</button><button type="button" data-profit-currency="CNY">人民币 CNY</button></div>
         </section>
       </div>
-
-      <aside class="profit-rule-notice" id="profitRuleNotice">
-        <strong>计算边界</strong>
-        <span>跨境发货按重量自动估算买家与卖家运费；本土发货按免运费模型计算。广告数据留空时只展示广告前毛利。</span>
-      </aside>
 
       <form id="profitCalculatorForm">
         <section class="panel profit-config-panel">
@@ -495,8 +491,8 @@
 
         <div class="profit-result-grid">
           <section class="panel profit-breakdown-panel">
-            <div class="panel-title"><div><h2>费用明细</h2><p id="profitResultVersion">等待计算</p></div></div>
-            <div class="table-wrap"><table><thead><tr><th>归类</th><th>费用项</th><th>计费基数</th><th>费率</th><th>占结算收入</th><th id="profitBreakdownCurrency">金额(MYR)</th><th>规则来源</th></tr></thead><tbody id="profitBreakdownRows"></tbody></table></div>
+            <div class="panel-title profit-breakdown-title"><div><h2>费用明细</h2><p id="profitResultVersion">等待计算</p></div><button class="button secondary profit-basis-toggle" id="profitBasisToggle" type="button" aria-controls="profitBreakdownTable" aria-expanded="false">展开计费基准</button></div>
+            <div class="table-wrap"><table id="profitBreakdownTable"><colgroup><col class="profit-group-col" /><col class="profit-fee-col" /><col class="profit-basis-col" data-profit-basis-column /><col class="profit-rate-col" /><col class="profit-share-col" /><col class="profit-amount-col" /><col class="profit-source-col" /></colgroup><thead><tr><th>归类</th><th>费用项</th><th data-profit-basis-column>计费基准</th><th>费率</th><th>占结算收入</th><th id="profitBreakdownCurrency">金额(MYR)</th><th>规则来源</th></tr></thead><tbody id="profitBreakdownRows"></tbody></table></div>
           </section>
           <aside class="panel profit-formula-card">
             <h2>金额明细</h2>
@@ -516,16 +512,86 @@
               <div><dt>净利润</dt><dd id="profitFormulaNet">未计算</dd></div>
               <div><dt>净利率</dt><dd id="profitFormulaNetMargin">未计算</dd></div>
             </dl>
-            <ul class="profit-formula-notes">
-              <li>卖家折扣固定按 0；每行按 1 件商品计算</li>
-              <li>平台代扣 = 类目佣金 + 支付交易手续费 + BXP 服务费 + 每单平台支持费</li>
-              <li>预计平台回款为正常费率下的现金流估算，不含退款、活动补贴及结算调整</li>
-              <li>保本 ROI = 成交收入 ÷ 可承受广告费，不附加“x”单位</li>
-              <li>填写实际 ROI、CPA（USD）或广告费占比后，才计算净利润</li>
-            </ul>
             <div id="profitWarnings" class="profit-warnings"></div>
           </aside>
         </div>
+      </section>
+      </section>
+
+      <section class="profit-view-page profit-rules-page" data-profit-view-page="rules" id="profitRulesPage" hidden>
+        <div class="page-heading profit-rules-heading">
+          <div>
+            <p class="eyebrow">TIKTOK SHOP MY · 核算口径</p>
+            <h1>规则与说明</h1>
+            <p>这里集中说明利润试算的计算顺序、自动估算项、广告指标和使用边界；计算页只保留输入与结果。</p>
+          </div>
+          <span class="profit-rule-badge">规则版本 MY-TTS-2026-07-29-v4</span>
+        </div>
+
+        <nav class="profit-rules-index" aria-label="规则目录">
+          <a href="#profit-rules-flow"><span>01</span><strong>计算顺序</strong><small>从售价到净利润</small></a>
+          <a href="#profit-rules-auto"><span>02</span><strong>自动计算项</strong><small>运费、税费、平台费</small></a>
+          <a href="#profit-rules-ads"><span>03</span><strong>广告指标</strong><small>CPA、ROI 与净利润</small></a>
+          <a href="#profit-rules-boundary"><span>04</span><strong>适用边界</strong><small>未计入项目与注意事项</small></a>
+        </nav>
+
+        <section class="panel profit-rule-section" id="profit-rules-flow">
+          <div class="profit-rule-section-title"><span>01</span><div><h2>计算顺序</h2><p>所有金额先以 MYR 计算，最后才按页面汇率换算显示。</p></div></div>
+          <ol class="profit-flow-list">
+            <li><span>1</span><div><strong>结算收入</strong><p>各 SKU 商品售价合计 ＋ 系统估算的买家运费收入。</p></div></li>
+            <li><span>2</span><div><strong>平台代扣</strong><p>类目佣金 ＋ 支付交易手续费 ＋ BXP 增值服务费（如参加）＋ 每单平台支持费。</p></div></li>
+            <li><span>3</span><div><strong>预计平台回款</strong><p>结算收入 − 平台代扣 − 达人推广佣金 − 物流履约成本。</p></div></li>
+            <li><span>4</span><div><strong>广告前毛利</strong><p>预计平台回款 − 商品采购成本；商品成本由 CNY 按页面汇率折算为 MYR。</p></div></li>
+            <li><span>5</span><div><strong>净利润</strong><p>广告前毛利 − 实际广告投入。未填写广告数据时，只展示广告前毛利和毛利率。</p></div></li>
+          </ol>
+        </section>
+
+        <div class="profit-rules-grid">
+          <section class="panel profit-rule-section" id="profit-rules-auto">
+            <div class="profit-rule-section-title"><span>02</span><div><h2>自动计算项</h2><p>用户只填核心经营数据，其余按已核验规则估算。</p></div></div>
+            <div class="profit-rule-cards">
+              <article><strong>数量与折扣</strong><p>每行固定代表 1 件商品，卖家折扣固定为 0，不需要手工输入。</p></article>
+              <article><strong>跨境运费</strong><p>重量向上取整至 kg 档，按 TikTok Shop 马来西亚官方全国线路费率的中位数估算买家运费和物流履约成本；本土发货按 0 运费模型。</p></article>
+              <article><strong>类目佣金</strong><p>三级类目决定佣金率；Marketplace、Mall 与 BXP 状态分别匹配对应费率。</p></article>
+              <article><strong>交易及支持费</strong><p>交易手续费按“商品售价＋买家运费”计算；每单支持费按已妥投订单收取一次，指定基础类目自动豁免。</p></article>
+              <article><strong>达人推广佣金</strong><p>以“含税售价 − 自动拆分的 LVG 商品税”为基数，再乘填写的达人佣金率。</p></article>
+              <article><strong>LVG 商品税</strong><p>跨境且税前货值不超过 RM500 时，按含税售价 × 10 ÷ 110 拆分。该税由平台代收代缴，仅用于展示及佣金基数，不重复扣作卖家成本。</p></article>
+            </div>
+          </section>
+
+          <section class="panel profit-rule-section" id="profit-rules-ads">
+            <div class="profit-rule-section-title"><span>03</span><div><h2>广告指标</h2><p>三种广告输入只选一种，系统统一换算为单件广告成本。</p></div></div>
+            <dl class="profit-rule-formulas">
+              <div><dt>盈亏平衡 CPA（USD）</dt><dd>广告前毛利（MYR）× USD/MYR 汇率</dd></div>
+              <div><dt>保本 ROI</dt><dd>结算收入 ÷ 广告前毛利</dd></div>
+              <div><dt>填写实际 ROI</dt><dd>广告投入 = 结算收入 ÷ 实际 ROI</dd></div>
+              <div><dt>填写 CPA（USD）</dt><dd>广告投入 = CPA（USD）÷ USD/MYR 汇率</dd></div>
+              <div><dt>填写广告费占比</dt><dd>广告投入 = 结算收入 × 广告费占比</dd></div>
+              <div><dt>净利率</dt><dd>净利润 ÷ 结算收入</dd></div>
+            </dl>
+            <p class="profit-rule-callout">保本 ROI 显示为数字，不附加“x”。只有填写有效广告数据后，页面才计算净利润和净利率。</p>
+          </section>
+        </div>
+
+        <section class="panel profit-rule-section" id="profit-rules-boundary">
+          <div class="profit-rule-section-title"><span>04</span><div><h2>适用边界与核对事项</h2><p>这是经营测算工具，不替代 Seller Center 账单、税务申报或海关归类。</p></div></div>
+          <div class="profit-boundary-grid">
+            <article><strong>正常费率场景</strong><p>结果不含临时补贴、活动减免、退款调整、结算差异及税前货值超过 RM500 后可能发生的进口税费。</p></article>
+            <article><strong>运费是估算值</strong><p>实际账单仍会受寄出州、收件州、体积重、偏远地区及物流商复称影响。</p></article>
+            <article><strong>汇率可调整</strong><p>页面汇率用于经营测算；MYR 是计算本位币，CNY 是展示与采购成本换算，USD 只用于 CPA 换算。</p></article>
+            <article><strong>上线前复核</strong><p>平台费率可能调整。规则更新后应以 TikTok Shop Seller Center 和马来西亚海关最新公告为准。</p></article>
+          </div>
+          <div class="profit-rule-sources">
+            <strong>官方规则来源</strong>
+            <a href="https://seller-my.tiktok.com/university/essay?knowledge_id=6907739532281602&amp;lang=en" target="_blank" rel="noopener">类目佣金</a>
+            <a href="https://seller-my.tiktok.com/university/essay?knowledge_id=10013511&amp;lang=en" target="_blank" rel="noopener">交易手续费</a>
+            <a href="https://seller-my.tiktok.com/university/essay?knowledge_id=7992113007347457&amp;lang=en" target="_blank" rel="noopener">平台支持费</a>
+            <a href="https://seller-my.tiktok.com/university/essay?knowledge_id=6837846988539650&amp;lang=en" target="_blank" rel="noopener">达人佣金</a>
+            <a href="https://seller-my.tiktok.com/university/essay?knowledge_id=7753788005828354&amp;lang=en" target="_blank" rel="noopener">买家运费</a>
+            <a href="https://seller-my.tiktok.com/university/essay?knowledge_id=10014116&amp;lang=en" target="_blank" rel="noopener">卖家运费</a>
+            <a href="https://mysst.customs.gov.my/assets/document/Industry%20Guides/GI/Guide%20on%20Low%20Value%20Goods_Draft.pdf" target="_blank" rel="noopener">马来西亚 LVG 指南</a>
+          </div>
+        </section>
       </section>
     </section>
     </main>
@@ -946,7 +1012,7 @@
 
   <script src="runtime-config.js?v=20260728-profit-calculator-server-1"></script>
   <script src="team.js?v=20260728-profit-calculator-server-1"></script>
-  <script src="profit-calculator.js?v=20260729-profit-category-layout-5"></script>
-  <script src="app.js?v=20260728-profit-calculator-server-1"></script>
+  <script src="profit-calculator.js?v=20260729-profit-rules-layout-6"></script>
+  <script src="app.js?v=20260729-profit-rules-layout-6"></script>
 </body>
 </html>
