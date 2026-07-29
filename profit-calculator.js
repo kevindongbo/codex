@@ -2,11 +2,19 @@
   'use strict';
 
   const runtime = Object.assign({ apiBase: '/api' }, root.DONGBO_CONFIG || {});
-  const fallbackTree = [{ label: '箱包', children: [{ label: '女包', children: [
-    { code: 'bag-womens-womens-tote-bags', label: '女士托特包' },
-    { code: 'bag-womens-womens-handbags', label: '女士手拎包' },
-    { code: 'bag-womens-womens-clutches-wristlets', label: '女士手拿包&腕包' }
-  ] }] }];
+  const fallbackTree = [
+    { label: '箱包', children: [{ label: '女包', children: [
+      { code: 'bag-womens-womens-backpacks', label: '女士双肩包' },
+      { code: 'bag-womens-womens-handbags', label: '女士手提包' },
+      { code: 'bag-womens-womens-tote-bags', label: '女士托特包' },
+      { code: 'bag-womens-womens-clutches-wristlets', label: '女士手拿包与腕包' }
+    ] }] },
+    { label: '美妆个护', children: [{ label: '护肤', children: [
+      { code: 'beauty-skincare-cleanser', label: '洁面' },
+      { code: 'beauty-skincare-serum', label: '面部精华' },
+      { code: 'beauty-skincare-sunscreen', label: '防晒' }
+    ] }] }
+  ];
   let categoryTree = fallbackTree;
   let categories = [];
   let rowSequence = 0;
@@ -28,6 +36,10 @@
     const amount = target === 'CNY' ? number(value) * number(el('profitExchangeRate').value) : number(value);
     const prefix = target === 'CNY' ? '¥ ' : 'RM ';
     return prefix + amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function formatCost(value) {
+    return '− ' + formatMoney(value);
   }
 
   async function request(path, options) {
@@ -145,6 +157,7 @@
   }
 
   function renderResult(result) {
+    const summary = result.amount_summary || {};
     const primaryProfit = result.has_ad_cost ? result.net_profit : result.gross_profit;
     const primaryMargin = result.has_ad_cost ? result.net_margin : result.gross_margin;
     el('profitPrimaryLabel').textContent = result.has_ad_cost ? '净利润' : '广告前毛利';
@@ -155,7 +168,14 @@
     el('profitMargin').textContent = number(primaryMargin).toFixed(2) + '%';
     el('profitCpa').textContent = '$ ' + number(result.break_even_cpa_usd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     el('profitRoas').textContent = result.break_even_roi == null ? '不可盈利' : number(result.break_even_roi).toFixed(2);
-    el('profitRevenue').textContent = formatMoney(result.revenue);
+    el('profitSalesRevenue').textContent = formatMoney(summary.sales_revenue == null ? result.revenue : summary.sales_revenue);
+    el('profitBuyerShippingRevenue').textContent = formatMoney(summary.buyer_shipping_revenue || 0);
+    el('profitRevenue').textContent = formatMoney(summary.settlement_revenue == null ? result.revenue : summary.settlement_revenue);
+    el('profitPlatformFees').textContent = formatCost(summary.platform_fees || 0);
+    el('profitAffiliateFees').textContent = formatCost(summary.affiliate_commission || 0);
+    el('profitLogisticsCost').textContent = formatCost(summary.logistics_cost || 0);
+    el('profitPlatformPayout').textContent = formatMoney(summary.estimated_platform_payout == null ? result.gross_profit : summary.estimated_platform_payout);
+    el('profitProductCost').textContent = formatCost(summary.product_cost || 0);
     el('profitCostsBeforeAds').textContent = formatMoney(result.costs_before_ads);
     el('profitGross').textContent = formatMoney(result.gross_profit);
     el('profitAdCost').textContent = result.has_ad_cost ? formatMoney(result.advertising_cost) : '未填写';
@@ -195,7 +215,11 @@
       document.querySelectorAll('[data-profit-row]').forEach(function (row) {
         populateCategoryPicker(row, row.querySelector('[data-profit-field="category_code"]').value);
       });
-      setStatus('已加载 ' + categories.length + ' 个三级费率类目、马来西亚 LVG 税则和 2026-05-13 官方运费档。');
+      const secondLevelCount = categoryTree.reduce(function (total, item) { return total + item.children.length; }, 0);
+      const thirdLevelCount = categoryTree.reduce(function (total, item) {
+        return total + item.children.reduce(function (subtotal, group) { return subtotal + group.children.length; }, 0);
+      }, 0);
+      setStatus('已加载箱包、美妆个护 2 个一级类目、' + secondLevelCount + ' 个二级类目和 ' + thirdLevelCount + ' 个三级类目。');
     } catch (error) {
       setStatus('费率配置暂时无法读取，请确认已登录团队服务器后重试。', true);
     }
@@ -273,9 +297,13 @@
         if (!popover.hidden) {
           const rect = categoryOpen.getBoundingClientRect();
           const width = Math.min(680, window.innerWidth - 24);
+          const height = Math.min(420, window.innerHeight - 24);
           popover.style.width = width + 'px';
+          popover.style.height = height + 'px';
           popover.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)) + 'px';
-          popover.style.top = Math.max(12, Math.min(rect.bottom + 6, window.innerHeight - 330)) + 'px';
+          popover.style.top = (rect.bottom + 6 + height <= window.innerHeight - 12
+            ? rect.bottom + 6
+            : Math.max(12, rect.top - height - 6)) + 'px';
         }
         openCategoryRow = popover.hidden ? null : row;
         return;
