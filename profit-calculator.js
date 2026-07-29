@@ -20,6 +20,8 @@
   let rowSequence = 0;
   let displayCurrency = 'MYR';
   let openCategoryRow = null;
+  const RATE_STORAGE_KEY = 'dongbo-profit-rate-v1';
+  let rateMode = 'auto';
 
   function el(id) { return document.getElementById(id); }
   function escapeHtml(value) {
@@ -40,6 +42,57 @@
 
   function formatCost(value) {
     return '− ' + formatMoney(value);
+  }
+
+  function saveRatePreference(payload) {
+    try { localStorage.setItem(RATE_STORAGE_KEY, JSON.stringify(payload)); } catch (_) { /* storage is optional */ }
+  }
+
+  function ratePreference() {
+    try { return JSON.parse(localStorage.getItem(RATE_STORAGE_KEY) || '{}'); } catch (_) { return {}; }
+  }
+
+  function updateRateUi(meta) {
+    const automatic = rateMode === 'auto';
+    el('profitExchangeRate').readOnly = automatic;
+    el('profitUsdRate').readOnly = automatic;
+    el('profitRateAuto').classList.toggle('active', automatic);
+    el('profitRateManual').classList.toggle('active', !automatic);
+    el('profitRateMode').textContent = automatic
+      ? ('自动更新 · ECB' + (meta && meta.date ? ' · ' + meta.date : ''))
+      : '手动汇率';
+  }
+
+  async function loadExchangeRates(force) {
+    const saved = ratePreference();
+    rateMode = saved.mode === 'manual' ? 'manual' : 'auto';
+    if (rateMode === 'manual' && !force) {
+      if (saved.cny_per_myr) el('profitExchangeRate').value = saved.cny_per_myr;
+      if (saved.usd_per_myr) el('profitUsdRate').value = saved.usd_per_myr;
+      updateRateUi(saved);
+      return;
+    }
+    rateMode = 'auto';
+    updateRateUi(saved);
+    try {
+      const rates = await request('/profit-calculator/exchange-rates/' + (force ? '?refresh=1' : ''));
+      el('profitExchangeRate').value = number(rates.cny_per_myr).toFixed(6);
+      el('profitUsdRate').value = number(rates.usd_per_myr).toFixed(6);
+      saveRatePreference({ mode: 'auto', date: rates.date, source: rates.source, cny_per_myr: el('profitExchangeRate').value, usd_per_myr: el('profitUsdRate').value });
+      updateRateUi(rates);
+      rerenderLastResult();
+    } catch (_) {
+      if (saved.cny_per_myr) el('profitExchangeRate').value = saved.cny_per_myr;
+      if (saved.usd_per_myr) el('profitUsdRate').value = saved.usd_per_myr;
+      el('profitRateMode').textContent = saved.date ? '最近成功汇率 · ' + saved.date : '自动汇率暂不可用';
+    }
+  }
+
+  function useManualRates() {
+    rateMode = 'manual';
+    saveRatePreference({ mode: 'manual', cny_per_myr: el('profitExchangeRate').value, usd_per_myr: el('profitUsdRate').value });
+    updateRateUi();
+    el('profitExchangeRate').focus();
   }
 
   async function request(path, options) {
@@ -182,7 +235,8 @@
     el('profitFormulaNet').textContent = result.has_ad_cost ? formatMoney(result.net_profit) : '未计算';
     el('profitFormulaNetMargin').textContent = result.has_ad_cost ? number(result.net_margin).toFixed(2) + '%' : '未计算';
     el('profitResultVersion').textContent = '规则版本 ' + result.rule_version + ' · 当前显示 ' + displayCurrency;
-    el('profitWarnings').innerHTML = result.warnings.map(function (warning) { return '<p>i ' + escapeHtml(warning) + '</p>'; }).join('');
+    el('profitWarnings').innerHTML = '';
+    el('profitWarnings').hidden = true;
     el('profitBreakdownCurrency').textContent = '金额(' + displayCurrency + ')';
     let previousGroup = '';
     el('profitBreakdownRows').innerHTML = result.breakdown.map(function (row) {
@@ -281,7 +335,10 @@
         input.placeholder = type === 'roi' ? '例如 4.00' : (type === 'cpa_usd' ? '例如 5.00 USD' : (type === 'ratio' ? '例如 20.00%' : '留空不计入'));
         if (type === 'none') input.value = '';
       }
-      if (event.target.matches('#profitExchangeRate')) rerenderLastResult();
+      if (event.target.matches('#profitExchangeRate, #profitUsdRate')) {
+        if (rateMode === 'manual') saveRatePreference({ mode: 'manual', cny_per_myr: el('profitExchangeRate').value, usd_per_myr: el('profitUsdRate').value });
+        rerenderLastResult();
+      }
     });
     document.addEventListener('click', function (event) {
       const currency = event.target.closest('[data-profit-currency]');
@@ -326,7 +383,11 @@
       if (rows.length === 1) return setStatus('至少保留一个 SKU。', true);
       remove.closest('[data-profit-row]').remove();
     });
+    el('profitRateAuto').addEventListener('click', function () { rateMode = 'auto'; saveRatePreference({ mode: 'auto' }); loadExchangeRates(true); });
+    el('profitRateManual').addEventListener('click', useManualRates);
+    el('profitRateRefresh').addEventListener('click', function () { loadExchangeRates(true); });
     loadConfig();
+    loadExchangeRates(false);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
