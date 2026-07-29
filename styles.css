@@ -124,9 +124,9 @@ body:has(.primary-nav-item[data-module="profit"].active) .sidebar-module[data-si
 .profit-heading-copy { min-width: 0; }
 .profit-title-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .profit-title-row h1 { margin: 0; font-size: 28px; letter-spacing: -.8px; }
-.profit-heading-context { padding-left: 12px; border-left: 1px solid #ccd6e0; color: #607287; font-size: 11px; font-weight: 700; }
-.profit-heading-description { margin-top: 5px; color: #708195 !important; font-size: 10px !important; }
-.profit-rule-badge { padding: 5px 9px; border: 1px solid #bfe1cc; border-radius: 7px; color: #257047; background: var(--green-soft); font-size: 9px; font-weight: 800; }
+.profit-heading-context { padding-left: 12px; border-left: 1px solid #ccd6e0; color: #607287; font-size: 13px; font-weight: 700; }
+.profit-heading-description { margin-top: 5px; color: #708195 !important; font-size: 12px !important; }
+.profit-rule-badge { padding: 5px 9px; border: 1px solid #bfe1cc; border-radius: 7px; color: #257047; background: var(--green-soft); font-size: 11px; font-weight: 800; }
 .profit-rate-card { flex: none; width: 390px; min-height: 92px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 11px; color: var(--muted); background: white; box-shadow: 0 5px 18px rgba(22,50,79,.055); }
 .profit-rate-card > span, .profit-rate-card > small { display: block; }
 .profit-rate-label { color: #66788c; font-size: 9px; font-weight: 760; }
@@ -139,13 +139,13 @@ body:has(.primary-nav-item[data-module="profit"].active) .sidebar-module[data-si
 .profit-currency-toggle { margin-top: 8px; padding: 2px; border: 1px solid #d6e1e9; border-radius: 8px; background: #f5f8fa; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; }
 .profit-currency-toggle button { min-height: 27px; border: 0; border-radius: 6px; color: #607287; background: transparent; cursor: pointer; font-size: 8px; font-weight: 800; }
 .profit-currency-toggle button.active { color: white; background: var(--teal); box-shadow: 0 2px 6px rgba(15,139,141,.2); }
-.profit-rule-notice { min-height: 43px; margin-bottom: 13px; padding: 10px 14px; border: 1px solid #cbdcf7; border-radius: 8px; color: #45688f; background: #f5f8fe; display: flex; align-items: center; gap: 10px; font-size: 9px; }
+.profit-rule-notice { min-height: 46px; margin-bottom: 13px; padding: 11px 15px; border: 1px solid #cbdcf7; border-radius: 8px; color: #45688f; background: #f5f8fe; display: flex; align-items: center; gap: 10px; font-size: 12px; }
 .profit-rule-notice strong { flex: none; color: #2d70c9; }
 .profit-rule-notice strong::before { content: "i"; width: 17px; height: 17px; margin-right: 7px; border: 1px solid #78a8e4; border-radius: 50%; display: inline-grid; place-items: center; font: 800 10px/1 ui-monospace, monospace; }
 .profit-config-panel, .profit-input-panel { margin-bottom: 13px; box-shadow: 0 5px 18px rgba(22,50,79,.045); }
 .profit-config-panel .panel-title, .profit-input-panel .panel-title { min-height: 58px; padding: 12px 17px; }
 .profit-config-grid { padding: 14px 17px 13px; display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; align-items: end; }
-.profit-config-grid > label:not(.profit-switch), .profit-advanced-row label { color: #52677d; font-size: 9px; font-weight: 780; }
+.profit-config-grid > label:not(.profit-switch), .profit-advanced-row label { color: #52677d; font-size: 12px; font-weight: 780; }
 .profit-config-grid select, .profit-input-table input, .profit-input-table select, .profit-advanced-row input { width: 100%; min-height: 40px; margin-top: 5px; padding: 8px 10px; border: 1px solid #d5dfe9; border-radius: 8px; color: var(--navy); background: white; outline: 0; transition: border-color .16s ease, box-shadow .16s ease; }
 .profit-config-grid select:focus, .profit-input-table input:focus, .profit-input-table select:focus, .profit-advanced-row input:focus { border-color: rgba(15,139,141,.68); box-shadow: 0 0 0 3px rgba(15,139,141,.08); }
 .profit-config-grid select:disabled { color: #6e8092; background: #f5f7fa; opacity: 1; }
@@ -155,22 +155,35 @@ body:has(.primary-nav-item[data-module="profit"].active) .sidebar-module[data-si
 .profit-switch strong { color: var(--teal-dark); font-size: 9px; }
 .profit-switch small { margin-left: 5px; color: #8190a0; font-size: 8px; }
 .profit-table-wrap { margin: 0 17px; overflow-x: auto; border: 1px solid var(--line); border-radius: 9px; background: white; }
-.profit-input-table { min-width: 1180px; table-layout: fixed; }
+.profit-input-table { min-width: 1460px; table-layout: fixed; }
 .profit-input-table th, .profit-input-table td { padding: 10px 7px; text-align: left; }
-.profit-input-table th { color: #53677d; background: #f4f6f9; font-size: 9px; white-space: nowrap; }
+.profit-input-table th { color: #53677d; background: #f4f6f9; font-size: 11px; white-space: nowrap; }
 .profit-input-table td { vertical-align: top; }
 .profit-input-table th:nth-child(1), .profit-input-table td:nth-child(1) { width: 140px; padding-left: 12px; }
-.profit-input-table th:nth-child(2), .profit-input-table td:nth-child(2) { width: 430px; }
+.profit-input-table th:nth-child(2), .profit-input-table td:nth-child(2) { width: 340px; }
 .profit-input-table th:nth-child(3), .profit-input-table td:nth-child(3) { width: 110px; }
 .profit-input-table th:nth-child(4), .profit-input-table td:nth-child(4),
 .profit-input-table th:nth-child(5), .profit-input-table td:nth-child(5) { width: 132px; }
 .profit-input-table th:nth-child(6), .profit-input-table td:nth-child(6) { width: 112px; }
-.profit-input-table th:nth-child(7), .profit-input-table td:nth-child(7) { width: 62px; }
+.profit-input-table th:nth-child(7), .profit-input-table td:nth-child(7) { width: 270px; }
+.profit-input-table th:nth-child(8), .profit-input-table td:nth-child(8) { width: 62px; }
 .profit-input-table input, .profit-input-table select { min-height: 38px; margin: 0; padding: 7px 9px; }
 .profit-input-table .row-action { min-height: 38px; width: 100%; justify-content: center; }
-.profit-category-cascade { display: grid; grid-template-columns: .9fr 1.15fr 1.25fr; gap: 5px; }
-.profit-category-cascade select { min-width: 0; padding-inline: 7px; font-size: 8px; }
-.profit-category-path { margin-top: 5px; color: #708195; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
+.profit-category-cell { position: relative; }
+.profit-category-trigger { width: 100%; min-height: 38px; padding: 7px 10px; border: 1px solid #d5dfe9; border-radius: 8px; color: var(--navy); background: white; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; text-align: left; }
+.profit-category-trigger:hover, .profit-category-trigger:focus { border-color: rgba(15,139,141,.68); box-shadow: 0 0 0 3px rgba(15,139,141,.08); outline: 0; }
+.profit-category-path { min-width: 0; color: #40566d; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 700; }
+.profit-category-trigger b { color: #7b8b9b; font-size: 15px; }
+.profit-category-popover { position: fixed; z-index: 1200; height: 310px; padding: 8px; border: 1px solid #d9e2ea; border-radius: 12px; background: white; box-shadow: 0 18px 45px rgba(16,39,65,.2); grid-template-columns: repeat(3,minmax(0,1fr)); gap: 7px; }
+.profit-category-popover:not([hidden]) { display: grid; }
+.profit-category-popover > div { min-width: 0; padding: 4px; border-right: 1px solid #e6ebf0; overflow-y: auto; }
+.profit-category-popover > div:last-child { border-right: 0; }
+.profit-category-popover button { width: 100%; min-height: 36px; padding: 7px 9px; border: 0; border-radius: 7px; color: #40566d; background: transparent; display: flex; align-items: center; justify-content: space-between; gap: 7px; cursor: pointer; text-align: left; font-size: 11px; }
+.profit-category-popover button:hover { background: #f2f7f7; }
+.profit-category-popover button.active { color: #0c6265; background: #dceeed; font-weight: 850; }
+.profit-ad-input { display: grid; grid-template-columns: 1.25fr 1fr; gap: 6px; }
+.profit-ad-input select, .profit-ad-input input { min-width: 0; font-size: 10px; }
+.profit-ad-input input:disabled { color: #9aa7b3; background: #f3f6f8; }
 .profit-unit-input { position: relative; }
 .profit-unit-input input { padding-right: 24px; }
 .profit-unit-input span { position: absolute; right: 9px; top: 9px; color: #8795a5; }
@@ -188,7 +201,7 @@ body:has(.primary-nav-item[data-module="profit"].active) .sidebar-module[data-si
 .profit-advanced-row > strong { padding: 0 4px 10px; color: var(--navy); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profit-advanced-row label > span { display: block; }
 .profit-form-footer { min-height: 58px; margin-top: 2px; padding: 10px 17px 13px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px; }
-.profit-form-footer p { margin: 0; color: #6f8092; font-size: 8px; text-align: center; }
+.profit-form-footer p { margin: 0; color: #6f8092; font-size: 11px; text-align: center; }
 .profit-form-footer p.error { color: var(--red); }
 .profit-add-sku { min-width: 116px; }
 .profit-calculate { min-width: 148px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
@@ -201,33 +214,38 @@ body:has(.primary-nav-item[data-module="profit"].active) .sidebar-module[data-si
 .profit-summary article:nth-child(2) { border-left-color: #7a62d3; }
 .profit-summary article:nth-child(3) { border-left-color: var(--amber); }
 .profit-summary article:nth-child(4) { border-left-color: var(--blue); }
-.profit-summary strong { margin-top: 5px; font-size: 23px; }
+.profit-summary article span { font-size: 12px; font-weight: 800; }
+.profit-summary article small { font-size: 10px; }
+.profit-summary strong { margin-top: 5px; font-size: 25px; }
 .profit-metric-icon { flex: none; width: 45px; height: 45px; border-radius: 50%; color: var(--teal); background: var(--teal-soft); display: grid; place-items: center; }
 .profit-summary article:nth-child(2) .profit-metric-icon { color: #7258c9; background: #f1edff; }
 .profit-summary article:nth-child(3) .profit-metric-icon { color: #d98a08; background: var(--amber-soft); }
 .profit-summary article:nth-child(4) .profit-metric-icon { color: #2f73db; background: var(--blue-soft); }
 .profit-metric-icon svg { width: 23px; height: 23px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.profit-result-grid { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 13px; align-items: start; }
+.profit-result-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(380px, .72fr); gap: 13px; align-items: start; }
 .profit-breakdown-panel { min-width: 0; box-shadow: 0 5px 18px rgba(22,50,79,.045); }
-.profit-breakdown-panel table { min-width: 820px; }
+.profit-breakdown-panel table { min-width: 1040px; }
+.profit-breakdown-panel th { font-size: 11px; }
+.profit-breakdown-panel td { font-size: 11px; line-height: 1.55; }
 .profit-breakdown-panel td { vertical-align: top; }
 .profit-amount { white-space: nowrap; font-weight: 820; }
 .profit-amount.income { color: var(--green); }
 .profit-amount.cost, .profit-amount.fee { color: var(--red); }
 .profit-amount.info { color: #6a56be; }
 .profit-source a, .profit-source span, .profit-source small { display: block; }
-.profit-source a { color: #2d70c9; font-size: 9px; text-decoration: none; }
-.profit-source small { margin-top: 2px; color: #8b99a8; font-size: 8px; }
-.profit-formula-card { padding: 16px; position: sticky; top: calc(var(--header-height) + 14px); box-shadow: 0 5px 18px rgba(22,50,79,.045); }
-.profit-formula-card h2 { margin-bottom: 10px; font-size: 15px; }
-.profit-formula-card > strong { padding: 10px; border-radius: 8px; color: #315e8e; background: var(--blue-soft); display: block; font-size: 9px; line-height: 1.65; }
+.profit-source a { color: #2d70c9; font-size: 10px; text-decoration: none; }
+.profit-source small { margin-top: 2px; color: #8b99a8; font-size: 9px; }
+.profit-group-badge { padding: 4px 7px; border-radius: 999px; color: #0d6c6e; background: #e4f2f1; font-size: 10px; font-weight: 850; white-space: nowrap; }
+.profit-formula-card { padding: 20px; position: sticky; top: calc(var(--header-height) + 14px); box-shadow: 0 5px 18px rgba(22,50,79,.045); }
+.profit-formula-card h2 { margin-bottom: 13px; font-size: 19px; }
+.profit-formula-card > strong { padding: 13px; border-radius: 8px; color: #315e8e; background: var(--blue-soft); display: block; font-size: 12px; line-height: 1.65; }
 .profit-formula-card dl { margin: 12px 0 0; }
-.profit-formula-card dl > div { padding: 7px 0; border-bottom: 1px solid #e5ebf1; display: flex; justify-content: space-between; gap: 12px; }
-.profit-formula-card dt { color: #708195; font-size: 9px; }
-.profit-formula-card dd { margin: 0; color: var(--navy); font-size: 10px; font-weight: 820; }
-.profit-formula-notes { margin: 12px 0 0; padding-left: 17px; color: #6d7e90; font-size: 8px; line-height: 1.7; }
+.profit-formula-card dl > div { padding: 10px 0; border-bottom: 1px solid #e5ebf1; display: flex; justify-content: space-between; gap: 12px; }
+.profit-formula-card dt { color: #708195; font-size: 12px; }
+.profit-formula-card dd { margin: 0; color: var(--navy); font-size: 13px; font-weight: 820; }
+.profit-formula-notes { margin: 14px 0 0; padding-left: 18px; color: #6d7e90; font-size: 11px; line-height: 1.8; }
 .profit-warnings { margin-top: 11px; }
-.profit-warnings p { margin: 6px 0 0; padding: 8px; border-radius: 7px; color: #6f6650; background: var(--amber-soft); font-size: 8px; }
+.profit-warnings p { margin: 8px 0 0; padding: 10px; border-radius: 7px; color: #6f6650; background: var(--amber-soft); font-size: 10px; line-height: 1.55; }
 
 .workspace { min-width: 0; width: 100%; margin: 0; padding: 30px 32px 58px; }
 .connection-banner { margin: -4px 0 20px; padding: 13px 15px; border: 1px solid #f4d38b; border-left: 4px solid var(--amber); border-radius: 10px; color: #805714; background: var(--amber-soft); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; box-shadow: 0 5px 14px rgba(245,158,11,.06); }

@@ -11,6 +11,7 @@
   let categories = [];
   let rowSequence = 0;
   let displayCurrency = 'MYR';
+  let openCategoryRow = null;
 
   function el(id) { return document.getElementById(id); }
   function escapeHtml(value) {
@@ -46,45 +47,60 @@
     return payload;
   }
 
-  function optionList(items, valueKey, selected) {
-    return items.map(function (item) {
-      const value = valueKey ? item[valueKey] : item.label;
-      return '<option value="' + escapeHtml(value) + '"' + (value === selected ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>';
-    }).join('');
-  }
-
   function categoryByCode(code) {
     return categories.find(function (item) { return item.code === code; });
   }
 
   function populateCategoryPicker(row, selectedCode) {
     const hidden = row.querySelector('[data-profit-field="category_code"]');
-    const industrySelect = row.querySelector('[data-category-level="0"]');
-    const groupSelect = row.querySelector('[data-category-level="1"]');
-    const leafSelect = row.querySelector('[data-category-level="2"]');
     const matched = categoryByCode(selectedCode);
-    const path = matched && matched.path ? matched.path : null;
+    const path = matched && matched.path ? matched.path : [categoryTree[0].label, categoryTree[0].children[0].label, categoryTree[0].children[0].children[0].label];
     const industry = categoryTree.find(function (item) { return path && item.label === path[0]; }) || categoryTree[0];
-    industrySelect.innerHTML = optionList(categoryTree, null, industry.label);
     const group = industry.children.find(function (item) { return path && item.label === path[1]; }) || industry.children[0];
-    groupSelect.innerHTML = optionList(industry.children, null, group.label);
     const leaf = group.children.find(function (item) { return item.code === selectedCode; }) || group.children[0];
-    leafSelect.innerHTML = optionList(group.children, 'code', leaf.code);
     hidden.value = leaf.code;
+    row.dataset.categoryIndustry = industry.label;
+    row.dataset.categoryGroup = group.label;
     row.querySelector('.profit-category-path').textContent = [industry.label, group.label, leaf.label].join(' / ');
+    renderCategoryMenu(row);
   }
 
-  function syncCategoryPicker(row, level) {
-    const industrySelect = row.querySelector('[data-category-level="0"]');
-    const groupSelect = row.querySelector('[data-category-level="1"]');
-    const leafSelect = row.querySelector('[data-category-level="2"]');
-    const industry = categoryTree.find(function (item) { return item.label === industrySelect.value; }) || categoryTree[0];
-    if (level === 0) groupSelect.innerHTML = optionList(industry.children, null, industry.children[0].label);
-    const group = industry.children.find(function (item) { return item.label === groupSelect.value; }) || industry.children[0];
-    if (level < 2) leafSelect.innerHTML = optionList(group.children, 'code', group.children[0].code);
-    const leaf = group.children.find(function (item) { return item.code === leafSelect.value; }) || group.children[0];
-    row.querySelector('[data-profit-field="category_code"]').value = leaf.code;
-    row.querySelector('.profit-category-path').textContent = [industry.label, group.label, leaf.label].join(' / ');
+  function categoryButtons(items, level, selected) {
+    return items.map(function (item) {
+      const value = item.code || item.label;
+      return '<button type="button" class="' + (value === selected ? 'active' : '') + '" data-category-option="' + level + '" data-category-value="' + escapeHtml(value) + '">' + escapeHtml(item.label) + '<span>›</span></button>';
+    }).join('');
+  }
+
+  function renderCategoryMenu(row) {
+    const industry = categoryTree.find(function (item) { return item.label === row.dataset.categoryIndustry; }) || categoryTree[0];
+    const group = industry.children.find(function (item) { return item.label === row.dataset.categoryGroup; }) || industry.children[0];
+    row.dataset.categoryIndustry = industry.label;
+    row.dataset.categoryGroup = group.label;
+    const code = row.querySelector('[data-profit-field="category_code"]').value;
+    row.querySelector('[data-category-column="0"]').innerHTML = categoryButtons(categoryTree, 0, industry.label);
+    row.querySelector('[data-category-column="1"]').innerHTML = categoryButtons(industry.children, 1, group.label);
+    row.querySelector('[data-category-column="2"]').innerHTML = categoryButtons(group.children, 2, code);
+  }
+
+  function chooseCategory(row, level, value) {
+    if (level === 0) {
+      row.dataset.categoryIndustry = value;
+      const industry = categoryTree.find(function (item) { return item.label === value; });
+      row.dataset.categoryGroup = industry.children[0].label;
+      renderCategoryMenu(row);
+      return;
+    }
+    if (level === 1) {
+      row.dataset.categoryGroup = value;
+      renderCategoryMenu(row);
+      return;
+    }
+    const category = categoryByCode(value);
+    row.querySelector('[data-profit-field="category_code"]').value = value;
+    row.querySelector('.profit-category-path').textContent = category && category.path ? category.path.join(' / ') : value;
+    row.querySelector('.profit-category-popover').hidden = true;
+    openCategoryRow = null;
   }
 
   function addRow(seed) {
@@ -92,19 +108,20 @@
     const item = Object.assign({
       sku_name: 'SKU-' + String(rowSequence).padStart(3, '0'),
       category_code: 'bag-womens-womens-tote-bags',
-      weight_g: '200', product_cost_cny: '18.90', item_price: '79.90', affiliate_rate: '15.00'
+      weight_g: '200', product_cost_cny: '18.90', item_price: '79.90', affiliate_rate: '15.00', ad_cost_type: 'none', ad_cost_value: ''
     }, seed || {});
     const tr = document.createElement('tr');
     tr.dataset.profitRow = rowId;
     tr.innerHTML =
       '<td><input aria-label="SKU 名称" data-profit-field="sku_name" value="' + escapeHtml(item.sku_name) + '" /></td>' +
       '<td class="profit-category-cell"><input type="hidden" data-profit-field="category_code" />' +
-        '<div class="profit-category-cascade"><select aria-label="一级类目" data-category-level="0"></select><select aria-label="二级类目" data-category-level="1"></select><select aria-label="三级类目" data-category-level="2"></select></div>' +
-        '<small class="profit-category-path"></small></td>' +
+        '<button type="button" class="profit-category-trigger" data-category-open="' + rowId + '"><span class="profit-category-path"></span><b>⌄</b></button>' +
+        '<div class="profit-category-popover" hidden><div data-category-column="0"></div><div data-category-column="1"></div><div data-category-column="2"></div></div></td>' +
       '<td><div class="profit-unit-input"><input aria-label="重量" data-profit-field="weight_g" type="number" min="1" max="15000" step="1" value="' + escapeHtml(item.weight_g) + '" required /><span>g</span></div></td>' +
       '<td><input aria-label="商品成本" data-profit-field="product_cost_cny" type="number" min="0" step="0.01" value="' + escapeHtml(item.product_cost_cny) + '" /></td>' +
       '<td><input aria-label="售价" data-profit-field="item_price" type="number" min="0" step="0.01" value="' + escapeHtml(item.item_price) + '" required /></td>' +
       '<td><div class="profit-percent-input"><input aria-label="达人佣金率" data-profit-field="affiliate_rate" type="number" min="0" max="100" step="0.01" value="' + escapeHtml(item.affiliate_rate) + '" /><span>%</span></div></td>' +
+      '<td><div class="profit-ad-input"><select aria-label="实际广告数据类型" data-profit-field="ad_cost_type"><option value="none">不计广告</option><option value="roi">实际 ROI</option><option value="cpa_usd">单件 CPA（USD）</option><option value="ratio">广告费占收入（%）</option></select><input aria-label="实际广告数据" data-profit-field="ad_cost_value" type="number" min="0" step="0.01" value="' + escapeHtml(item.ad_cost_value) + '" placeholder="留空不计入" disabled /></div></td>' +
       '<td><button class="row-action danger" type="button" data-profit-remove="' + rowId + '" aria-label="删除此 SKU">删除</button></td>';
     el('profitSkuRows').appendChild(tr);
     populateCategoryPicker(tr, item.category_code);
@@ -113,6 +130,7 @@
   function collectRow(row) {
     const result = {};
     row.querySelectorAll('[data-profit-field]').forEach(function (field) { result[field.dataset.profitField] = field.value; });
+    if (result.ad_cost_type === 'none' || result.ad_cost_value === '') result.ad_cost_value = null;
     return result;
   }
 
@@ -127,17 +145,26 @@
   }
 
   function renderResult(result) {
-    el('profitNet').textContent = formatMoney(result.profit);
-    el('profitNetCny').textContent = displayCurrency === 'MYR' ? '≈ ' + formatMoney(result.profit, 'CNY') : '≈ ' + formatMoney(result.profit, 'MYR');
-    el('profitMargin').textContent = number(result.profit_rate).toFixed(2) + '%';
+    const primaryProfit = result.has_ad_cost ? result.net_profit : result.gross_profit;
+    const primaryMargin = result.has_ad_cost ? result.net_margin : result.gross_margin;
+    el('profitPrimaryLabel').textContent = result.has_ad_cost ? '净利润' : '广告前毛利';
+    el('profitMarginLabel').textContent = result.has_ad_cost ? '净利率' : '毛利率';
+    el('profitMarginHint').textContent = (result.has_ad_cost ? '净利润' : '广告前毛利') + ' ÷ 结算收入';
+    el('profitNet').textContent = formatMoney(primaryProfit);
+    el('profitNetCny').textContent = displayCurrency === 'MYR' ? '≈ ' + formatMoney(primaryProfit, 'CNY') : '≈ ' + formatMoney(primaryProfit, 'MYR');
+    el('profitMargin').textContent = number(primaryMargin).toFixed(2) + '%';
     el('profitCpa').textContent = '$ ' + number(result.break_even_cpa_usd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    el('profitRoas').textContent = result.break_even_roi == null ? '不可盈利' : number(result.break_even_roi).toFixed(2) + 'x';
+    el('profitRoas').textContent = result.break_even_roi == null ? '不可盈利' : number(result.break_even_roi).toFixed(2);
     el('profitRevenue').textContent = formatMoney(result.revenue);
-    el('profitTotalCosts').textContent = formatMoney(result.total_costs);
-    el('profitFormulaNet').textContent = formatMoney(result.profit);
+    el('profitCostsBeforeAds').textContent = formatMoney(result.costs_before_ads);
+    el('profitGross').textContent = formatMoney(result.gross_profit);
+    el('profitAdCost').textContent = result.has_ad_cost ? formatMoney(result.advertising_cost) : '未填写';
+    el('profitFormulaNet').textContent = result.has_ad_cost ? formatMoney(result.net_profit) : '未计算';
+    el('profitFormulaNetMargin').textContent = result.has_ad_cost ? number(result.net_margin).toFixed(2) + '%' : '未计算';
     el('profitResultVersion').textContent = '规则版本 ' + result.rule_version + ' · 当前显示 ' + displayCurrency;
     el('profitWarnings').innerHTML = result.warnings.map(function (warning) { return '<p>i ' + escapeHtml(warning) + '</p>'; }).join('');
     el('profitBreakdownCurrency').textContent = '金额(' + displayCurrency + ')';
+    let previousGroup = '';
     el('profitBreakdownRows').innerHTML = result.breakdown.map(function (row) {
       let rate = row.rate ? row.rate + '%' : '—';
       if (row.key === 'platform_commission') {
@@ -146,7 +173,9 @@
       const source = row.source ? '<a href="' + escapeHtml(row.source) + '" target="_blank" rel="noopener">' + sourceName(row.source) + '</a><small>' + escapeHtml(row.effective_date || '') + '</small>' : '<span>自动计算</span>';
       const prefix = row.kind === 'income' || row.kind === 'info' ? '' : '− ';
       const amount = prefix + formatMoney(row.amount);
-      return '<tr><td><strong>' + escapeHtml(row.label) + '</strong></td><td>' + escapeHtml(row.base || '—') + '</td><td>' + escapeHtml(rate) + '</td><td class="profit-amount ' + escapeHtml(row.kind) + '">' + amount + '</td><td class="profit-source">' + source + '</td></tr>';
+      const group = row.group === previousGroup ? '' : '<span class="profit-group-badge">' + escapeHtml(row.group || '其他') + '</span>';
+      previousGroup = row.group;
+      return '<tr><td>' + group + '</td><td><strong>' + escapeHtml(row.label) + '</strong></td><td>' + escapeHtml(row.base || '—') + '</td><td>' + escapeHtml(rate) + '</td><td>' + number(row.share).toFixed(2) + '%</td><td class="profit-amount ' + escapeHtml(row.kind) + '">' + amount + '</td><td class="profit-source">' + source + '</td></tr>';
     }).join('');
     el('profitResultPanel').hidden = false;
     el('profitResultPanel').dataset.lastResult = JSON.stringify(result);
@@ -212,8 +241,13 @@
       addRow({ product_cost_cny: '0.00', item_price: '0.00', affiliate_rate: '0.00' });
     });
     document.addEventListener('change', function (event) {
-      if (event.target.matches('[data-category-level]')) {
-        syncCategoryPicker(event.target.closest('[data-profit-row]'), Number(event.target.dataset.categoryLevel));
+      if (event.target.matches('[data-profit-field="ad_cost_type"]')) {
+        const row = event.target.closest('[data-profit-row]');
+        const input = row.querySelector('[data-profit-field="ad_cost_value"]');
+        const type = event.target.value;
+        input.disabled = type === 'none';
+        input.placeholder = type === 'roi' ? '例如 4.00' : (type === 'cpa_usd' ? '例如 5.00 USD' : (type === 'ratio' ? '例如 20.00%' : '留空不计入'));
+        if (type === 'none') input.value = '';
       }
       if (event.target.matches('#profitExchangeRate')) rerenderLastResult();
     });
@@ -224,6 +258,31 @@
         document.querySelectorAll('[data-profit-currency]').forEach(function (button) { button.classList.toggle('active', button === currency); });
         rerenderLastResult();
         return;
+      }
+      const categoryOption = event.target.closest('[data-category-option]');
+      if (categoryOption) {
+        chooseCategory(categoryOption.closest('[data-profit-row]'), Number(categoryOption.dataset.categoryOption), categoryOption.dataset.categoryValue);
+        return;
+      }
+      const categoryOpen = event.target.closest('[data-category-open]');
+      if (categoryOpen) {
+        const row = categoryOpen.closest('[data-profit-row]');
+        if (openCategoryRow && openCategoryRow !== row) openCategoryRow.querySelector('.profit-category-popover').hidden = true;
+        const popover = row.querySelector('.profit-category-popover');
+        popover.hidden = !popover.hidden;
+        if (!popover.hidden) {
+          const rect = categoryOpen.getBoundingClientRect();
+          const width = Math.min(680, window.innerWidth - 24);
+          popover.style.width = width + 'px';
+          popover.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)) + 'px';
+          popover.style.top = Math.max(12, Math.min(rect.bottom + 6, window.innerHeight - 330)) + 'px';
+        }
+        openCategoryRow = popover.hidden ? null : row;
+        return;
+      }
+      if (openCategoryRow && !event.target.closest('.profit-category-cell')) {
+        openCategoryRow.querySelector('.profit-category-popover').hidden = true;
+        openCategoryRow = null;
       }
       const remove = event.target.closest('[data-profit-remove]');
       if (!remove) return;
