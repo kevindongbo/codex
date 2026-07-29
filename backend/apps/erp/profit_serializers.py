@@ -19,6 +19,18 @@ class ProfitItemSerializer(serializers.Serializer):
     item_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"))
     product_cost_cny = serializers.DecimalField(required=False, default=Decimal("0"), max_digits=14, decimal_places=2, min_value=Decimal("0"))
     affiliate_rate = serializers.DecimalField(required=False, default=Decimal("0"), max_digits=6, decimal_places=2, min_value=Decimal("0"), max_value=Decimal("100"))
+    ad_cost_type = serializers.ChoiceField(
+        choices=("none", "roi", "cpa_usd", "ratio"),
+        required=False,
+        default="none",
+    )
+    ad_cost_value = serializers.DecimalField(
+        required=False,
+        allow_null=True,
+        max_digits=14,
+        decimal_places=4,
+        min_value=Decimal("0"),
+    )
 
 
 class ProfitCalculationSerializer(serializers.Serializer):

@@ -49,6 +49,9 @@ class ProfitCalculatorTests(TestCase):
         self.assertEqual(result["profit_rate"], "51.24")
         self.assertEqual(result["break_even_cpa_usd"], "9.97")
         self.assertEqual(result["break_even_roi"], "1.95")
+        self.assertEqual(result["gross_profit"], "42.43")
+        self.assertIsNone(result["net_profit"])
+        self.assertFalse(result["has_ad_cost"])
 
     def test_weight_rounds_up_to_the_next_official_kg_tier(self):
         payload = self.base_payload()
@@ -61,6 +64,28 @@ class ProfitCalculatorTests(TestCase):
         result = calculate_profit(self.base_payload(seller_type="local"))
         self.assertEqual(result["items"][0]["product_tax"], "0.00")
         self.assertEqual(result["items"][0]["affiliate_base"], "79.90")
+        self.assertEqual(result["items"][0]["buyer_shipping_fee"], "0.00")
+        self.assertEqual(result["items"][0]["seller_shipping_cost"], "0.00")
+        self.assertEqual(result["items"][0]["transaction_base"], "79.90")
+
+    def test_actual_ad_roi_calculates_net_profit_only_when_provided(self):
+        payload = self.base_payload()
+        payload["items"][0]["ad_cost_type"] = "roi"
+        payload["items"][0]["ad_cost_value"] = Decimal("4")
+        result = calculate_profit(payload)
+        self.assertEqual(result["advertising_cost"], "20.70")
+        self.assertEqual(result["gross_profit"], "42.43")
+        self.assertEqual(result["net_profit"], "21.73")
+        self.assertEqual(result["net_margin"], "26.24")
+        self.assertTrue(result["has_ad_cost"])
+
+    def test_actual_cpa_usd_converts_to_myr(self):
+        payload = self.base_payload()
+        payload["items"][0]["ad_cost_type"] = "cpa_usd"
+        payload["items"][0]["ad_cost_value"] = Decimal("5")
+        result = calculate_profit(payload)
+        self.assertEqual(result["advertising_cost"], "21.28")
+        self.assertEqual(result["net_profit"], "21.15")
 
     def test_lvg_threshold_uses_tax_exclusive_rm500_value(self):
         payload = self.base_payload()

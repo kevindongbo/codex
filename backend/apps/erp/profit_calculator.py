@@ -182,6 +182,21 @@ def inclusive_lvg_tax(item_price: Decimal, seller_type: str) -> Decimal:
     return money(item_price * LVG_RATE / (PERCENT + LVG_RATE))
 
 
+def advertising_cost(item_revenue: Decimal, item: dict, usd_per_myr: Decimal) -> Decimal:
+    """Return optional actual ad cost in MYR without guessing missing inputs."""
+    cost_type = item.get("ad_cost_type", "none")
+    value = decimal(item.get("ad_cost_value"))
+    if value <= 0 or cost_type == "none":
+        return Decimal("0.00")
+    if cost_type == "roi":
+        return money(item_revenue / value)
+    if cost_type == "cpa_usd":
+        return money(value / usd_per_myr)
+    if cost_type == "ratio":
+        return rate_amount(item_revenue, value)
+    return Decimal("0.00")
+
+
 def calculate_profit(payload: dict) -> dict:
     shop_identity = payload.get("shop_identity", "marketplace")
     seller_type = payload.get("seller_type", "cross_border")
@@ -197,25 +212,31 @@ def calculate_profit(payload: dict) -> dict:
         "transaction_fee": Decimal("0"),
         "affiliate_commission": Decimal("0"),
         "bxp_fee": Decimal("0"),
+        "advertising_cost": Decimal("0"),
     }
     sales_revenue = Decimal("0")
     buyer_shipping_total = Decimal("0")
     tax_total = Decimal("0")
     item_results = []
     support_exemptions = []
+    has_ad_cost = False
 
     for item in items:
         item_price = decimal(item["item_price"])
         weight_g = decimal(item["weight_g"])
         product_cost_cny = decimal(item.get("product_cost_cny", 0))
         affiliate_rate = decimal(item.get("affiliate_rate", 0))
-        shipping_tier, shipping_fee = shipping_estimate(weight_g)
+        shipping_tier, standard_shipping_fee = shipping_estimate(weight_g)
+        shipping_fee = standard_shipping_fee if seller_type == "cross_border" else Decimal("0.00")
         product_tax = inclusive_lvg_tax(item_price, seller_type)
         affiliate_base = max(Decimal("0"), item_price - product_tax)
 
         rule = resolve_category(item["category_code"])
         commission_rate = rule.rate(shop_identity, bxp)
         bxp_fee = min(rate_amount(item_price, BXP_RATE), BXP_FEE_CAP) if bxp else Decimal("0.00")
+        item_revenue = money(item_price + shipping_fee)
+        item_ad_cost = advertising_cost(item_revenue, item, usd_per_myr)
+        has_ad_cost = has_ad_cost or item_ad_cost > 0
         line_fees = {
             "product_cost": money(product_cost_cny / cny_per_myr),
             "seller_shipping_cost": money(shipping_fee),
@@ -223,6 +244,7 @@ def calculate_profit(payload: dict) -> dict:
             "transaction_fee": rate_amount(item_price + shipping_fee, TRANSACTION_RATE),
             "affiliate_commission": rate_amount(affiliate_base, affiliate_rate),
             "bxp_fee": bxp_fee,
+            "advertising_cost": item_ad_cost,
         }
 
         sales_revenue += item_price
@@ -239,13 +261,16 @@ def calculate_profit(payload: dict) -> dict:
             "shipping_tier_kg": shipping_tier,
             "buyer_shipping_fee": str(money(shipping_fee)),
             "seller_shipping_cost": str(money(shipping_fee)),
+            "shipping_estimate": str(money(standard_shipping_fee)),
             "product_tax": str(product_tax),
-            "revenue": str(money(item_price + shipping_fee)),
+            "revenue": str(item_revenue),
             "commission_base": str(money(item_price)),
             "transaction_base": str(money(item_price + shipping_fee)),
             "affiliate_base": str(money(affiliate_base)),
             "commission_rate": str(commission_rate),
             "affiliate_rate": str(affiliate_rate),
+            "ad_cost_type": item.get("ad_cost_type", "none"),
+            "ad_cost_value": str(decimal(item.get("ad_cost_value"))),
             "fees": {key: str(money(value)) for key, value in line_fees.items()},
         })
 
@@ -258,30 +283,59 @@ def calculate_profit(payload: dict) -> dict:
         else PLATFORM_SUPPORT_FEE
     )
     fee_totals = {key: money(value) for key, value in fee_totals.items()}
-    total_costs = money(sum(fee_totals.values(), Decimal("0")) + support_fee)
-    profit = money(revenue - total_costs)
-    profit_rate = money(profit / revenue * PERCENT) if revenue else Decimal("0.00")
-    break_even_roi = money(revenue / profit) if profit > 0 else None
-    break_even_cpa_usd = money(profit * usd_per_myr)
+    advertising_cost_total = fee_totals["advertising_cost"]
+    costs_before_ads = money(
+        sum((value for key, value in fee_totals.items() if key != "advertising_cost"), Decimal("0"))
+        + support_fee
+    )
+    gross_profit = money(revenue - costs_before_ads)
+    gross_margin = money(gross_profit / revenue * PERCENT) if revenue else Decimal("0.00")
+    net_profit = money(gross_profit - advertising_cost_total) if has_ad_cost else None
+    net_margin = (
+        money(net_profit / revenue * PERCENT)
+        if net_profit is not None and revenue
+        else None
+    )
+    total_costs = money(costs_before_ads + advertising_cost_total)
+    break_even_roi = money(revenue / gross_profit) if gross_profit > 0 else None
+    break_even_cpa_usd = money(gross_profit * usd_per_myr)
+
+    def breakdown_row(key, label, amount, kind, base, group, **extra):
+        row = {
+            "key": key,
+            "label": label,
+            "amount": str(money(amount)),
+            "kind": kind,
+            "base": base,
+            "group": group,
+            "share": str(money(decimal(amount) / revenue * PERCENT)) if revenue else "0.00",
+        }
+        row.update(extra)
+        return row
 
     breakdown = [
-        {"key": "sales_revenue", "label": "商品销售收入", "amount": str(sales_revenue), "kind": "income", "base": "商品售价"},
-        {"key": "buyer_shipping_fee", "label": "买家支付运费（自动）", "amount": str(buyer_shipping_total), "kind": "income", "base": "重量向上取整至 kg 档 · 官方全国线路中位数", "source": SHIPPING_SOURCE, "effective_date": "2026-05-13"},
-        {"key": "product_cost", "label": "商品成本", "amount": str(fee_totals["product_cost"]), "kind": "cost", "base": "人民币成本 ÷ 汇率"},
-        {"key": "seller_shipping_cost", "label": "卖家承担运费（自动）", "amount": str(fee_totals["seller_shipping_cost"]), "kind": "cost", "base": "重量向上取整至 kg 档 · 官方全国线路中位数", "source": SHIPPING_CALCULATION_SOURCE, "effective_date": "2026-05-13"},
-        {"key": "platform_commission", "label": "平台佣金", "amount": str(fee_totals["platform_commission"]), "kind": "fee", "base": "商品售价（卖家折扣固定为 0）", "source": COMMISSION_SOURCE, "effective_date": "2026-06-06"},
-        {"key": "transaction_fee", "label": "交易手续费", "amount": str(fee_totals["transaction_fee"]), "kind": "fee", "base": "商品售价 + 买家运费", "rate": str(TRANSACTION_RATE), "source": TRANSACTION_SOURCE, "effective_date": "2026-02-15"},
-        {"key": "affiliate_commission", "label": "达人佣金", "amount": str(fee_totals["affiliate_commission"]), "kind": "fee", "base": "含税售价 − 自动拆分的 LVG 商品税", "source": AFFILIATE_SOURCE, "effective_date": "2026-02-19"},
-        {"key": "lvg_product_tax", "label": "LVG 商品税（自动识别）", "amount": str(money(tax_total)), "kind": "info", "base": "跨境且税前货值 ≤ RM500：含税售价 × 10/110；不重复计入卖家成本", "rate": str(LVG_RATE) if seller_type == "cross_border" else "0", "source": LVG_TAX_SOURCE, "effective_date": "2024-01-01"},
-        {"key": "bxp_fee", "label": "BXP 服务费", "amount": str(fee_totals["bxp_fee"]), "kind": "fee", "base": "商品售价；每件最高 RM54", "rate": str(BXP_RATE) if bxp else "0", "source": COMMISSION_SOURCE, "effective_date": "2025-09-13"},
-        {"key": "platform_support_fee", "label": "平台支持费", "amount": str(support_fee), "kind": "fee", "base": "每个已妥投订单一次；指定基础类目自动豁免", "source": SUPPORT_FEE_SOURCE, "effective_date": "2026-02-15"},
+        breakdown_row("sales_revenue", "商品销售收入", sales_revenue, "income", "商品售价", "收入"),
+        breakdown_row("buyer_shipping_fee", "买家支付运费（自动）", buyer_shipping_total, "income", "跨境发货：重量向上取整至 kg 档；本土发货：0", "收入", source=SHIPPING_SOURCE, effective_date="2026-05-13"),
+        breakdown_row("product_cost", "商品成本", fee_totals["product_cost"], "cost", "人民币成本 ÷ 汇率", "商品"),
+        breakdown_row("seller_shipping_cost", "卖家承担运费（自动）", fee_totals["seller_shipping_cost"], "cost", "跨境发货：官方全国线路中位数；本土发货：0", "物流", source=SHIPPING_CALCULATION_SOURCE, effective_date="2026-05-13"),
+        breakdown_row("platform_commission", "平台佣金", fee_totals["platform_commission"], "fee", "商品售价（卖家折扣固定为 0）", "平台", source=COMMISSION_SOURCE, effective_date="2026-06-06"),
+        breakdown_row("transaction_fee", "交易手续费", fee_totals["transaction_fee"], "fee", "商品售价 + 买家支付运费", "平台", rate=str(TRANSACTION_RATE), source=TRANSACTION_SOURCE, effective_date="2026-02-15"),
+        breakdown_row("bxp_fee", "BXP 服务费", fee_totals["bxp_fee"], "fee", "商品售价；每件最高 RM54", "平台", rate=str(BXP_RATE) if bxp else "0", source=COMMISSION_SOURCE, effective_date="2025-09-13"),
+        breakdown_row("platform_support_fee", "平台支持费", support_fee, "fee", "每个已妥投订单一次；指定基础类目自动豁免", "平台", source=SUPPORT_FEE_SOURCE, effective_date="2026-02-15"),
+        breakdown_row("affiliate_commission", "达人佣金", fee_totals["affiliate_commission"], "fee", "含税售价 − 自动拆分的 LVG 商品税", "推广", source=AFFILIATE_SOURCE, effective_date="2026-02-19"),
+        breakdown_row("lvg_product_tax", "LVG 商品税（售价内拆分）", tax_total, "info", "跨境且税前货值 ≤ RM500：含税售价 × 10/110；不重复扣除", "税费", rate=str(LVG_RATE) if seller_type == "cross_border" else "0", source=LVG_TAX_SOURCE, effective_date="2024-01-01"),
+        breakdown_row("advertising_cost", "实际广告成本", advertising_cost_total, "cost", "仅在填写实际 ROI、CPA 或广告费占比后计入", "广告"),
     ]
 
     warnings = [
         "运费只根据重量估算：采用 TikTok Shop 马来西亚官方标准配送费率表的全国线路中位数；实际费用仍会受寄出州、收件州、体积重和物流商复称影响。",
         "LVG 10% 为买家税，平台代收代缴；本页仅从含税售价中拆分税额用于达人佣金基数，不将其重复扣作卖家成本。",
-        "结果按正常平台费率估算，不含临时补贴、活动减免、退款调整、广告花费或税前货值超过 RM500 后可能发生的进口税费。",
+        "结果按正常平台费率估算，不含临时补贴、活动减免、退款调整或税前货值超过 RM500 后可能发生的进口税费。",
     ]
+    if seller_type == "local":
+        warnings.insert(0, "本土发货按你的业务口径采用免运费模型：买家支付运费和卖家承担运费均为 0。")
+    if not has_ad_cost:
+        warnings.append("尚未填写实际广告数据；当前展示广告前毛利，不生成净利润和净利率。")
     if any(decimal(item["item_price"]) > LVG_TAX_INCLUSIVE_LIMIT for item in items) and seller_type == "cross_border":
         warnings.append("存在税前货值超过 RM500 的商品：不适用 LVG 规则；进口税费需要 HS 编码和海关估值，本页未猜测计入。")
 
@@ -289,15 +343,22 @@ def calculate_profit(payload: dict) -> dict:
         "currency": "MYR",
         "revenue": str(revenue),
         "total_costs": str(total_costs),
-        "profit": str(profit),
-        "profit_rate": str(profit_rate),
-        "break_even_cpa": str(profit),
+        "costs_before_ads": str(costs_before_ads),
+        "advertising_cost": str(advertising_cost_total),
+        "gross_profit": str(gross_profit),
+        "gross_margin": str(gross_margin),
+        "net_profit": str(net_profit) if net_profit is not None else None,
+        "net_margin": str(net_margin) if net_margin is not None else None,
+        "has_ad_cost": has_ad_cost,
+        "profit": str(gross_profit),
+        "profit_rate": str(gross_margin),
+        "break_even_cpa": str(gross_profit),
         "break_even_cpa_usd": str(break_even_cpa_usd),
         "break_even_roi": str(break_even_roi) if break_even_roi is not None else None,
         "break_even_roas": str(break_even_roi) if break_even_roi is not None else None,
         "items": item_results,
         "breakdown": breakdown,
-        "rule_version": "MY-TTS-2026-07-28-v2",
+        "rule_version": "MY-TTS-2026-07-29-v3",
         "rule_effective_date": str(RULE_EFFECTIVE_DATE),
         "warnings": warnings,
     }
