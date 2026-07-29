@@ -4,11 +4,12 @@ All percentages and shipping tiers are versioned locally from primary sources.
 The calculator never calls a third-party calculator at runtime.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from .profit_category_data import CATEGORY_ROWS
+from .profit_category_taxonomy import CATEGORY_TAXONOMY, iter_taxonomy_leaves
 
 
 MONEY = Decimal("0.01")
@@ -93,6 +94,19 @@ CATEGORY_RULES = {
     for row in CATEGORY_ROWS
 }
 
+# The public commission table stops at the fee-bearing category group.  Expose
+# a practical three-level selector for the two product families used by this
+# ERP, while inheriting each terminal category's fee rates from its official
+# TikTok Shop Malaysia group.
+for root_label, group_label, code, label, parent_code in iter_taxonomy_leaves():
+    CATEGORY_RULES[code] = replace(
+        CATEGORY_RULES[parent_code],
+        code=code,
+        industry=root_label,
+        level_one=group_label,
+        level_two=label,
+    )
+
 # Preserve payload compatibility with the first calculator release.
 LEGACY_CATEGORY_ALIASES = {
     "womens_bags": "bag-womens-womens-tote-bags",
@@ -147,23 +161,22 @@ def category_config():
 
 
 def category_tree():
-    tree = []
-    industries = {}
-    for rule in CATEGORY_RULES.values():
-        industry = industries.get(rule.industry)
-        if industry is None:
-            industry = {"label": rule.industry, "children": []}
-            industries[rule.industry] = industry
-            tree.append(industry)
-        level_one = next(
-            (item for item in industry["children"] if item["label"] == rule.level_one),
-            None,
-        )
-        if level_one is None:
-            level_one = {"label": rule.level_one, "children": []}
-            industry["children"].append(level_one)
-        level_one["children"].append({"code": rule.code, "label": rule.level_two})
-    return tree
+    return [
+        {
+            "label": category_root["label"],
+            "children": [
+                {
+                    "label": category_group["label"],
+                    "children": [
+                        {"code": code, "label": label}
+                        for code, label in category_group["children"]
+                    ],
+                }
+                for category_group in category_root["children"]
+            ],
+        }
+        for category_root in CATEGORY_TAXONOMY
+    ]
 
 
 def shipping_estimate(weight_g: Decimal) -> tuple[int, Decimal]:
@@ -299,6 +312,32 @@ def calculate_profit(payload: dict) -> dict:
     total_costs = money(costs_before_ads + advertising_cost_total)
     break_even_roi = money(revenue / gross_profit) if gross_profit > 0 else None
     break_even_cpa_usd = money(gross_profit * usd_per_myr)
+    platform_fee_total = money(
+        fee_totals["platform_commission"]
+        + fee_totals["transaction_fee"]
+        + fee_totals["bxp_fee"]
+        + support_fee
+    )
+    estimated_platform_payout = money(
+        revenue
+        - platform_fee_total
+        - fee_totals["affiliate_commission"]
+        - fee_totals["seller_shipping_cost"]
+    )
+    amount_summary = {
+        "sales_revenue": str(sales_revenue),
+        "buyer_shipping_revenue": str(buyer_shipping_total),
+        "settlement_revenue": str(revenue),
+        "platform_fees": str(platform_fee_total),
+        "affiliate_commission": str(fee_totals["affiliate_commission"]),
+        "logistics_cost": str(fee_totals["seller_shipping_cost"]),
+        "estimated_platform_payout": str(estimated_platform_payout),
+        "product_cost": str(fee_totals["product_cost"]),
+        "gross_profit": str(gross_profit),
+        "advertising_cost": str(advertising_cost_total),
+        "net_profit": str(net_profit) if net_profit is not None else None,
+        "net_margin": str(net_margin) if net_margin is not None else None,
+    }
 
     def breakdown_row(key, label, amount, kind, base, group, **extra):
         row = {
@@ -314,17 +353,17 @@ def calculate_profit(payload: dict) -> dict:
         return row
 
     breakdown = [
-        breakdown_row("sales_revenue", "商品销售收入", sales_revenue, "income", "商品售价", "收入"),
-        breakdown_row("buyer_shipping_fee", "买家支付运费（自动）", buyer_shipping_total, "income", "跨境发货：重量向上取整至 kg 档；本土发货：0", "收入", source=SHIPPING_SOURCE, effective_date="2026-05-13"),
-        breakdown_row("product_cost", "商品成本", fee_totals["product_cost"], "cost", "人民币成本 ÷ 汇率", "商品"),
-        breakdown_row("seller_shipping_cost", "卖家承担运费（自动）", fee_totals["seller_shipping_cost"], "cost", "跨境发货：官方全国线路中位数；本土发货：0", "物流", source=SHIPPING_CALCULATION_SOURCE, effective_date="2026-05-13"),
-        breakdown_row("platform_commission", "平台佣金", fee_totals["platform_commission"], "fee", "商品售价（卖家折扣固定为 0）", "平台", source=COMMISSION_SOURCE, effective_date="2026-06-06"),
-        breakdown_row("transaction_fee", "交易手续费", fee_totals["transaction_fee"], "fee", "商品售价 + 买家支付运费", "平台", rate=str(TRANSACTION_RATE), source=TRANSACTION_SOURCE, effective_date="2026-02-15"),
-        breakdown_row("bxp_fee", "BXP 服务费", fee_totals["bxp_fee"], "fee", "商品售价；每件最高 RM54", "平台", rate=str(BXP_RATE) if bxp else "0", source=COMMISSION_SOURCE, effective_date="2025-09-13"),
-        breakdown_row("platform_support_fee", "平台支持费", support_fee, "fee", "每个已妥投订单一次；指定基础类目自动豁免", "平台", source=SUPPORT_FEE_SOURCE, effective_date="2026-02-15"),
-        breakdown_row("affiliate_commission", "达人佣金", fee_totals["affiliate_commission"], "fee", "含税售价 − 自动拆分的 LVG 商品税", "推广", source=AFFILIATE_SOURCE, effective_date="2026-02-19"),
-        breakdown_row("lvg_product_tax", "LVG 商品税（售价内拆分）", tax_total, "info", "跨境且税前货值 ≤ RM500：含税售价 × 10/110；不重复扣除", "税费", rate=str(LVG_RATE) if seller_type == "cross_border" else "0", source=LVG_TAX_SOURCE, effective_date="2024-01-01"),
-        breakdown_row("advertising_cost", "实际广告成本", advertising_cost_total, "cost", "仅在填写实际 ROI、CPA 或广告费占比后计入", "广告"),
+        breakdown_row("sales_revenue", "商品售价合计", sales_revenue, "income", "各 SKU 售价合计", "收入"),
+        breakdown_row("buyer_shipping_fee", "买家运费收入（系统估算）", buyer_shipping_total, "income", "跨境发货：重量向上取整至 kg 档；本土发货：0", "收入", source=SHIPPING_SOURCE, effective_date="2026-05-13"),
+        breakdown_row("product_cost", "商品采购成本", fee_totals["product_cost"], "cost", "人民币采购成本 ÷ 汇率", "商品"),
+        breakdown_row("seller_shipping_cost", "物流履约成本（系统估算）", fee_totals["seller_shipping_cost"], "cost", "跨境发货：官方全国线路中位数；本土发货：0", "物流", source=SHIPPING_CALCULATION_SOURCE, effective_date="2026-05-13"),
+        breakdown_row("platform_commission", "类目佣金", fee_totals["platform_commission"], "fee", "商品售价（卖家折扣固定为 0）", "平台代扣", source=COMMISSION_SOURCE, effective_date="2026-06-06"),
+        breakdown_row("transaction_fee", "支付交易手续费", fee_totals["transaction_fee"], "fee", "商品售价 + 买家运费收入", "平台代扣", rate=str(TRANSACTION_RATE), source=TRANSACTION_SOURCE, effective_date="2026-02-15"),
+        breakdown_row("bxp_fee", "BXP 增值服务费", fee_totals["bxp_fee"], "fee", "商品售价；每件最高 RM54", "平台代扣", rate=str(BXP_RATE) if bxp else "0", source=COMMISSION_SOURCE, effective_date="2025-09-13"),
+        breakdown_row("platform_support_fee", "每单平台支持费", support_fee, "fee", "每个已妥投订单一次；指定基础类目自动豁免", "平台代扣", source=SUPPORT_FEE_SOURCE, effective_date="2026-02-15"),
+        breakdown_row("affiliate_commission", "达人推广佣金", fee_totals["affiliate_commission"], "fee", "含税售价 − 自动拆分的 LVG 商品税", "推广代扣", source=AFFILIATE_SOURCE, effective_date="2026-02-19"),
+        breakdown_row("lvg_product_tax", "LVG 商品税（售价内含）", tax_total, "info", "跨境且税前货值 ≤ RM500：含税售价 × 10/110；仅展示税额，不重复扣除", "税费说明", rate=str(LVG_RATE) if seller_type == "cross_border" else "0", source=LVG_TAX_SOURCE, effective_date="2024-01-01"),
+        breakdown_row("advertising_cost", "实际广告投入", advertising_cost_total, "cost", "仅在填写实际 ROI、CPA 或广告费占比后计入", "广告投放"),
     ]
 
     warnings = [
@@ -358,7 +397,8 @@ def calculate_profit(payload: dict) -> dict:
         "break_even_roas": str(break_even_roi) if break_even_roi is not None else None,
         "items": item_results,
         "breakdown": breakdown,
-        "rule_version": "MY-TTS-2026-07-29-v3",
+        "amount_summary": amount_summary,
+        "rule_version": "MY-TTS-2026-07-29-v4",
         "rule_effective_date": str(RULE_EFFECTIVE_DATE),
         "warnings": warnings,
     }
