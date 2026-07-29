@@ -186,8 +186,8 @@ body:has(.primary-nav-item[data-module="profit"].active) .sidebar-module[data-si
 .profit-category-popover button:hover { background: #f2f7f7; }
 .profit-category-popover button.active { color: #0c6265; background: #dceeed; font-weight: 850; }
 .profit-ad-cell { min-width: 0; padding-inline: 12px !important; border-left: 1px solid #edf1f5; background: #fbfcfe; }
-.profit-ad-input { width: 100%; min-width: 0; padding: 4px; border: 1px solid #e0e7ee; border-radius: 10px; background: #f3f6f9; display: grid; grid-template-columns: minmax(132px, 1.08fr) minmax(104px, .92fr); align-items: stretch; gap: 5px; }
-.profit-ad-input select, .profit-ad-input input { width: 100%; min-width: 0; height: 36px; border-color: transparent; border-radius: 7px; font-size: 10px; }
+.profit-ad-input { width: 100%; min-width: 0; padding: 4px; border: 1px solid #e0e7ee; border-radius: 10px; background: #f3f6f9; display: grid; grid-template-columns: minmax(132px, 1.08fr) minmax(104px, .92fr); align-items: center; gap: 5px; }
+.profit-input-table .profit-ad-input > select, .profit-input-table .profit-ad-input > input { width: 100%; min-width: 0; height: 42px; min-height: 42px; margin: 0; padding: 0 12px; border-color: transparent; border-radius: 7px; box-sizing: border-box; align-self: center; font-size: 10px; line-height: 1.2; }
 .profit-ad-input select:focus, .profit-ad-input input:focus { border-color: rgba(15,139,141,.68); }
 .profit-ad-input input:disabled { color: #9aa7b3; background: #f3f6f8; }
 .profit-unit-input { position: relative; }
