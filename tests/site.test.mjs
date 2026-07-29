@@ -36,18 +36,39 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260729-profit-input-align-9/);
+  assert.match(html, /styles\.css\?v=20260730-erp-polish-10/);
   assert.match(html, /team\.js\?v=20260728-profit-calculator-server-1/);
-  assert.match(html, /profit-calculator\.js\?v=20260729-profit-input-align-9/);
-  assert.match(html, /app\.js\?v=20260729-profit-input-align-9/);
+  assert.match(html, /profit-calculator\.js\?v=20260730-erp-polish-10/);
+  assert.match(html, /app\.js\?v=20260730-erp-polish-10/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
 
 test("keeps the profit advertising controls on one visual baseline", async () => {
   const css = await (await fetchPath("/styles.css")).text();
-  assert.match(css, /\.profit-ad-input\s*\{[^}]*height:\s*52px;[^}]*display:\s*flex;[^}]*align-items:\s*stretch;/s);
-  assert.match(css, /\.profit-input-table \.profit-ad-input > select, \.profit-input-table \.profit-ad-input > input\s*\{[^}]*height:\s*42px !important;[^}]*margin:\s*0 !important;/s);
+  assert.match(css, /\.profit-ad-input\s*\{[^}]*height:\s*52px;[^}]*display:\s*grid;[^}]*grid-template-rows:\s*42px;[^}]*align-items:\s*center;/s);
+  assert.match(css, /\.profit-input-table \.profit-ad-input > select, \.profit-input-table \.profit-ad-input > input\s*\{[^}]*height:\s*42px !important;[^}]*min-height:\s*42px !important;[^}]*max-height:\s*42px !important;[^}]*margin:\s*0 !important;/s);
+});
+
+test("keeps the ERP polish controls and daily exchange-rate workflow wired", async () => {
+  const [html, appScript, profitScript] = await Promise.all([
+    (await fetchPath("/index.html")).text(),
+    (await fetchPath("/app.js")).text(),
+    (await fetchPath("/profit-calculator.js")).text(),
+  ]);
+  assert.ok(html.indexOf('data-module="selection"') > html.indexOf('data-module="profit"'));
+  assert.doesNotMatch(html, /id="openProductModal"/);
+  assert.match(html, /data-transfer-filter="open"/);
+  assert.match(html, /data-transfer-filter="closed"/);
+  assert.match(html, /id="batchWeight3"[^>]*value="40"/);
+  assert.match(html, /id="batchWeight7"[^>]*value="30"/);
+  assert.match(html, /id="batchWeight15"[^>]*value="20"/);
+  assert.match(html, /id="batchWeight30"[^>]*value="10"/);
+  assert.match(html, /id="profitRateAuto"/);
+  assert.match(html, /id="profitRateManual"/);
+  assert.match(appScript, /purchase-detail-list/);
+  assert.match(appScript, /velocity3 \* 0\.4 \+ velocity7 \* 0\.3 \+ velocity15 \* 0\.2 \+ velocity30 \* 0\.1/);
+  assert.match(profitScript, /profit-calculator\/exchange-rates\//);
 });
 
 test("keeps profit rules on a dedicated route and collapses fee bases by default", async () => {
@@ -171,9 +192,9 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /receiveTransfer/);
   assert.match(scriptText, /replenishmentPolicies/);
   assert.match(scriptText, /localReplenishmentRecommendation/);
-  assert.match(scriptText, /velocity7 \* 0\.5 \+ velocity15 \* 0\.3 \+ velocity30 \* 0\.2/);
+  assert.match(scriptText, /velocity3 \* 0\.4 \+ velocity7 \* 0\.3 \+ velocity15 \* 0\.2 \+ velocity30 \* 0\.1/);
   assert.match(scriptText, /safetyMarginRatio/);
-  assert.match(scriptText, /calculation-basis/);
+  assert.match(scriptText, /purchase-detail-list/);
   assert.match(scriptText, /fillSnapshotHint/);
   assert.match(scriptText, /reserved > balance\.onHand/);
   assert.match(scriptText, /modal\.classList\.add\('open'\)/);
