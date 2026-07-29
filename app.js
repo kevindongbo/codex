@@ -94,6 +94,8 @@ let purchaseFilter = 'open';
 let orderFilter = 'open';
 let inventoryFilter = 'all';
 let inventorySection = 'list';
+let profitView = 'calculator';
+let profitScrollTarget = 'profitInputPanel';
 let chartMetric = 'sales';
 let searchTerm = '';
 let pendingConfirm = null;
@@ -1424,6 +1426,7 @@ function setRoute(module, subtab) {
   state.ui.module = module;
   if (module === 'warehouse' && subtab) state.ui.warehouseTab = subtab;
   if (module === 'competitors' && subtab) state.ui.competitorTab = subtab;
+  if (module === 'profit') profitView = ['calculator', 'rules'].includes(subtab) ? subtab : 'calculator';
   let route = '#' + module;
   if (module === 'products' && productFilter !== 'all') route += '/' + productFilter;
   if (module === 'warehouse') {
@@ -1436,6 +1439,7 @@ function setRoute(module, subtab) {
     }
   }
   if (module === 'competitors') route += '/' + state.ui.competitorTab;
+  if (module === 'profit' && profitView === 'rules') route += '/rules';
   history.replaceState(null, '', route);
   saveUiQuietly();
   closeSidebar();
@@ -1455,6 +1459,7 @@ function applyHashRoute() {
     }
   }
   if (parts[0] === 'competitors' && ['products', 'snapshots', 'trends', 'alerts'].includes(parts[1])) state.ui.competitorTab = parts[1];
+  if (parts[0] === 'profit') profitView = parts[1] === 'rules' ? 'rules' : 'calculator';
 }
 function renderNavigation() {
   $$('[data-module]').forEach(function (button) {
@@ -1482,6 +1487,9 @@ function renderNavigation() {
   });
   $$('[data-competitor-page]').forEach(function (page) {
     page.hidden = page.dataset.competitorPage !== state.ui.competitorTab;
+  });
+  $$('[data-profit-view-page]').forEach(function (page) {
+    page.hidden = state.ui.module !== 'profit' || page.dataset.profitViewPage !== profitView;
   });
 }
 
@@ -1511,8 +1519,8 @@ function renderSidebar() {
     if (state.ui.module === 'selection' && button.dataset.selectionScroll) {
       active = button.dataset.selectionScroll === 'selectionKeywordPanel';
     }
-    if (state.ui.module === 'profit' && button.dataset.scrollTarget) {
-      active = button.dataset.scrollTarget === 'profitInputPanel';
+    if (state.ui.module === 'profit' && button.dataset.profitView) {
+      active = button.dataset.profitView === profitView && (profitView === 'rules' || button.dataset.scrollTarget === profitScrollTarget);
     }
     button.classList.toggle('active', active);
     if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
@@ -1579,9 +1587,11 @@ function handleSideLink(button) {
     return;
   }
   if (button.dataset.competitorView) setRoute('competitors', button.dataset.competitorView);
-  if (state.ui.module === 'profit' && button.dataset.scrollTarget) {
-    closeSidebar();
-    scrollToPanel(button.dataset.scrollTarget);
+  if (button.dataset.profitView) {
+    profitScrollTarget = button.dataset.scrollTarget || 'profitInputPanel';
+    setRoute('profit', button.dataset.profitView);
+    if (button.dataset.scrollTarget) setTimeout(function () { scrollToPanel(button.dataset.scrollTarget); }, 0);
+    else window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
 
