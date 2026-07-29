@@ -10,6 +10,7 @@ const sources = {
   "/index.html": { file: "index.html", type: "text/html; charset=utf-8" },
   "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
   "/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
+  "/profit-calculator.js": { file: "profit-calculator.js", type: "text/javascript; charset=utf-8" },
   "/team.js": { file: "team.js", type: "text/javascript; charset=utf-8" },
   "/runtime-config.js": { file: "runtime-config.js", type: "text/javascript; charset=utf-8" },
   "/assets/og-dongbo-crossborder.png": {
