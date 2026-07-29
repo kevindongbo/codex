@@ -5,7 +5,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.erp.models import Membership, Organization
-from apps.erp.profit_calculator import calculate_profit
+from apps.erp.profit_calculator import calculate_profit, category_tree
 
 
 class ProfitCalculatorTests(TestCase):
@@ -52,6 +52,20 @@ class ProfitCalculatorTests(TestCase):
         self.assertEqual(result["gross_profit"], "42.43")
         self.assertIsNone(result["net_profit"])
         self.assertFalse(result["has_ad_cost"])
+        self.assertEqual(result["amount_summary"], {
+            "sales_revenue": "79.90",
+            "buyer_shipping_revenue": "2.90",
+            "settlement_revenue": "82.80",
+            "platform_fees": "15.32",
+            "affiliate_commission": "10.90",
+            "logistics_cost": "2.90",
+            "estimated_platform_payout": "53.68",
+            "product_cost": "11.25",
+            "gross_profit": "42.43",
+            "advertising_cost": "0.00",
+            "net_profit": None,
+            "net_margin": None,
+        })
 
     def test_weight_rounds_up_to_the_next_official_kg_tier(self):
         payload = self.base_payload()
@@ -116,6 +130,25 @@ class ProfitCalculatorTests(TestCase):
         result = calculate_profit(payload)
         self.assertEqual(result["items"][0]["fees"]["bxp_fee"], "54.00")
 
+    def test_terminal_beauty_category_inherits_official_group_rate(self):
+        payload = self.base_payload()
+        payload["items"][0]["category_code"] = "beauty-skincare-cleanser"
+        item = calculate_profit(payload)["items"][0]
+        self.assertEqual(item["category"], "美妆个护 / 护肤 / 洁面")
+        self.assertEqual(item["commission_rate"], "15.12")
+
+    def test_operator_tree_contains_complete_bag_and_beauty_groups(self):
+        tree = category_tree()
+        self.assertEqual([node["label"] for node in tree], ["箱包", "美妆个护"])
+        bags, beauty = tree
+        self.assertEqual(
+            [node["label"] for node in bags["children"]],
+            ["女包", "男包", "旅行箱包", "功能箱包", "箱包配件"],
+        )
+        self.assertEqual(len(beauty["children"]), 16)
+        self.assertGreaterEqual(sum(len(node["children"]) for node in bags["children"]), 60)
+        self.assertGreaterEqual(sum(len(node["children"]) for node in beauty["children"]), 120)
+
 
 class ProfitCalculatorApiTests(TestCase):
     def setUp(self):
@@ -132,7 +165,10 @@ class ProfitCalculatorApiTests(TestCase):
         self.assertEqual(response.data["platform_support_fee"], "0.54")
         self.assertEqual(response.data["lvg_rate"], "10.00")
         self.assertGreater(len(response.data["categories"]), 240)
-        self.assertTrue(response.data["category_tree"])
+        self.assertEqual(
+            [node["label"] for node in response.data["category_tree"]],
+            ["箱包", "美妆个护"],
+        )
         self.assertEqual(len(response.data["categories"][0]["path"]), 3)
         self.assertTrue(response.data["sources"]["lvg_tax"].startswith("https://mysst.customs.gov.my/"))
 
