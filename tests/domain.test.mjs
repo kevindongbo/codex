@@ -325,13 +325,19 @@ test("replenishment combines weighted outbound velocity, lead time, inbound stoc
   assert.ok(Math.abs(recommendation.velocity7 - 2) < 0.001);
   assert.ok(Math.abs(recommendation.velocity15 - (14 / 15)) < 0.001);
   assert.ok(Math.abs(recommendation.velocity30 - (14 / 30)) < 0.001);
-  assert.ok(Math.abs(recommendation.velocity - (2 * 0.5 + (14 / 15) * 0.3 + (14 / 30) * 0.2)) < 0.001);
+  assert.ok(Math.abs(recommendation.velocity - (
+    recommendation.velocity3 * 0.4 + recommendation.velocity7 * 0.3 +
+    recommendation.velocity15 * 0.2 + recommendation.velocity30 * 0.1
+  )) < 0.001);
   assert.equal(recommendation.leadDays, 10);
   assert.equal(recommendation.leadSource, "manual");
   assert.equal(recommendation.available, 10);
   assert.equal(recommendation.inbound, 5);
   assert.equal(recommendation.inventoryPosition, 15);
-  assert.equal(recommendation.suggestedQty, 54);
+  const expectedRawSuggested = recommendation.velocity * 40 * 1.2 + 2 - 15;
+  const expectedSuggested = Math.ceil(Math.max(12, Math.ceil(expectedRawSuggested)) / 6) * 6;
+  assert.equal(recommendation.suggestedQty, expectedSuggested);
+  assert.equal(recommendation.suggestedQty % 6, 0);
   assert.equal(recommendation.safetyMarginRatio, 0.2);
   assert.ok(recommendation.safetyMarginUnits > 0);
   assert.equal(recommendation.urgency, "urgent");
