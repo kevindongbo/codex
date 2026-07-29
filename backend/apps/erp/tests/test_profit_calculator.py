@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -6,6 +7,28 @@ from rest_framework.test import APIClient
 
 from apps.erp.models import Membership, Organization
 from apps.erp.profit_calculator import calculate_profit, category_tree
+
+
+ECB_FIXTURE = b'''<?xml version="1.0" encoding="UTF-8"?>
+<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01"
+ xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref">
+  <Cube><Cube time="2026-07-29">
+    <Cube currency="USD" rate="1.1600"/>
+    <Cube currency="CNY" rate="8.4000"/>
+    <Cube currency="MYR" rate="5.0000"/>
+  </Cube></Cube>
+</gesmes:Envelope>'''
+
+
+class FakeRateResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return ECB_FIXTURE
 
 
 class ProfitCalculatorTests(TestCase):
@@ -185,3 +208,32 @@ class ProfitCalculatorApiTests(TestCase):
         }, format="json")
         self.assertEqual(response.status_code, 400)
         self.assertIn("weight_g", response.data["items"][0])
+
+    @patch("apps.erp.views.urlopen", return_value=FakeRateResponse())
+    def test_exchange_rates_are_derived_from_one_ecb_daily_snapshot(self, mocked_urlopen):
+        response = self.client.get("/api/profit-calculator/exchange-rates/?refresh=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["date"], "2026-07-29")
+        self.assertEqual(response.data["cny_per_myr"], "1.680000")
+        self.assertEqual(response.data["usd_per_myr"], "0.232000")
+        self.assertEqual(response.data["source"], "European Central Bank")
+        self.assertFalse(response.data["stale"])
+        mocked_urlopen.assert_called_once()
+
+    @patch("apps.erp.views.urlopen", side_effect=TimeoutError("upstream timeout"))
+    def test_exchange_rates_return_last_good_snapshot_when_refresh_fails(self, mocked_urlopen):
+        from django.core.cache import cache
+
+        cache.set("profit-calculator:exchange-rates:ecb:last-good", {
+            "date": "2026-07-28",
+            "cny_per_myr": "1.670000",
+            "usd_per_myr": "0.231000",
+            "source": "European Central Bank",
+            "source_url": "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
+            "stale": False,
+        }, 60)
+        response = self.client.get("/api/profit-calculator/exchange-rates/?refresh=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["date"], "2026-07-28")
+        self.assertTrue(response.data["stale"])
+        mocked_urlopen.assert_called_once()
