@@ -133,7 +133,7 @@
       '<td><input aria-label="商品成本" data-profit-field="product_cost_cny" type="number" min="0" step="0.01" value="' + escapeHtml(item.product_cost_cny) + '" /></td>' +
       '<td><input aria-label="售价" data-profit-field="item_price" type="number" min="0" step="0.01" value="' + escapeHtml(item.item_price) + '" required /></td>' +
       '<td><div class="profit-percent-input"><input aria-label="达人佣金率" data-profit-field="affiliate_rate" type="number" min="0" max="100" step="0.01" value="' + escapeHtml(item.affiliate_rate) + '" /><span>%</span></div></td>' +
-      '<td><div class="profit-ad-input"><select aria-label="实际广告数据类型" data-profit-field="ad_cost_type"><option value="none">不计广告</option><option value="roi">实际 ROI</option><option value="cpa_usd">单件 CPA（USD）</option><option value="ratio">广告费占收入（%）</option></select><input aria-label="实际广告数据" data-profit-field="ad_cost_value" type="number" min="0" step="0.01" value="' + escapeHtml(item.ad_cost_value) + '" placeholder="留空不计入" disabled /></div></td>' +
+      '<td class="profit-ad-cell"><div class="profit-ad-input"><select aria-label="实际广告数据类型" data-profit-field="ad_cost_type"><option value="none">不计广告</option><option value="roi">实际 ROI</option><option value="cpa_usd">单件 CPA（USD）</option><option value="ratio">广告费占收入（%）</option></select><input aria-label="实际广告数据" data-profit-field="ad_cost_value" type="number" min="0" step="0.01" value="' + escapeHtml(item.ad_cost_value) + '" placeholder="留空不计入" disabled /></div></td>' +
       '<td><button class="row-action danger" type="button" data-profit-remove="' + rowId + '" aria-label="删除此 SKU">删除</button></td>';
     el('profitSkuRows').appendChild(tr);
     populateCategoryPicker(tr, item.category_code);
@@ -195,7 +195,7 @@
       const amount = prefix + formatMoney(row.amount);
       const group = row.group === previousGroup ? '' : '<span class="profit-group-badge">' + escapeHtml(row.group || '其他') + '</span>';
       previousGroup = row.group;
-      return '<tr><td>' + group + '</td><td><strong>' + escapeHtml(row.label) + '</strong></td><td>' + escapeHtml(row.base || '—') + '</td><td>' + escapeHtml(rate) + '</td><td>' + number(row.share).toFixed(2) + '%</td><td class="profit-amount ' + escapeHtml(row.kind) + '">' + amount + '</td><td class="profit-source">' + source + '</td></tr>';
+      return '<tr><td>' + group + '</td><td><strong>' + escapeHtml(row.label) + '</strong></td><td data-profit-basis-column>' + escapeHtml(row.base || '—') + '</td><td>' + escapeHtml(rate) + '</td><td>' + number(row.share).toFixed(2) + '%</td><td class="profit-amount ' + escapeHtml(row.kind) + '">' + amount + '</td><td class="profit-source">' + source + '</td></tr>';
     }).join('');
     el('profitResultPanel').hidden = false;
     el('profitResultPanel').dataset.lastResult = JSON.stringify(result);
@@ -263,6 +263,14 @@
     form.addEventListener('submit', submit);
     el('profitAddSku').addEventListener('click', function () {
       addRow({ product_cost_cny: '0.00', item_price: '0.00', affiliate_rate: '0.00' });
+    });
+    const basisToggle = el('profitBasisToggle');
+    if (basisToggle) basisToggle.addEventListener('click', function () {
+      const table = el('profitBreakdownTable');
+      const expanded = !table.classList.contains('show-basis');
+      table.classList.toggle('show-basis', expanded);
+      basisToggle.setAttribute('aria-expanded', String(expanded));
+      basisToggle.textContent = expanded ? '收起计费基准' : '展开计费基准';
     });
     document.addEventListener('change', function (event) {
       if (event.target.matches('[data-profit-field="ad_cost_type"]')) {
