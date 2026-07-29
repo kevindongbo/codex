@@ -36,12 +36,18 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260729-profit-input-align-8/);
+  assert.match(html, /styles\.css\?v=20260729-profit-input-align-9/);
   assert.match(html, /team\.js\?v=20260728-profit-calculator-server-1/);
-  assert.match(html, /profit-calculator\.js\?v=20260729-profit-input-align-8/);
-  assert.match(html, /app\.js\?v=20260729-profit-input-align-8/);
+  assert.match(html, /profit-calculator\.js\?v=20260729-profit-input-align-9/);
+  assert.match(html, /app\.js\?v=20260729-profit-input-align-9/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
+});
+
+test("keeps the profit advertising controls on one visual baseline", async () => {
+  const css = await (await fetchPath("/styles.css")).text();
+  assert.match(css, /\.profit-ad-input\s*\{[^}]*height:\s*52px;[^}]*display:\s*flex;[^}]*align-items:\s*stretch;/s);
+  assert.match(css, /\.profit-input-table \.profit-ad-input > select, \.profit-input-table \.profit-ad-input > input\s*\{[^}]*height:\s*42px !important;[^}]*margin:\s*0 !important;/s);
 });
 
 test("keeps profit rules on a dedicated route and collapses fee bases by default", async () => {
