@@ -3,6 +3,8 @@ import logging
 import uuid
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
+from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
@@ -89,6 +91,38 @@ from .sync import bump_sync_revision
 logger = logging.getLogger(__name__)
 
 
+ECB_DAILY_RATES_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+ECB_DAILY_RATES_CACHE_KEY = "profit-calculator:exchange-rates:ecb:daily"
+ECB_LAST_GOOD_RATES_CACHE_KEY = "profit-calculator:exchange-rates:ecb:last-good"
+
+
+def _parse_ecb_daily_rates(payload):
+    root = ElementTree.fromstring(payload)
+    dated_cube = next(
+        (node for node in root.iter() if node.tag.endswith("Cube") and node.attrib.get("time")),
+        None,
+    )
+    if dated_cube is None:
+        raise ValueError("ECB response does not include a dated rate table.")
+    rates = {
+        node.attrib.get("currency"): Decimal(node.attrib["rate"])
+        for node in dated_cube
+        if node.attrib.get("currency") and node.attrib.get("rate")
+    }
+    missing = {"CNY", "MYR", "USD"} - set(rates)
+    if missing or any(rates[currency] <= 0 for currency in ("CNY", "MYR", "USD")):
+        raise ValueError("ECB response is missing a required positive exchange rate.")
+    precision = Decimal("0.000001")
+    return {
+        "date": dated_cube.attrib["time"],
+        "cny_per_myr": str((rates["CNY"] / rates["MYR"]).quantize(precision)),
+        "usd_per_myr": str((rates["USD"] / rates["MYR"]).quantize(precision)),
+        "source": "European Central Bank",
+        "source_url": ECB_DAILY_RATES_URL,
+        "stale": False,
+    }
+
+
 class DataConflict(APIException):
     status_code = status.HTTP_409_CONFLICT
     default_detail = "数据与现有记录冲突，请检查单号、SKU、条码或幂等键是否重复。"
@@ -168,6 +202,36 @@ def profit_calculator_config(request):
             "lvg_tax": LVG_TAX_SOURCE,
         },
     })
+
+
+@api_view(["GET"])
+def profit_exchange_rates(request):
+    """Return one daily MYR conversion snapshot derived from ECB reference rates."""
+    force_refresh = request.query_params.get("refresh") == "1"
+    if not force_refresh:
+        cached = cache.get(ECB_DAILY_RATES_CACHE_KEY)
+        if cached:
+            return Response(cached)
+
+    try:
+        upstream_request = Request(
+            ECB_DAILY_RATES_URL,
+            headers={"Accept": "application/xml", "User-Agent": "DongboERP/1.0"},
+        )
+        with urlopen(upstream_request, timeout=6) as response:
+            result = _parse_ecb_daily_rates(response.read())
+        cache.set(ECB_DAILY_RATES_CACHE_KEY, result, timeout=60 * 60 * 24)
+        cache.set(ECB_LAST_GOOD_RATES_CACHE_KEY, result, timeout=60 * 60 * 24 * 30)
+        return Response(result)
+    except Exception:
+        logger.exception("Unable to refresh ECB exchange rates")
+        fallback = cache.get(ECB_LAST_GOOD_RATES_CACHE_KEY)
+        if fallback:
+            return Response({**fallback, "stale": True})
+        return Response(
+            {"detail": "Daily exchange rates are temporarily unavailable; use the manual rate mode."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
 
 @api_view(["POST"])

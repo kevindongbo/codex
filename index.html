@@ -20,7 +20,7 @@
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260729-profit-input-align-9" />
+  <link rel="stylesheet" href="styles.css?v=20260730-erp-polish-10" />
 </head>
 <body>
   <header class="app-header">
@@ -31,10 +31,10 @@
 
     <nav class="primary-nav" aria-label="主导航">
       <button class="primary-nav-item active" data-module="products"><span>商品中心</span><b id="navProductCount">0</b></button>
-      <button class="primary-nav-item" data-module="selection"><span>智能选品</span><b>AI</b></button>
       <button class="primary-nav-item" data-module="warehouse"><span>仓配中心</span><b id="navWarehouseCount">0</b></button>
       <button class="primary-nav-item" data-module="competitors"><span>竞品监控</span><b id="navAlertCount">0</b></button>
       <button class="primary-nav-item" data-module="profit"><span>利润试算</span></button>
+      <button class="primary-nav-item" data-module="selection"><span>智能选品</span><b>AI</b></button>
     </nav>
 
     <div class="header-tools">
@@ -43,7 +43,6 @@
       <button class="storage-state" id="runtimeStateButton" type="button" aria-haspopup="dialog" aria-controls="sessionModal"><i></i><span id="runtimeStateText">本机已保存</span></button>
       <input id="csvFile" type="file" accept=".csv,text/csv" hidden />
       <button class="button secondary header-secondary" id="importCsv">导入</button>
-      <button class="button primary" id="openProductModal">＋ 新增商品</button>
     </div>
   </header>
 
@@ -311,6 +310,13 @@
           <button class="button primary" id="openTransferModal">＋ 新建调拨</button>
         </div>
         <section class="panel">
+          <div class="panel-toolbar">
+            <div class="filter-group" role="group" aria-label="调拨单筛选">
+              <button class="filter-chip active" data-transfer-filter="open">进行中</button>
+              <button class="filter-chip" data-transfer-filter="closed">已经结束</button>
+              <button class="filter-chip" data-transfer-filter="all">全部</button>
+            </div>
+          </div>
           <div class="table-wrap">
             <table>
               <thead><tr><th>调拨单</th><th>调出仓</th><th>调入仓</th><th>商品明细</th><th>数量</th><th>发出时间</th><th>状态</th><th>操作</th></tr></thead>
@@ -326,7 +332,7 @@
           <div><h2>智能补货</h2><p>按仓库独立汇总订单实际出库和手动出库，使用 3/7/15/30 天近因加权、在途与安全库存给出建议。</p></div>
           <div class="inline-actions"><button class="button secondary" id="openReplenishmentSettings" type="button">全局补货参数</button><button class="button secondary" id="refreshReplenishment" type="button">重新计算</button></div>
         </div>
-        <div class="recommendation-note" id="replenishmentMethodNote">预测会显示数据信心度；样本不足时使用保守默认值，不会冒充精确结果。</div>
+        <div class="recommendation-note" id="replenishmentMethodNote">日均出库默认按近 3/7/15/30 天的 40% / 30% / 20% / 10% 加权；样本不足时使用保守默认值。</div>
         <div class="inline-actions replenishment-batch-toolbar"><span id="replenishmentSelectionCount">未选择 SKU</span><button class="button secondary" id="batchReplenishmentPolicy" type="button">批量调整参数</button><button class="button secondary" id="batchReplenishmentRecompute" type="button">重新计算所选</button><button class="button primary" id="batchReplenishmentPurchase" type="button">生成采购草稿</button></div>
         <section class="panel">
           <div class="table-wrap">
@@ -443,8 +449,10 @@
         </div>
         <section class="profit-rate-card" aria-label="汇率与显示币种">
           <span class="profit-rate-label">汇率（参考）</span>
+          <span class="profit-rate-mode" id="profitRateMode">自动更新 · ECB</span>
           <label class="profit-rate-value">1 MYR = <input id="profitExchangeRate" type="number" min="0.000001" step="0.000001" value="1.680000" inputmode="decimal" aria-label="人民币换算汇率" /> CNY</label>
           <label class="profit-rate-secondary">1 MYR = <input id="profitUsdRate" type="number" min="0.000001" step="0.000001" value="0.235000" inputmode="decimal" aria-label="美元换算汇率" /> USD</label>
+          <div class="profit-rate-actions"><button type="button" id="profitRateAuto">使用每日汇率</button><button type="button" id="profitRateManual">手动修改</button><button type="button" id="profitRateRefresh" aria-label="刷新汇率">↻</button></div>
           <div class="profit-currency-toggle" role="group" aria-label="结果显示币种"><button class="active" type="button" data-profit-currency="MYR">马币 MYR</button><button type="button" data-profit-currency="CNY">人民币 CNY</button></div>
         </section>
       </div>
@@ -512,7 +520,7 @@
               <div><dt>净利润</dt><dd id="profitFormulaNet">未计算</dd></div>
               <div><dt>净利率</dt><dd id="profitFormulaNetMargin">未计算</dd></div>
             </dl>
-            <div id="profitWarnings" class="profit-warnings"></div>
+            <div id="profitWarnings" class="profit-warnings" hidden></div>
           </aside>
         </div>
       </section>
@@ -763,6 +771,16 @@
       <button class="modal-close" data-close="replenishmentBatchPolicyModal" aria-label="关闭">×</button>
       <p class="eyebrow">批量补货规则</p><h2 id="replenishmentBatchPolicyTitle">调整已选 SKU 参数</h2><p class="modal-intro">勾选要覆盖的字段并填写数值；没有勾选的字段保持每个 SKU 原有设置不变。</p>
       <form id="replenishmentBatchPolicyForm">
+        <fieldset class="replenishment-weight-group">
+          <legend>日均出库权重（全仓统一）</legend>
+          <p>默认 3 天 40%、7 天 30%、15 天 20%、30 天 10%；四项合计必须为 100%。</p>
+          <div class="form-grid four">
+            <label>近 3 天（%）<input id="batchWeight3" type="number" min="0" max="100" step="1" value="40" required /></label>
+            <label>近 7 天（%）<input id="batchWeight7" type="number" min="0" max="100" step="1" value="30" required /></label>
+            <label>近 15 天（%）<input id="batchWeight15" type="number" min="0" max="100" step="1" value="20" required /></label>
+            <label>近 30 天（%）<input id="batchWeight30" type="number" min="0" max="100" step="1" value="10" required /></label>
+          </div>
+        </fieldset>
         <div class="form-grid two">
           <label class="check-label"><input data-batch-policy-enable="lead_time_override" type="checkbox" /> 覆盖手工到货周期</label><label><input id="batchPolicyLeadDays" type="number" min="1" step="1" placeholder="天数" /></label>
           <label class="check-label"><input data-batch-policy-enable="review_cycle_days" type="checkbox" /> 覆盖复核周期</label><label><input id="batchPolicyReviewDays" type="number" min="1" step="1" value="7" /></label>
@@ -1012,7 +1030,7 @@
 
   <script src="runtime-config.js?v=20260728-profit-calculator-server-1"></script>
   <script src="team.js?v=20260728-profit-calculator-server-1"></script>
-  <script src="profit-calculator.js?v=20260729-profit-input-align-9"></script>
-  <script src="app.js?v=20260729-profit-input-align-9"></script>
+  <script src="profit-calculator.js?v=20260730-erp-polish-10"></script>
+  <script src="app.js?v=20260730-erp-polish-10"></script>
 </body>
 </html>
