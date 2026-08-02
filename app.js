@@ -91,9 +91,12 @@ function seedState() {
 let state = TEAM_MODE ? emptyState() : loadState();
 let productFilter = 'all';
 let purchaseFilter = 'open';
+let transferFilter = 'open';
 let orderFilter = 'open';
 let inventoryFilter = 'all';
 let inventorySection = 'list';
+let profitView = 'calculator';
+let profitScrollTarget = 'profitInputPanel';
 let chartMetric = 'sales';
 let searchTerm = '';
 let pendingConfirm = null;
@@ -316,7 +319,7 @@ function normalizeV5(saved) {
   base.migrationIssues = Array.isArray(saved.migrationIssues) ? saved.migrationIssues : [];
   base.selectedProductId = saved.selectedProductId || '';
   const savedUi = saved.ui && typeof saved.ui === 'object' ? saved.ui : {};
-  if (['products', 'selection', 'warehouse', 'competitors'].includes(savedUi.module)) base.ui.module = savedUi.module;
+  if (['products', 'selection', 'warehouse', 'competitors', 'profit'].includes(savedUi.module)) base.ui.module = savedUi.module;
   if (['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(savedUi.warehouseTab)) base.ui.warehouseTab = savedUi.warehouseTab;
   if (['products', 'snapshots', 'trends', 'alerts'].includes(savedUi.competitorTab)) base.ui.competitorTab = savedUi.competitorTab;
   const activeWarehouse = base.warehouses.find(function (item) { return item.active && item.id === savedUi.warehouseId; }) ||
@@ -506,6 +509,7 @@ function saveUiQuietly() {
         ui: state.ui,
         productFilter: productFilter,
         purchaseFilter: purchaseFilter,
+        transferFilter: transferFilter,
         orderFilter: orderFilter,
         inventoryFilter: inventoryFilter,
         inventorySection: inventorySection
@@ -520,12 +524,13 @@ function restoreUiPreferences() {
   if (!TEAM_MODE) return;
   try {
     const saved = JSON.parse(localStorage.getItem(UI_STORAGE_KEY) || '{}');
-    if (saved.ui && ['products', 'selection', 'warehouse', 'competitors'].includes(saved.ui.module)) state.ui.module = saved.ui.module;
+    if (saved.ui && ['products', 'selection', 'warehouse', 'competitors', 'profit'].includes(saved.ui.module)) state.ui.module = saved.ui.module;
     if (saved.ui && ['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(saved.ui.warehouseTab)) state.ui.warehouseTab = saved.ui.warehouseTab;
     if (saved.ui && saved.ui.warehouseId) state.ui.warehouseId = saved.ui.warehouseId;
     if (saved.ui && ['products', 'snapshots', 'trends', 'alerts'].includes(saved.ui.competitorTab)) state.ui.competitorTab = saved.ui.competitorTab;
     if (['all', 'own', 'direct', 'indirect', 'inactive'].includes(saved.productFilter)) productFilter = saved.productFilter;
     if (['open', 'overdue', 'all'].includes(saved.purchaseFilter)) purchaseFilter = saved.purchaseFilter;
+    if (['open', 'closed', 'all'].includes(saved.transferFilter)) transferFilter = saved.transferFilter;
     if (['open', 'shortage', 'shipped', 'all'].includes(saved.orderFilter)) orderFilter = saved.orderFilter;
     if (['all', 'low'].includes(saved.inventoryFilter)) inventoryFilter = saved.inventoryFilter;
     if (['list', 'movements'].includes(saved.inventorySection)) inventorySection = saved.inventorySection;
@@ -1244,7 +1249,8 @@ async function refreshTeamState(successMessage) {
   }
 }
 
-async function executeTeamCommand(command, successMessage, capability) {
+async function executeTeamCommand(command, successMessage, capability, options) {
+  const settings = Object.assign({ applyResult: null, refreshOnError: true }, options || {});
   if (!TEAM_MODE) return false;
   if (!teamAuthenticated()) {
     openModal('sessionModal');
@@ -1258,25 +1264,43 @@ async function executeTeamCommand(command, successMessage, capability) {
   teamBusy = true;
   renderRuntimeState();
   try {
-    await command();
-    const loaded = await teamGateway.loadState();
-    const currentUi = clone(state.ui);
-    state = normalizeV5(loaded);
-    state.ui = currentUi;
-    teamLastSyncedAt = new Date().toISOString();
-    render();
-    renderRuntimeState();
-    if (successMessage) showToast(successMessage);
-    return true;
-  } catch (error) {
+    const result = await command();
     try {
-      const loaded = await teamGateway.loadState();
+      // Some write endpoints already return the complete updated resource.  In
+      // that case consume the response directly instead of synchronously
+      // loading every dashboard collection (including competitor monitoring
+      // and replenishment).  Those unrelated APIs must never delay or overturn
+      // a successful purchase tracking save.
+      const loaded = settings.applyResult
+        ? settings.applyResult(result)
+        : await teamGateway.loadState();
       const currentUi = clone(state.ui);
       state = normalizeV5(loaded);
       state.ui = currentUi;
       teamLastSyncedAt = new Date().toISOString();
       render();
-    } catch (_) { /* keep the last synchronized view when refresh also fails */ }
+      renderRuntimeState();
+      if (successMessage) showToast(successMessage);
+    } catch (refreshError) {
+      // A completed write must never be presented as a failed save merely
+      // because one of the dashboard refresh endpoints is temporarily down.
+      // In particular, this used to make a successful purchase edit look like
+      // an HTTP 500 and invited the operator to submit it again.
+      console.error('Team state refresh failed after a successful command.', refreshError);
+      showToast('保存成功，但页面数据刷新失败。请刷新页面后确认最新采购单。');
+    }
+    return true;
+  } catch (error) {
+    if (settings.refreshOnError) {
+      try {
+        const loaded = await teamGateway.loadState();
+        const currentUi = clone(state.ui);
+        state = normalizeV5(loaded);
+        state.ui = currentUi;
+        teamLastSyncedAt = new Date().toISOString();
+        render();
+      } catch (_) { /* keep the last synchronized view when refresh also fails */ }
+    }
     return handleTeamError(error);
   } finally {
     teamBusy = false;
@@ -1305,7 +1329,9 @@ async function initializeTeamMode() {
     }
   } catch (error) {
     handleTeamError(error);
-    openModal('sessionModal');
+    // Do not turn a temporary network/server outage into a logout prompt.
+    // The gateway only clears persisted credentials after a confirmed 401.
+    if (error && error.status === 401) openModal('sessionModal');
   } finally {
     teamBusy = false;
     renderRuntimeState();
@@ -1405,11 +1431,13 @@ function setRoute(module, subtab) {
   state.ui.module = module;
   if (module === 'warehouse' && subtab) state.ui.warehouseTab = subtab;
   if (module === 'competitors' && subtab) state.ui.competitorTab = subtab;
+  if (module === 'profit') profitView = ['calculator', 'rules'].includes(subtab) ? subtab : 'calculator';
   let route = '#' + module;
   if (module === 'products' && productFilter !== 'all') route += '/' + productFilter;
   if (module === 'warehouse') {
     route += '/' + state.ui.warehouseTab;
     if (state.ui.warehouseTab === 'purchase' && purchaseFilter !== 'open') route += '/' + purchaseFilter;
+    if (state.ui.warehouseTab === 'transfers' && transferFilter !== 'open') route += '/' + transferFilter;
     if (state.ui.warehouseTab === 'orders' && orderFilter !== 'open') route += '/' + orderFilter;
     if (state.ui.warehouseTab === 'inventory') {
       if (inventoryFilter === 'low') route += '/low';
@@ -1417,6 +1445,7 @@ function setRoute(module, subtab) {
     }
   }
   if (module === 'competitors') route += '/' + state.ui.competitorTab;
+  if (module === 'profit' && profitView === 'rules') route += '/rules';
   history.replaceState(null, '', route);
   saveUiQuietly();
   closeSidebar();
@@ -1424,11 +1453,12 @@ function setRoute(module, subtab) {
 }
 function applyHashRoute() {
   const parts = location.hash.replace(/^#/, '').split('/');
-  if (['products', 'selection', 'warehouse', 'competitors'].includes(parts[0])) state.ui.module = parts[0];
+  if (['products', 'selection', 'warehouse', 'competitors', 'profit'].includes(parts[0])) state.ui.module = parts[0];
   if (parts[0] === 'products') productFilter = ['own', 'direct', 'indirect', 'inactive'].includes(parts[1]) ? parts[1] : 'all';
   if (parts[0] === 'warehouse' && ['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(parts[1])) {
     state.ui.warehouseTab = parts[1];
     if (parts[1] === 'purchase') purchaseFilter = ['overdue', 'all'].includes(parts[2]) ? parts[2] : 'open';
+    if (parts[1] === 'transfers') transferFilter = ['closed', 'all'].includes(parts[2]) ? parts[2] : 'open';
     if (parts[1] === 'orders') orderFilter = ['shortage', 'shipped', 'all'].includes(parts[2]) ? parts[2] : 'open';
     if (parts[1] === 'inventory') {
       inventoryFilter = parts[2] === 'low' ? 'low' : 'all';
@@ -1436,6 +1466,7 @@ function applyHashRoute() {
     }
   }
   if (parts[0] === 'competitors' && ['products', 'snapshots', 'trends', 'alerts'].includes(parts[1])) state.ui.competitorTab = parts[1];
+  if (parts[0] === 'profit') profitView = parts[1] === 'rules' ? 'rules' : 'calculator';
 }
 function renderNavigation() {
   $$('[data-module]').forEach(function (button) {
@@ -1463,6 +1494,9 @@ function renderNavigation() {
   });
   $$('[data-competitor-page]').forEach(function (page) {
     page.hidden = page.dataset.competitorPage !== state.ui.competitorTab;
+  });
+  $$('[data-profit-view-page]').forEach(function (page) {
+    page.hidden = state.ui.module !== 'profit' || page.dataset.profitViewPage !== profitView;
   });
 }
 
@@ -1492,6 +1526,9 @@ function renderSidebar() {
     if (state.ui.module === 'selection' && button.dataset.selectionScroll) {
       active = button.dataset.selectionScroll === 'selectionKeywordPanel';
     }
+    if (state.ui.module === 'profit' && button.dataset.profitView) {
+      active = button.dataset.profitView === profitView && (profitView === 'rules' || button.dataset.scrollTarget === profitScrollTarget);
+    }
     button.classList.toggle('active', active);
     if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
   });
@@ -1500,6 +1537,9 @@ function renderSidebar() {
   });
   $$('[data-purchase-filter]:not([data-side-link])').forEach(function (button) {
     button.classList.toggle('active', button.dataset.purchaseFilter === purchaseFilter);
+  });
+  $$('[data-transfer-filter]').forEach(function (button) {
+    button.classList.toggle('active', button.dataset.transferFilter === transferFilter);
   });
   $$('[data-order-filter]:not([data-side-link])').forEach(function (button) {
     button.classList.toggle('active', button.dataset.orderFilter === orderFilter);
@@ -1557,6 +1597,12 @@ function handleSideLink(button) {
     return;
   }
   if (button.dataset.competitorView) setRoute('competitors', button.dataset.competitorView);
+  if (button.dataset.profitView) {
+    profitScrollTarget = button.dataset.scrollTarget || 'profitInputPanel';
+    setRoute('profit', button.dataset.profitView);
+    if (button.dataset.scrollTarget) setTimeout(function () { scrollToPanel(button.dataset.scrollTarget); }, 0);
+    else window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 }
 
 function renderProductSummary() {
@@ -1697,10 +1743,13 @@ function renderPurchases() {
     const ordered = order.lines.reduce(function (sum, line) { return sum + integer(line.orderedQty); }, 0);
     const received = order.lines.reduce(function (sum, line) { return sum + integer(line.receivedQty); }, 0);
     const transit = order.lines.reduce(function (sum, line) { return sum + remainingPurchaseLine(line); }, 0);
-    const lines = order.lines.slice(0, 2).map(function (line) {
+    const purchaseLineLabels = order.lines.map(function (line) {
       const product = productById(line.productId);
       return escapeHtml(product ? (product.sku + ' · ' + product.name) : '商品已移除');
-    }).join('<br>') + (order.lines.length > 2 ? '<br>等 ' + order.lines.length + ' 项' : '');
+    });
+    const lines = purchaseLineLabels.length > 1
+      ? '<details class="purchase-detail-list"><summary>' + purchaseLineLabels[0] + '<span>共 ' + purchaseLineLabels.length + ' 项</span></summary><div>' + purchaseLineLabels.map(function (label) { return '<p>' + label + '</p>'; }).join('') + '</div></details>'
+      : (purchaseLineLabels[0] || '<span class="muted">无商品明细</span>');
     const overdue = purchaseIsOverdue(order);
     const shipments = order.shipments || [];
     const tracking = shipments.length ? ('<button class="link-button" data-toggle-purchase-shipments="' + escapeHtml(order.id) + '">' + escapeHtml(shipments[0].trackingNumber) + (shipments.length > 1 ? ' +' + (shipments.length - 1) : '') + '</button>' +
@@ -1854,7 +1903,14 @@ function cancelTransfer(next, transferId) {
 }
 function renderTransfers() {
   const warehouseId = TEAM_MODE ? String(teamGateway && teamGateway.warehouseId || '') : currentWarehouseId();
-  const transfers = state.stockTransfers.filter(function (transfer) { return transferTouchesWarehouse(transfer, warehouseId); })
+  const allTransfers = state.stockTransfers.filter(function (transfer) {
+    return transferTouchesWarehouse(transfer, warehouseId);
+  });
+  const transfers = allTransfers.filter(function (transfer) {
+    if (transferFilter === 'open') return ['draft', 'in_transit'].includes(transfer.status);
+    if (transferFilter === 'closed') return ['received', 'cancelled'].includes(transfer.status);
+    return true;
+  })
     .sort(function (a, b) { return new Date(b.createdAt || b.created_at) - new Date(a.createdAt || a.created_at); });
   const rows = $('#transferRows');
   if (!rows) return;
@@ -1879,7 +1935,7 @@ function renderTransfers() {
     return '<tr><td><strong>' + escapeHtml(transfer.number) + '</strong></td><td>' + escapeHtml(transferWarehouseName(sourceId)) + '</td><td>' + escapeHtml(transferWarehouseName(destinationId)) + '</td><td>' + lineText + '</td><td>' + total + '</td><td>' + formatDate(transfer.shippedAt || transfer.shipped_at, true) + '</td><td>' + statusPill(TRANSFER_LABELS[transfer.status] || transfer.status, transfer.status) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
   }).join('');
   toggleEmpty('#transferEmpty', transfers.length === 0);
-  const pending = transfers.filter(function (item) { return ['draft', 'in_transit'].includes(item.status); }).length;
+  const pending = allTransfers.filter(function (item) { return ['draft', 'in_transit'].includes(item.status); }).length;
   setText('#transferTabCount', pending);
 }
 
@@ -1934,10 +1990,11 @@ function dateAfterDays(days, allowPast) {
 function localReplenishmentRecommendation(product) {
   const warehouseId = currentWarehouseId();
   const policy = localPolicyFor(product.id, warehouseId);
+  const velocity3 = localVelocity(product.id, warehouseId, 3);
   const velocity7 = localVelocity(product.id, warehouseId, 7);
   const velocity15 = localVelocity(product.id, warehouseId, 15);
   const velocity30 = localVelocity(product.id, warehouseId, 30);
-  const velocity = velocity7 * 0.5 + velocity15 * 0.3 + velocity30 * 0.2;
+  const velocity = velocity3 * 0.4 + velocity7 * 0.3 + velocity15 * 0.2 + velocity30 * 0.1;
   const leadSamples = localLeadSamples(product.id, warehouseId);
   const leadMedian = percentile(leadSamples, 0.5);
   const leadP80 = percentile(leadSamples, 0.8);
@@ -1966,7 +2023,7 @@ function localReplenishmentRecommendation(product) {
   const urgency = insufficientData ? 'insufficient' : (inventoryPosition <= reorderPoint || latestInDays <= 0 ? 'urgent' : (latestInDays <= 7 ? 'soon' : 'healthy'));
   const confidence = leadSamples.length >= 3 && state.inventoryMovements.filter(function (item) { return item.productId === product.id && item.warehouseId === warehouseId && item.type === 'outbound'; }).length >= 3 ? 'high' : (leadSamples.length || velocity > 0 ? 'medium' : 'low');
   return {
-    productId: product.id, velocity: velocity, velocity3: 0, velocity7: velocity7, velocity15: velocity15, velocity30: velocity30,
+    productId: product.id, velocity: velocity, velocity3: velocity3, velocity7: velocity7, velocity15: velocity15, velocity30: velocity30,
     leadDays: leadDays, leadMedian: leadMedian, leadP80: leadP80, leadSource: leadSource,
     available: available, inbound: inbound, inventoryPosition: inventoryPosition, reorderPoint: reorderPoint,
     daysCover: daysCover, stockoutDate: velocity > 0 && Number.isFinite(daysCover) ? dateAfterDays(daysCover) : '',
@@ -2027,7 +2084,6 @@ function renderReplenishment() {
     const urgencyLabel = { urgent: '立即补货', soon: '尽快下单', healthy: '库存健康', insufficient: '数据不足' }[urgency] || '待核对';
     const leadLabel = Math.ceil(item.leadDays) + ' 天 · ' + ({ manual: '手工', history_p80: '历史 P80', fallback: '默认' }[item.leadSource] || '历史预测');
     const daysCover = Number.isFinite(item.daysCover) ? item.daysCover.toFixed(1) + ' 天' : '暂无销量';
-    const confidence = { high: '高', medium: '中', low: '低' }[item.confidence] || '低';
     const warehouseId = TEAM_MODE && teamGateway ? String(teamGateway.warehouseId) : currentWarehouseId();
     const hasPolicy = state.replenishmentPolicies.some(function (policy) { return policy.productId === product.id && String(policy.warehouseId) === warehouseId; });
     const latestOrder = item.latestOrderDate ? ((item.latestOrderDate < today() ? '已逾期 · ' : '') + formatDate(item.latestOrderDate, false)) : '暂无';
@@ -2037,7 +2093,7 @@ function renderReplenishment() {
     if (teamCapabilityAllowed('replenishment') && hasPolicy) actions += rowButton('reset-replenishment', product.id, '恢复默认', 'danger');
     const basis = (item.reasons || []).map(function (reason) { return '<li>' + escapeHtml(reason) + '</li>'; }).join('');
     const selected = replenishmentSelectedSkuIds.has(String(item.skuId));
-    return '<tr><td><input type="checkbox" data-replenishment-select="' + escapeHtml(item.skuId) + '"' + (selected ? ' checked' : '') + ' aria-label="选择 ' + escapeHtml(product.sku || product.name) + '"></td><td>' + productMedia(product) + '<small class="confidence-copy">信心度：' + confidence + '</small></td><td><strong>' + item.velocity.toFixed(2) + '</strong><br><small>3/7/15/30：' + item.velocity3.toFixed(2) + ' / ' + item.velocity7.toFixed(2) + ' / ' + item.velocity15.toFixed(2) + ' / ' + item.velocity30.toFixed(2) + '</small></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong><br><small>补货点 ' + item.reorderPoint + '；安全余量 ' + Math.round(item.safetyMarginUnits || 0) + '</small>' + (basis ? '<details class="calculation-basis"><summary>计算依据</summary><ul>' + basis + '</ul></details>' : '') + '</td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
+    return '<tr><td><input type="checkbox" data-replenishment-select="' + escapeHtml(item.skuId) + '"' + (selected ? ' checked' : '') + ' aria-label="选择 ' + escapeHtml(product.sku || product.name) + '"></td><td>' + productMedia(product) + '</td><td><strong>' + item.velocity.toFixed(2) + '</strong><details class="replenishment-velocity-detail"><summary>查看周期明细</summary><span>3/7/15/30 天：' + item.velocity3.toFixed(2) + ' / ' + item.velocity7.toFixed(2) + ' / ' + item.velocity15.toFixed(2) + ' / ' + item.velocity30.toFixed(2) + '</span></details></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong><details class="replenishment-qty-detail"><summary>查看补货参数</summary><span>补货点 ' + item.reorderPoint + '；安全余量 ' + Math.round(item.safetyMarginUnits || 0) + '</span>' + (basis ? '<ul>' + basis + '</ul>' : '') + '</details></td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
   }).join('');
   toggleEmpty('#replenishmentEmpty', recommendations.length === 0);
   const needCount = recommendations.filter(function (item) { return ['urgent', 'soon', 'red', 'yellow'].includes(item.urgency); }).length;
@@ -3190,6 +3246,10 @@ async function openBatchReplenishmentPolicy() {
     if (settings) {
       $('#batchPolicyReviewDays').value = settings.review_cycle_days;
       $('#batchPolicyTargetDays').value = settings.target_days;
+      $('#batchWeight3').value = Math.round(Number(settings.velocity_weight_3 == null ? 0.4 : settings.velocity_weight_3) * 100);
+      $('#batchWeight7').value = Math.round(Number(settings.velocity_weight_7 == null ? 0.3 : settings.velocity_weight_7) * 100);
+      $('#batchWeight15').value = Math.round(Number(settings.velocity_weight_15 == null ? 0.2 : settings.velocity_weight_15) * 100);
+      $('#batchWeight30').value = Math.round(Number(settings.velocity_weight_30 == null ? 0.1 : settings.velocity_weight_30) * 100);
     }
     $('#replenishmentBatchPolicyTitle').textContent = '调整已选 ' + replenishmentSelectedSkuIds.size + ' 个 SKU 参数';
     openModal('replenishmentBatchPolicyModal');
@@ -3198,6 +3258,10 @@ async function openBatchReplenishmentPolicy() {
 
 async function handleBatchReplenishmentPolicySubmit(event) {
   event.preventDefault();
+  const weights = [$('#batchWeight3'), $('#batchWeight7'), $('#batchWeight15'), $('#batchWeight30')].map(function (input) { return Number(input.value); });
+  if (weights.some(function (value) { return !Number.isFinite(value) || value < 0; }) || Math.abs(weights.reduce(function (sum, value) { return sum + value; }, 0) - 100) > 0.001) {
+    return showToast('近 3/7/15/30 天权重必须为非负数，且合计等于 100%。');
+  }
   const fieldInputs = {
     lead_time_override: '#batchPolicyLeadDays',
     review_cycle_days: '#batchPolicyReviewDays',
@@ -3213,12 +3277,18 @@ async function handleBatchReplenishmentPolicySubmit(event) {
     const input = $(fieldInputs[key]);
     fields[key] = input ? input.value : '';
   });
-  if (!Object.keys(fields).length) return showToast('请勾选至少一个需要覆盖的参数。');
   const skuIds = Array.from(replenishmentSelectedSkuIds);
   if (TEAM_MODE) {
     const saved = await executeTeamCommand(function () {
-      return teamGateway.batchSaveReplenishmentPolicy(skuIds, fields);
-    }, '已保存所选 SKU 参数，并将在规则计算后合并进行 AI 分析。', 'replenishment');
+      return teamGateway.saveReplenishmentSettings({
+        velocity_weight_3: weights[0] / 100,
+        velocity_weight_7: weights[1] / 100,
+        velocity_weight_15: weights[2] / 100,
+        velocity_weight_30: weights[3] / 100
+      }).then(function () {
+        return Object.keys(fields).length ? teamGateway.batchSaveReplenishmentPolicy(skuIds, fields) : teamGateway.recomputeReplenishment(skuIds);
+      });
+    }, '权重与所选 SKU 参数已保存，并已重新计算补货建议。', 'replenishment');
     if (saved) closeModal('replenishmentBatchPolicyModal');
     return;
   }
@@ -3542,6 +3612,20 @@ function handleProductSubmit(event) {
 
 async function handlePurchaseSubmit(event) {
   event.preventDefault();
+  // Treat the currently typed tracking number as a pending logistics record.
+  // Requiring a separate click on "add logistics" made the save button look
+  // broken: the operator could see the number in the field while the payload
+  // silently omitted it.  A shipment without per-SKU allocations is valid and
+  // can be allocated later before a partial receipt.
+  const pendingTrackingNumber = $('#purchaseTrackingNumber').value.trim();
+  if (pendingTrackingNumber) {
+    const duplicateTracking = draftPurchaseShipments.some(function (item) {
+      return String(item.trackingNumber || '').trim().toLowerCase() === pendingTrackingNumber.toLowerCase();
+    });
+    if (duplicateTracking) return showToast('同一采购单的物流单号不能重复。');
+    draftPurchaseShipments.push({ id: '', trackingNumber: pendingTrackingNumber, lines: [] });
+    $('#purchaseTrackingNumber').value = '';
+  }
   const number = $('#purchaseNumber').value.trim();
   if (number && state.purchaseOrders.some(function (item) { return item.id !== purchaseEditId && item.number.toLowerCase() === number.toLowerCase(); })) return showToast('采购单号不能重复。');
   const status = draftPurchaseLines.length ? $('#purchaseStatus').value : 'draft';
@@ -3565,7 +3649,15 @@ async function handlePurchaseSubmit(event) {
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
   };
   if (TEAM_MODE) {
-    const savedTeam = await executeTeamCommand(function () { return purchaseEditId ? teamGateway.editPurchase(order) : teamGateway.createPurchase(order); }, purchaseEditId ? '采购单已更新；已收货记录和库存流水保持不变。' : (status === 'draft' ? '采购草稿已保存，不计入在途。' : '采购单已创建，已自动计入在途。'), 'purchase');
+    const savedTeam = await executeTeamCommand(
+      function () { return purchaseEditId ? teamGateway.editPurchase(order) : teamGateway.createPurchase(order); },
+      purchaseEditId ? '采购单已更新；已收货记录和库存流水保持不变。' : (status === 'draft' ? '采购草稿已保存，不计入在途。' : '采购单已创建，已自动计入在途。'),
+      'purchase',
+      {
+        applyResult: function (savedPurchase) { return teamGateway.applyPurchaseOrderResult(savedPurchase); },
+        refreshOnError: false
+      }
+    );
     if (savedTeam) closeModal('purchaseModal');
     return;
   }
@@ -4007,6 +4099,11 @@ function bindEvents() {
       purchaseFilter = purchaseChip.dataset.purchaseFilter;
       return setRoute('warehouse', 'purchase');
     }
+    const transferChip = event.target.closest('[data-transfer-filter]');
+    if (transferChip) {
+      transferFilter = transferChip.dataset.transferFilter;
+      return setRoute('warehouse', 'transfers');
+    }
     const orderChip = event.target.closest('[data-order-filter]');
     if (orderChip) {
       orderFilter = orderChip.dataset.orderFilter;
@@ -4413,7 +4510,8 @@ function bindEvents() {
   $('#selectionKeywordForm').addEventListener('submit', searchSelectionKeywords);
   $('#selectionReportForm').addEventListener('submit', submitSelectionReport);
   ['#openProductModal', '#tableAddProduct', '#emptyAddProduct'].forEach(function (selector) {
-    $(selector).addEventListener('click', function () { openProductEditor('', 'own'); });
+    const button = $(selector);
+    if (button) button.addEventListener('click', function () { openProductEditor('', 'own'); });
   });
   ['#competitorAddProduct', '#competitorTableAdd'].forEach(function (selector) {
     $(selector).addEventListener('click', function () { openProductEditor('', 'direct'); });

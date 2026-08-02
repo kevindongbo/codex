@@ -238,8 +238,8 @@ def dispatch_stock_transfer(*, transfer, idempotency_key, actor=None):
 
 
 @transaction.atomic
-def receive_stock_transfer(*, transfer, idempotency_key, actor=None):
-    """Post an in-transit transfer into its destination warehouse exactly once."""
+def receive_stock_transfer(*, transfer, idempotency_key, quantities=None, actor=None):
+    """Receive all or part of an in-transit transfer exactly once per request."""
     if not idempotency_key:
         raise ValidationError("幂等键不能为空")
     expected_organization = transfer.organization
@@ -251,20 +251,19 @@ def receive_stock_transfer(*, transfer, idempotency_key, actor=None):
         source_warehouse=transfer.source_warehouse,
         destination_warehouse=transfer.destination_warehouse,
     )
-    if transfer.status == StockTransfer.Status.RECEIVED:
-        if transfer.receive_idempotency_key == idempotency_key:
+    from .models import StockTransferReceipt
+
+    existing_receipt = StockTransferReceipt.objects.filter(
+        organization=transfer.organization, idempotency_key=idempotency_key
+    ).first()
+    if existing_receipt:
+        if existing_receipt.transfer_id == transfer.pk:
             return transfer
-        raise ValidationError("调拨单已经使用其他幂等键收货")
-    if transfer.status != StockTransfer.Status.IN_TRANSIT:
-        raise ValidationError("只有调拨在途单可以收货")
+        raise ValidationError("幂等键已被其他调拨收货占用")
+    if transfer.status not in {StockTransfer.Status.IN_TRANSIT, StockTransfer.Status.PARTIALLY_RECEIVED}:
+        raise ValidationError("只有调拨在途或部分收货单可以收货")
     if not transfer.destination_warehouse.active or not transfer.destination_warehouse.can_receive:
         raise ValidationError("目标仓未启用或不允许收货")
-    if StockTransfer.objects.filter(
-        organization=transfer.organization,
-        receive_idempotency_key=idempotency_key,
-    ).exclude(pk=transfer.pk).exists():
-        raise ValidationError("幂等键已被其他调拨收货占用")
-
     lines = list(
         StockTransferLine.objects.select_for_update()
         .filter(transfer=transfer)
@@ -273,35 +272,55 @@ def receive_stock_transfer(*, transfer, idempotency_key, actor=None):
     )
     if not lines:
         raise ValidationError("调拨单没有明细")
+    requested = {str(key): _decimal(value) for key, value in (quantities or {}).items()}
+    if requested and {str(line.pk) for line in lines} != set(requested):
+        raise ValidationError("部分收货必须填写调拨单的全部 SKU 明细")
+    received_event = {}
     for line in lines:
         _assert_organization(
             transfer.organization, sku=line.sku, product=line.sku.product
         )
+        remaining = line.quantity - line.received_quantity
+        quantity = requested.get(str(line.pk), remaining)
+        if quantity <= 0 or quantity > remaining:
+            raise ValidationError("收货数量必须大于 0 且不能超过在途数量")
         post_stock(
             organization=transfer.organization,
             warehouse=transfer.destination_warehouse,
             sku=line.sku,
             event_type=StockLedger.Type.TRANSFER_IN,
-            on_hand_delta=line.quantity,
-            reference_type="stock_transfer_line",
+            on_hand_delta=quantity,
+            reference_type="stock_transfer_receipt",
             reference_id=line.pk,
-            idempotency_key=f"transfer-in:{transfer.pk}:{line.pk}",
+            idempotency_key=f"transfer-in:{transfer.pk}:{line.pk}:{idempotency_key}",
             actor=actor,
             reason=f"从 {transfer.source_warehouse.name} 调拨收货",
         )
-    transfer.status = StockTransfer.Status.RECEIVED
-    transfer.receive_idempotency_key = idempotency_key
-    transfer.received_at = timezone.now()
-    transfer.received_by = actor if getattr(actor, "is_authenticated", False) else None
+        line.received_quantity += quantity
+        line.save(update_fields=["received_quantity", "updated_at"])
+        received_event[str(line.pk)] = str(quantity)
+    fully_received = all(line.received_quantity >= line.quantity for line in lines)
+    transfer.status = StockTransfer.Status.RECEIVED if fully_received else StockTransfer.Status.PARTIALLY_RECEIVED
+    if fully_received:
+        transfer.receive_idempotency_key = idempotency_key
+        transfer.received_at = timezone.now()
+        transfer.received_by = actor if getattr(actor, "is_authenticated", False) else None
     transfer.save(update_fields=[
         "status", "receive_idempotency_key", "received_at", "received_by", "updated_at",
     ])
+    StockTransferReceipt.objects.create(
+        organization=transfer.organization,
+        transfer=transfer,
+        idempotency_key=idempotency_key,
+        quantities=received_event,
+        received_by=actor if getattr(actor, "is_authenticated", False) else None,
+    )
     write_audit(
         organization=transfer.organization,
         actor=actor,
         action="stock_transfer.receive",
         instance=transfer,
-        after={"idempotency_key": idempotency_key, "line_count": len(lines)},
+        after={"idempotency_key": idempotency_key, "quantities": received_event, "fully_received": fully_received},
     )
     return transfer
 
@@ -316,7 +335,7 @@ def cancel_stock_transfer(*, transfer, actor=None):
     )
     if transfer.status == StockTransfer.Status.CANCELLED:
         return transfer
-    if transfer.status == StockTransfer.Status.RECEIVED:
+    if transfer.status in {StockTransfer.Status.RECEIVED, StockTransfer.Status.PARTIALLY_RECEIVED}:
         raise ValidationError("已收货调拨单不能取消")
     if transfer.status not in {
         StockTransfer.Status.DRAFT,
@@ -590,6 +609,19 @@ def _purchase_audit_snapshot(purchase_order):
     }
 
 
+def purchase_order_for_update_queryset():
+    """Lock only the purchase order and its non-nullable joins.
+
+    PostgreSQL rejects ``FOR UPDATE`` when Django adds a LEFT OUTER JOIN for the
+    nullable purchaser relation.  Keeping that relation out of this locking
+    query preserves the row lock without attempting to lock the nullable side
+    of an outer join.
+    """
+    return PurchaseOrder.objects.select_for_update().select_related(
+        "organization", "supplier", "warehouse"
+    )
+
+
 @transaction.atomic
 def edit_purchase(*, purchase_order, data, actor=None):
     """Edit only the unreceived part of an open purchase order.
@@ -597,9 +629,7 @@ def edit_purchase(*, purchase_order, data, actor=None):
     Receipt rows and stock ledgers are never changed here.  The guards make
     changes safe even when an operator edits a partially received PO.
     """
-    purchase_order = PurchaseOrder.objects.select_for_update().select_related(
-        "organization", "supplier", "warehouse", "purchaser"
-    ).get(pk=purchase_order.pk)
+    purchase_order = purchase_order_for_update_queryset().get(pk=purchase_order.pk)
     if purchase_order.status not in {
         PurchaseOrder.Status.DRAFT,
         PurchaseOrder.Status.SUBMITTED,

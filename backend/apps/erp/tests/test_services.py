@@ -424,6 +424,34 @@ class InventoryServiceTests(TestCase):
         with self.assertRaises(ValidationError):
             cancel_stock_transfer(transfer=transfer, actor=self.user)
 
+    def test_stock_transfer_accepts_partial_receipts_and_keeps_audit_history(self):
+        destination = Warehouse.objects.create(
+            organization=self.organization, code="PARTIAL-DST", name="Partial destination"
+        )
+        adjust_inventory(
+            organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+            delta="10", reason="partial transfer opening", idempotency_key="partial-opening", actor=self.user,
+        )
+        transfer = StockTransfer.objects.create(
+            organization=self.organization, number="TR-PARTIAL", source_warehouse=self.warehouse,
+            destination_warehouse=destination,
+        )
+        line = StockTransferLine.objects.create(transfer=transfer, sku=self.sku, quantity="4")
+        dispatch_stock_transfer(transfer=transfer, idempotency_key="partial-dispatch", actor=self.user)
+        partial = receive_stock_transfer(
+            transfer=transfer, idempotency_key="partial-receive-1",
+            quantities={str(line.pk): Decimal("1.5")}, actor=self.user,
+        )
+        self.assertEqual(partial.status, StockTransfer.Status.PARTIALLY_RECEIVED)
+        line.refresh_from_db()
+        self.assertEqual(line.received_quantity, Decimal("1.5"))
+        completed = receive_stock_transfer(
+            transfer=transfer, idempotency_key="partial-receive-2",
+            quantities={str(line.pk): Decimal("2.5")}, actor=self.user,
+        )
+        self.assertEqual(completed.status, StockTransfer.Status.RECEIVED)
+        source_balance = StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku)
+
         cancellable = StockTransfer.objects.create(
             organization=self.organization, number="TR-CANCEL",
             source_warehouse=self.warehouse, destination_warehouse=destination,

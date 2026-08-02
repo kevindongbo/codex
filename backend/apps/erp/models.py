@@ -578,6 +578,7 @@ class StockTransfer(OrganizationScopedModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "草稿"
         IN_TRANSIT = "in_transit", "调拨在途"
+        PARTIALLY_RECEIVED = "partially_received", "部分收货"
         RECEIVED = "received", "已收货"
         CANCELLED = "cancelled", "已取消"
 
@@ -588,7 +589,7 @@ class StockTransfer(OrganizationScopedModel):
     destination_warehouse = models.ForeignKey(
         Warehouse, on_delete=models.PROTECT, related_name="inbound_transfers", verbose_name="调入仓库"
     )
-    status = models.CharField("状态", max_length=16, choices=Status.choices, default=Status.DRAFT)
+    status = models.CharField("状态", max_length=20, choices=Status.choices, default=Status.DRAFT)
     notes = models.TextField("备注", blank=True)
     dispatch_idempotency_key = models.CharField("发出幂等键", max_length=120, blank=True)
     receive_idempotency_key = models.CharField("收货幂等键", max_length=120, blank=True)
@@ -644,6 +645,10 @@ class StockTransferLineQuerySet(models.QuerySet):
             raise ValidationError("已过账调拨单的明细不可修改或删除")
 
     def update(self, **kwargs):
+        if set(kwargs).issubset({"received_quantity", "updated_at"}) and not self.exclude(
+            transfer__status__in={StockTransfer.Status.IN_TRANSIT, StockTransfer.Status.PARTIALLY_RECEIVED}
+        ).exists():
+            return super().update(**kwargs)
         self._assert_draft()
         return super().update(**kwargs)
 
@@ -656,6 +661,7 @@ class StockTransferLine(TimeStampedModel):
     transfer = models.ForeignKey(StockTransfer, on_delete=models.CASCADE, related_name="lines", verbose_name="调拨单")
     sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="transfer_lines", verbose_name="库存单位（SKU）")
     quantity = models.DecimalField("数量", max_digits=14, decimal_places=3)
+    received_quantity = models.DecimalField("累计收货数量", max_digits=14, decimal_places=3, default=Decimal("0"))
 
     objects = StockTransferLineQuerySet.as_manager()
 
@@ -680,9 +686,28 @@ class StockTransferLine(TimeStampedModel):
             persisted_status = StockTransfer.objects.filter(pk=self.transfer_id).values_list(
                 "status", flat=True
             ).first()
-            if persisted_status != StockTransfer.Status.DRAFT:
+            allowed_receipt_update = (
+                bool(kwargs.get("update_fields"))
+                and set(kwargs["update_fields"]) <= {"received_quantity", "updated_at"}
+                and persisted_status in {StockTransfer.Status.IN_TRANSIT, StockTransfer.Status.PARTIALLY_RECEIVED}
+            )
+            if persisted_status != StockTransfer.Status.DRAFT and not allowed_receipt_update:
                 raise ValidationError("已过账调拨单的明细不可修改")
         return super().save(*args, **kwargs)
+
+
+class StockTransferReceipt(OrganizationScopedModel):
+    """Immutable receipt event for partial stock-transfer receiving."""
+
+    transfer = models.ForeignKey(StockTransfer, on_delete=models.PROTECT, related_name="receipt_events")
+    idempotency_key = models.CharField(max_length=120)
+    quantities = models.JSONField(default=dict)
+    received_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "idempotency_key"], name="uniq_org_transfer_receipt_idem"),
+        ]
 
 
 class SalesOrder(OrganizationScopedModel):
