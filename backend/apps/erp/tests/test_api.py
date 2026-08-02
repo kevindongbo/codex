@@ -1081,6 +1081,72 @@ class ApiTests(TestCase):
         self.assertEqual(received.status_code, 201, received.data)
         self.assertEqual(PurchaseOrder.objects.get(pk=created.data["id"]).status, PurchaseOrder.Status.PARTIAL)
 
+    def test_submitted_purchase_can_be_edited_with_tracking_number_only_and_saved_again(self):
+        """Tracking numbers are optional package metadata, not a prerequisite for receipt allocation."""
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(
+            organization=self.organization, code="PO-EDIT-WH", name="采购编辑仓"
+        )
+        supplier = Supplier.objects.create(
+            organization=self.organization, code="PO-EDIT-SUP", name="采购编辑供应商"
+        )
+        product = Product.objects.create(
+            organization=self.organization, name="采购编辑商品", status=Product.Status.ACTIVE
+        )
+        sku = SKU.objects.create(
+            organization=self.organization, product=product, code="PO-EDIT-SKU", cost="9.06"
+        )
+        created = self.client.post(
+            "/api/purchase-orders/",
+            {
+                "number": "PO-EDIT-TRACKING", "supplier": str(supplier.pk),
+                "warehouse": str(warehouse.pk),
+                "lines": [{"sku": str(sku.pk), "quantity_ordered": "10", "unit_cost": "9.06"}],
+            },
+            format="json", **headers,
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        submitted = self.client.post(f"/api/purchase-orders/{created.data['id']}/submit/", **headers)
+        self.assertEqual(submitted.status_code, 200, submitted.data)
+
+        payload = {
+            "number": "PO-EDIT-TRACKING", "supplier": str(supplier.pk),
+            "warehouse": str(warehouse.pk), "purchaser": self.user.pk,
+            "lines": [{"sku": str(sku.pk), "quantity_ordered": "10", "unit_cost": "9.06"}],
+            "shipments": [{"tracking_number": "2313441232", "lines": []}],
+        }
+        first = self.client.post(
+            f"/api/purchase-orders/{created.data['id']}/edit/", payload, format="json", **headers
+        )
+        self.assertEqual(first.status_code, 200, first.data)
+        shipment = first.data["shipments"][0]
+        self.assertEqual(shipment["tracking_number"], "2313441232")
+
+        payload["shipments"][0]["id"] = shipment["id"]
+        payload["shipments"].append({"tracking_number": "YT-SECOND", "lines": []})
+        payload["notes"] = "补充采购备注"
+        second = self.client.post(
+            f"/api/purchase-orders/{created.data['id']}/edit/", payload, format="json", **headers
+        )
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(
+            {item["tracking_number"] for item in second.data["shipments"]},
+            {"2313441232", "YT-SECOND"},
+        )
+
+    def test_purchase_edit_lock_does_not_join_nullable_purchaser(self):
+        """PostgreSQL cannot apply FOR UPDATE to a nullable outer-join target."""
+        from apps.erp.services import purchase_order_for_update_queryset
+
+        query = purchase_order_for_update_queryset().query
+
+        self.assertTrue(query.select_for_update)
+        self.assertEqual(
+            set(query.select_related),
+            {"organization", "supplier", "warehouse"},
+        )
+
     def test_warehouse_member_cannot_write_outside_authorized_warehouse(self):
         warehouse_allowed = Warehouse.objects.create(
             organization=self.organization, code="ACCESS-YES", name="授权仓"

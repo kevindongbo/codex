@@ -426,6 +426,19 @@
       return this.adaptState(raw);
     }
 
+    applyPurchaseOrderResult(purchaseOrder) {
+      if (!purchaseOrder || !purchaseOrder.id) {
+        throw new ApiError('采购单保存成功，但服务器未返回采购单数据。', 0, purchaseOrder);
+      }
+      const purchases = Array.isArray(this.cache.purchaseOrders) ? this.cache.purchaseOrders.slice() : [];
+      const id = String(purchaseOrder.id);
+      const index = purchases.findIndex(function (item) { return String(item.id) === id; });
+      if (index >= 0) purchases[index] = purchaseOrder;
+      else purchases.push(purchaseOrder);
+      this.cache.purchaseOrders = purchases;
+      return this.adaptState(this.cache);
+    }
+
     adaptState(raw) {
       const supplierById = new Map(raw.suppliers.map(function (item) { return [String(item.id), item]; }));
       const productBySku = new Map();
@@ -499,7 +512,10 @@
         return {
           id: String(item.id), apiStatus: item.status, number: item.number,
           supplier: (supplierById.get(String(item.supplier)) || {}).name || '未命名供应商',
-          supplierId: String(item.supplier), warehouseId: LOCAL_WAREHOUSE_ID,
+          // Legacy draft purchase orders can have no supplier yet.  Do not turn
+          // that into the literal string "null", because it would be submitted
+          // as an invalid primary key on a later edit.
+          supplierId: item.supplier ? String(item.supplier) : '', warehouseId: LOCAL_WAREHOUSE_ID,
           purchaserId: item.purchaser ? String(item.purchaser) : '',
           purchaserName: item.purchaser_display_name || '',
           status: poStatus[item.status] || item.status, orderedAt: item.ordered_at,
@@ -849,24 +865,36 @@
     async editPurchase(order) {
       const supplier = order.supplierId ? { id: order.supplierId } : await this.ensureSupplier(order.supplier);
       const lineById = new Map((order.lines || []).map(function (line) { return [String(line.id), line]; }));
+      const isUuid = function (value) {
+        return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+      };
+      const shipments = (order.shipments || []).map(function (shipment) {
+        const trackingNumber = String(shipment.trackingNumber || '').trim();
+        const normalizedShipment = {
+          // Old browser-only drafts may contain a temporary non-UUID id.  The
+          // API treats an omitted id as a tracking-number match, which is safe
+          // for a second edit and avoids sending an invalid UUID to Django.
+          tracking_number: trackingNumber,
+          lines: (shipment.lines || []).map(function (line) {
+            const orderLine = lineById.get(String(line.purchaseLineId));
+            return { sku: line.skuId || (orderLine && orderLine.skuId), quantity_shipped: line.quantity };
+          }).filter(function (line) { return line.sku && number(line.quantity) > 0; })
+        };
+        if (isUuid(shipment.id)) normalizedShipment.id = shipment.id;
+        return normalizedShipment;
+      }).filter(function (shipment) { return shipment.tracking_number; });
       const payload = {
         number: order.number, supplier: supplier ? supplier.id : null, warehouse: this.warehouseId || null,
-        purchaser: order.purchaserId || null,
         currency: (order.lines[0] && order.lines[0].currency) || 'CNY', extra_cost: order.extraCost || 0,
         ordered_at: iso(order.orderedAt), expected_at: iso(order.expectedAt), notes: order.note || '',
         lines: (order.lines || []).map(function (line) {
           return { sku: line.skuId, quantity_ordered: line.orderedQty || line.quantity, unit_cost: line.unitCost };
         }),
-        shipments: (order.shipments || []).map(function (shipment) {
-          return {
-            id: shipment.id || undefined, tracking_number: shipment.trackingNumber,
-            lines: (shipment.lines || []).map(function (line) {
-              const orderLine = lineById.get(String(line.purchaseLineId));
-              return { sku: line.skuId || (orderLine && orderLine.skuId), quantity_shipped: line.quantity };
-            }).filter(function (line) { return line.sku && number(line.quantity) > 0; })
-          };
-        }).filter(function (shipment) { return shipment.tracking_number; })
+        shipments: shipments
       };
+      // Omitting an unset purchaser preserves the current purchaser.  Sending
+      // null used to clear it during every second edit of legacy purchase data.
+      if (order.purchaserId) payload.purchaser = order.purchaserId;
       return this.request('/purchase-orders/' + encodeURIComponent(order.id) + '/edit/', { method: 'POST', body: payload });
     }
 

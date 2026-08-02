@@ -37,6 +37,9 @@ router.register("ai-recommendations", views.AIRecommendationViewSet, basename="a
 
 urlpatterns = [
     path("health/", views.health, name="health"),
+    path("profit-calculator/config/", views.profit_calculator_config, name="profit-calculator-config"),
+    path("profit-calculator/exchange-rates/", views.profit_exchange_rates, name="profit-exchange-rates"),
+    path("profit-calculator/calculate/", views.profit_calculator_calculate, name="profit-calculator-calculate"),
     path("sync/version/", views.sync_version, name="sync-version"),
     path("auth/me/", views.me, name="me"),
     path("integrations/tiktok-shop/callback/", views.tiktok_shop_oauth_callback, name="tiktok-shop-oauth-callback"),

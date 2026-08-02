@@ -3,6 +3,8 @@ import logging
 import uuid
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
+from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
@@ -65,11 +67,66 @@ from .replenishment import (
     build_replenishment_forecast,
 )
 from .replenishment_automation import schedule_replenishment_ai_analysis
+from .profit_calculator import (
+    AFFILIATE_SOURCE,
+    COMMISSION_SOURCE,
+    LVG_RATE,
+    LVG_TAX_SOURCE,
+    PLATFORM_SUPPORT_FEE,
+    RULE_EFFECTIVE_DATE,
+    SHIPPING_CALCULATION_SOURCE,
+    SHIPPING_SOURCE,
+    SUPPORT_FEE_SOURCE,
+    TRANSACTION_RATE,
+    TRANSACTION_SOURCE,
+    category_config,
+    category_tree,
+    calculate_profit,
+)
+from .profit_serializers import ProfitCalculationSerializer
+from .profit_shipping_rates import (
+    MALAYSIA_CROSS_BORDER_EFFECTIVE_DATE,
+    MALAYSIA_CROSS_BORDER_MAX_G,
+    MALAYSIA_CROSS_BORDER_RATE_VERSION,
+    MALAYSIA_CROSS_BORDER_SOURCE_FILE,
+)
 from .single_tenant import active_internal_membership, ensure_internal_organization, internal_organization
 from .sync import bump_sync_revision
 
 
 logger = logging.getLogger(__name__)
+
+
+ECB_DAILY_RATES_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+ECB_DAILY_RATES_CACHE_KEY = "profit-calculator:exchange-rates:ecb:daily"
+ECB_LAST_GOOD_RATES_CACHE_KEY = "profit-calculator:exchange-rates:ecb:last-good"
+
+
+def _parse_ecb_daily_rates(payload):
+    root = ElementTree.fromstring(payload)
+    dated_cube = next(
+        (node for node in root.iter() if node.tag.endswith("Cube") and node.attrib.get("time")),
+        None,
+    )
+    if dated_cube is None:
+        raise ValueError("ECB response does not include a dated rate table.")
+    rates = {
+        node.attrib.get("currency"): Decimal(node.attrib["rate"])
+        for node in dated_cube
+        if node.attrib.get("currency") and node.attrib.get("rate")
+    }
+    missing = {"CNY", "MYR", "USD"} - set(rates)
+    if missing or any(rates[currency] <= 0 for currency in ("CNY", "MYR", "USD")):
+        raise ValueError("ECB response is missing a required positive exchange rate.")
+    precision = Decimal("0.000001")
+    return {
+        "date": dated_cube.attrib["time"],
+        "cny_per_myr": str((rates["CNY"] / rates["MYR"]).quantize(precision)),
+        "usd_per_myr": str((rates["USD"] / rates["MYR"]).quantize(precision)),
+        "source": "European Central Bank",
+        "source_url": ECB_DAILY_RATES_URL,
+        "stale": False,
+    }
 
 
 class DataConflict(APIException):
@@ -124,6 +181,75 @@ def health(request):
         cursor.execute("SELECT 1")
         cursor.fetchone()
     return Response({"status": "ok", "database": "ok"})
+
+
+@api_view(["GET"])
+def profit_calculator_config(request):
+    """Expose versioned fee rules without relying on another calculator site."""
+    return Response({
+        "countries": [{"code": "MY", "label": "马来西亚", "currency": "MYR"}],
+        "shop_identities": [
+            {"code": "marketplace", "label": "Marketplace"},
+            {"code": "mall", "label": "Mall"},
+        ],
+        "categories": category_config(),
+        "category_tree": category_tree(),
+        "transaction_rate": str(TRANSACTION_RATE),
+        "default_commission_adjustment": "1.00",
+        "platform_support_fee": str(PLATFORM_SUPPORT_FEE),
+        "lvg_rate": str(LVG_RATE),
+        "shipping_rate_version": MALAYSIA_CROSS_BORDER_RATE_VERSION,
+        "shipping_effective_date": MALAYSIA_CROSS_BORDER_EFFECTIVE_DATE,
+        "shipping_source_file": MALAYSIA_CROSS_BORDER_SOURCE_FILE,
+        "shipping_max_weight_g": str(MALAYSIA_CROSS_BORDER_MAX_G),
+        "rule_effective_date": str(RULE_EFFECTIVE_DATE),
+        "sources": {
+            "commission": COMMISSION_SOURCE,
+            "transaction": TRANSACTION_SOURCE,
+            "affiliate": AFFILIATE_SOURCE,
+            "platform_support": SUPPORT_FEE_SOURCE,
+            "shipping": SHIPPING_SOURCE,
+            "shipping_calculation": SHIPPING_CALCULATION_SOURCE,
+            "lvg_tax": LVG_TAX_SOURCE,
+        },
+    })
+
+
+@api_view(["GET"])
+def profit_exchange_rates(request):
+    """Return one daily MYR conversion snapshot derived from ECB reference rates."""
+    force_refresh = request.query_params.get("refresh") == "1"
+    if not force_refresh:
+        cached = cache.get(ECB_DAILY_RATES_CACHE_KEY)
+        if cached:
+            return Response(cached)
+
+    try:
+        upstream_request = Request(
+            ECB_DAILY_RATES_URL,
+            headers={"Accept": "application/xml", "User-Agent": "DongboERP/1.0"},
+        )
+        with urlopen(upstream_request, timeout=6) as response:
+            result = _parse_ecb_daily_rates(response.read())
+        cache.set(ECB_DAILY_RATES_CACHE_KEY, result, timeout=60 * 60 * 24)
+        cache.set(ECB_LAST_GOOD_RATES_CACHE_KEY, result, timeout=60 * 60 * 24 * 30)
+        return Response(result)
+    except Exception:
+        logger.exception("Unable to refresh ECB exchange rates")
+        fallback = cache.get(ECB_LAST_GOOD_RATES_CACHE_KEY)
+        if fallback:
+            return Response({**fallback, "stale": True})
+        return Response(
+            {"detail": "Daily exchange rates are temporarily unavailable; use the manual rate mode."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+
+@api_view(["POST"])
+def profit_calculator_calculate(request):
+    serializer = ProfitCalculationSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    return Response(calculate_profit(serializer.validated_data))
 
 
 def _selection_rate_limit(request, action, limit, seconds):
@@ -1148,23 +1274,32 @@ class PurchaseOrderViewSet(OrganizationScopedViewSet):
 
     @action(detail=True, methods=["post"])
     def edit(self, request, pk=None):
-        input_serializer = PurchaseOrderEditInputSerializer(
-            data=request.data,
-            context=self.get_serializer_context(),
-        )
-        input_serializer.is_valid(raise_exception=True)
-        _require_warehouse_access(
-            request,
-            self.get_organization(),
-            input_serializer.validated_data.get("warehouse") or self.get_object().warehouse,
-        )
-        purchase_order = _service_call(
-            edit_purchase,
-            purchase_order=self.get_object(),
-            data=input_serializer.validated_data,
-            actor=request.user,
-        )
-        return Response(self.get_serializer(purchase_order).data)
+        try:
+            input_serializer = PurchaseOrderEditInputSerializer(
+                data=request.data,
+                context=self.get_serializer_context(),
+            )
+            input_serializer.is_valid(raise_exception=True)
+            _require_warehouse_access(
+                request,
+                self.get_organization(),
+                input_serializer.validated_data.get("warehouse") or self.get_object().warehouse,
+            )
+            purchase_order = _service_call(
+                edit_purchase,
+                purchase_order=self.get_object(),
+                data=input_serializer.validated_data,
+                actor=request.user,
+            )
+            return Response(self.get_serializer(purchase_order).data)
+        except APIException:
+            raise
+        except Exception:
+            # Keep the API response safe, but retain the actionable traceback in
+            # the service log when an old purchase record exposes an unexpected
+            # data shape during its second edit.
+            logger.exception("Purchase order edit failed", extra={"purchase_order_id": str(pk), "actor_id": request.user.pk})
+            raise
 
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
