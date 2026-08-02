@@ -1,4 +1,3 @@
-
 :root {
   --navy: #16324f;
   --navy-strong: #0f2740;
@@ -350,7 +349,7 @@ body:has(.primary-nav-item[data-module="profit"].active) .sidebar-module[data-si
   .warehouse-context-bar .warehouse-switcher { grid-column: 1/-1; grid-row: 2; }
   .profit-rules-index { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .profit-flow-list { grid-template-columns: 1fr; gap: 8px; }
-  .profit-flow-list li:not(:last-child)::after { content: "鈫?; right: auto; left: 8px; top: auto; bottom: -8px; }
+  .profit-flow-list li:not(:last-child)::after { content: "↓"; right: auto; left: 8px; top: auto; bottom: -8px; }
 }
 
 @media (max-width: 620px) {
