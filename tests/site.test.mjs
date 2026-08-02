@@ -12,19 +12,19 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type"), /^text\/html/);
-  assert.match(html, /东铂跨境/);
-  assert.match(html, /商品中心/);
-  assert.match(html, /仓配中心/);
-  assert.match(html, /竞品监控/);
-  assert.match(html, /智能选品/);
-  assert.doesNotMatch(html, />\s*总览\s*</);
+  assert.match(html, /涓滈搨璺ㄥ/);
+  assert.match(html, /鍟嗗搧涓績/);
+  assert.match(html, /浠撻厤涓績/);
+  assert.match(html, /绔炲搧鐩戞帶/);
+  assert.match(html, /鏅鸿兘閫夊搧/);
+  assert.doesNotMatch(html, />\s*鎬昏\s*</);
   assert.match(html, /data-module="products"/);
   assert.match(html, /data-module="warehouse"/);
   assert.match(html, /data-module="competitors"/);
   assert.match(html, /data-module="selection"/);
-  assert.match(html, /property="og:title" content="东铂跨境 · 跨境电商运营管理系统"/);
-  assert.match(html, /账号与权限/);
-  assert.match(html, /主账号可统一管理所有内部成员/);
+  assert.match(html, /property="og:title" content="涓滈搨璺ㄥ 路 璺ㄥ鐢靛晢杩愯惀绠＄悊绯荤粺"/);
+  assert.match(html, /璐﹀彿涓庢潈闄?);
+  assert.match(html, /涓昏处鍙峰彲缁熶竴绠＄悊鎵€鏈夊唴閮ㄦ垚鍛?);
   assert.doesNotMatch(html, /DONGBO COMMERCE|PRODUCT MASTER|FULFILLMENT CENTER|REPLENISHMENT POLICY|DATA & TEAM/);
   assert.match(html, /assets\/dongbo-erp-mark\.png/);
   assert.match(html, /data-warehouse-tab="purchase"/);
@@ -36,11 +36,11 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260730-profit-alignment-11/);
+  assert.match(html, /styles\.css\?v=20260730-profit-alignment-12/);
   assert.match(html, /team\.js\?v=20260728-profit-calculator-server-1/);
-  assert.match(html, /profit-calculator\.js\?v=20260730-profit-alignment-11/);
-  assert.match(html, /app\.js\?v=20260730-profit-alignment-11/);
-  assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
+  assert.match(html, /profit-calculator\.js\?v=20260730-profit-alignment-12/);
+  assert.match(html, /app\.js\?v=20260730-profit-alignment-12/);
+  assert.match(html, /for="productImageFile">浠庣數鑴戦€夋嫨<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
 
@@ -126,12 +126,12 @@ test("contains product, warehouse, order and monitoring workflows", async () => 
   const ids = [...html.matchAll(/id="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(ids).size, ids.length, "HTML ids must be unique");
   assert.ok((html.match(/data-side-link/g) || []).length >= 15, "contextual side navigation must expose all ERP workflows");
-  assert.match(html, /仓库数量不受限制/);
-  assert.match(html, /一次确认完成整单库存校验、扣库与出库流水/);
-  assert.match(html, /已有基准后只需修改累计销量/);
-  assert.match(html, /其他公开数据（已自动沿用，有变化时再修改）/);
-  assert.match(html, /同一个商品可维护多个颜色、尺寸或套装 SKU/);
-  assert.match(html, />确认并出库</);
+  assert.match(html, /浠撳簱鏁伴噺涓嶅彈闄愬埗/);
+  assert.match(html, /涓€娆＄‘璁ゅ畬鎴愭暣鍗曞簱瀛樻牎楠屻€佹墸搴撲笌鍑哄簱娴佹按/);
+  assert.match(html, /宸叉湁鍩哄噯鍚庡彧闇€淇敼绱閿€閲?);
+  assert.match(html, /鍏朵粬鍏紑鏁版嵁锛堝凡鑷姩娌跨敤锛屾湁鍙樺寲鏃跺啀淇敼锛?);
+  assert.match(html, /鍚屼竴涓晢鍝佸彲缁存姢澶氫釜棰滆壊銆佸昂瀵告垨濂楄 SKU/);
+  assert.match(html, />纭骞跺嚭搴?/);
 });
 
 test("keeps multi-line purchase creation and batch receiving usable for long orders", async () => {
@@ -143,7 +143,7 @@ test("keeps multi-line purchase creation and batch receiving usable for long ord
   assert.match(css, /\.purchase-sku-picker \{ max-height: 340px; overflow-y: auto;/);
   assert.match(html, /id="receivePurchaseId"/);
   assert.match(html, /id="receiveLineList"/);
-  assert.match(html, /只填写实际到货的数量/);
+  assert.match(html, /鍙～鍐欏疄闄呭埌璐х殑鏁伴噺/);
   assert.match(css, /\.purchase-line-list, \.receive-line-list \{ max-height: 300px; overflow-y: auto;/);
 });
 
@@ -176,7 +176,7 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /remove-own-monitoring/);
   assert.match(scriptText, /delete-competitor/);
   assert.match(scriptText, /teamGateway\.deleteStockBalance\(balance, true\)/);
-  assert.doesNotMatch(scriptText, /团队版会保留本店 SKU 主档/);
+  assert.doesNotMatch(scriptText, /鍥㈤槦鐗堜細淇濈暀鏈簵 SKU 涓绘。/);
   assert.match(scriptText, /inventoryBalances/);
   assert.match(scriptText, /inventoryMovements/);
   assert.match(scriptText, /reservations/);
@@ -209,7 +209,7 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /Treat the currently typed tracking number as a pending logistics record/);
   assert.match(scriptText, /const pendingTrackingNumber = \$\('#purchaseTrackingNumber'\)\.value\.trim\(\)/);
   assert.match(scriptText, /draftPurchaseShipments\.push\(\{ id: '', trackingNumber: pendingTrackingNumber, lines: \[\] \}\)/);
-  assert.match(scriptText, /保存成功，但页面数据刷新失败/);
+  assert.match(scriptText, /淇濆瓨鎴愬姛锛屼絾椤甸潰鏁版嵁鍒锋柊澶辫触/);
   assert.match(scriptText, /applyResult: function \(savedPurchase\) \{ return teamGateway\.applyPurchaseOrderResult\(savedPurchase\); \}/);
   assert.match(scriptText, /refreshOnError: false/);
   assert.match(scriptText, /initializeTeamMode/);
@@ -275,4 +275,3 @@ test("Docker team deployment serves the API adapter and runtime mode", async () 
   assert.match(caddy, /apiBase: "\/api"/);
   assert.match(caddy, /Cache-Control "no-store"/);
 });
-
