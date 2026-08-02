@@ -6,426 +6,186 @@
   <meta name="theme-color" content="#163b4f" />
   <link rel="icon" type="image/png" href="assets/dongbo-erp-mark.png" />
   <link rel="apple-touch-icon" href="assets/dongbo-erp-mark.png" />
-  <meta name="description" content="东铂跨境：商品、采购、仓储、订单与竞品监控一体化运营工作台。" />
+  <meta name="description" content="涓滈搨璺ㄥ锛氬晢鍝併€侀噰璐€佷粨鍌ㄣ€佽鍗曚笌绔炲搧鐩戞帶涓€浣撳寲杩愯惀宸ヤ綔鍙般€? />
   <meta property="og:type" content="website" />
   <meta property="og:locale" content="zh_CN" />
-  <meta property="og:site_name" content="东铂跨境" />
-  <meta property="og:title" content="东铂跨境 · 跨境电商运营管理系统" />
-  <meta property="og:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
+  <meta property="og:site_name" content="涓滈搨璺ㄥ" />
+  <meta property="og:title" content="涓滈搨璺ㄥ 路 璺ㄥ鐢靛晢杩愯惀绠＄悊绯荤粺" />
+  <meta property="og:description" content="鍟嗗搧銆佸浠撳簱瀛樸€佹櫤鑳借ˉ璐с€佽鍗曞饱绾︿笌绔炲搧鐩戞帶涓€浣撳寲杩愯惀宸ヤ綔鍙般€? />
   <meta property="og:url" content="https://dongbokeji.com/" />
   <meta property="og:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
-  <meta property="og:image:alt" content="东铂跨境运营工作台" />
+  <meta property="og:image:alt" content="涓滈搨璺ㄥ杩愯惀宸ヤ綔鍙? />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="东铂跨境 · 跨境电商运营管理系统" />
-  <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
+  <meta name="twitter:title" content="涓滈搨璺ㄥ 路 璺ㄥ鐢靛晢杩愯惀绠＄悊绯荤粺" />
+  <meta name="twitter:description" content="鍟嗗搧銆佸浠撳簱瀛樸€佹櫤鑳借ˉ璐с€佽鍗曞饱绾︿笌绔炲搧鐩戞帶涓€浣撳寲杩愯惀宸ヤ綔鍙般€? />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
-  <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260730-profit-alignment-11" />
+  <title>涓滈搨璺ㄥ 路 璺ㄥ鐢靛晢杩愯惀绠＄悊绯荤粺</title>
+  <link rel="stylesheet" href="styles.css?v=20260730-profit-alignment-12" />
 </head>
 <body>
   <header class="app-header">
-    <a class="brand" href="#products" aria-label="东铂跨境首页">
-      <span class="brand-mark brand-mark-logo" role="img" aria-label="东铂跨境 ERP 标志"></span>
-      <span class="brand-copy"><strong>东铂跨境</strong><small>跨境运营系统</small></span>
+    <a class="brand" href="#products" aria-label="涓滈搨璺ㄥ棣栭〉">
+      <span class="brand-mark brand-mark-logo" role="img" aria-label="涓滈搨璺ㄥ ERP 鏍囧織"></span>
+      <span class="brand-copy"><strong>涓滈搨璺ㄥ</strong><small>璺ㄥ杩愯惀绯荤粺</small></span>
     </a>
 
-    <nav class="primary-nav" aria-label="主导航">
-      <button class="primary-nav-item active" data-module="products"><span>商品中心</span><b id="navProductCount">0</b></button>
-      <button class="primary-nav-item" data-module="warehouse"><span>仓配中心</span><b id="navWarehouseCount">0</b></button>
-      <button class="primary-nav-item" data-module="competitors"><span>竞品监控</span><b id="navAlertCount">0</b></button>
-      <button class="primary-nav-item" data-module="profit"><span>利润试算</span></button>
-      <button class="primary-nav-item" data-module="selection"><span>智能选品</span><b>AI</b></button>
+    <nav class="primary-nav" aria-label="涓诲鑸?>
+      <button class="primary-nav-item active" data-module="products"><span>鍟嗗搧涓績</span><b id="navProductCount">0</b></button>
+      <button class="primary-nav-item" data-module="warehouse"><span>浠撻厤涓績</span><b id="navWarehouseCount">0</b></button>
+      <button class="primary-nav-item" data-module="competitors"><span>绔炲搧鐩戞帶</span><b id="navAlertCount">0</b></button>
+      <button class="primary-nav-item" data-module="profit"><span>鍒╂鼎璇曠畻</span></button>
+      <button class="primary-nav-item" data-module="selection"><span>鏅鸿兘閫夊搧</span><b>AI</b></button>
     </nav>
 
     <div class="header-tools">
-      <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-controls="moduleSidebar" aria-expanded="false"><span aria-hidden="true">☰</span><span>功能</span></button>
-      <label class="global-search"><span>⌕</span><input id="globalSearch" type="search" placeholder="搜索商品、SKU 或链接" aria-label="全局搜索" /></label>
-      <button class="storage-state" id="runtimeStateButton" type="button" aria-haspopup="dialog" aria-controls="sessionModal"><i></i><span id="runtimeStateText">本机已保存</span></button>
+      <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-controls="moduleSidebar" aria-expanded="false"><span aria-hidden="true">鈽?/span><span>鍔熻兘</span></button>
+      <label class="global-search"><span>鈱?/span><input id="globalSearch" type="search" placeholder="鎼滅储鍟嗗搧銆丼KU 鎴栭摼鎺? aria-label="鍏ㄥ眬鎼滅储" /></label>
+      <button class="storage-state" id="runtimeStateButton" type="button" aria-haspopup="dialog" aria-controls="sessionModal"><i></i><span id="runtimeStateText">鏈満宸蹭繚瀛?/span></button>
       <input id="csvFile" type="file" accept=".csv,text/csv" hidden />
-      <button class="button secondary header-secondary" id="importCsv">导入</button>
+      <button class="button secondary header-secondary" id="importCsv">瀵煎叆</button>
     </div>
   </header>
 
   <div class="app-body">
-    <aside class="module-sidebar" id="moduleSidebar" aria-label="当前模块功能导航">
+    <aside class="module-sidebar" id="moduleSidebar" aria-label="褰撳墠妯″潡鍔熻兘瀵艰埅">
       <section class="sidebar-module active" data-sidebar-module="products">
-        <div class="sidebar-heading"><span>商品中心</span><small>商品主数据</small></div>
-        <nav class="sidebar-nav" aria-label="商品中心功能">
+        <div class="sidebar-heading"><span>鍟嗗搧涓績</span><small>鍟嗗搧涓绘暟鎹?/small></div>
+        <nav class="sidebar-nav" aria-label="鍟嗗搧涓績鍔熻兘">
           <div class="sidebar-group">
-            <p>商品档案</p>
-            <button class="side-link active" type="button" data-side-link data-product-view="all" data-product-filter="all"><span class="side-icon">▦</span><span>全部商品</span></button>
-            <button class="side-link" type="button" data-side-link data-product-view="own" data-product-filter="own"><span class="side-icon">◇</span><span>本店 SKU</span></button>
-            <button class="side-link" type="button" data-side-link data-product-view="direct" data-product-filter="direct"><span class="side-icon">◎</span><span>直接竞品</span></button>
-            <button class="side-link" type="button" data-side-link data-product-view="indirect" data-product-filter="indirect"><span class="side-icon">◌</span><span>间接竞品</span></button>
-            <button class="side-link" type="button" data-side-link data-product-view="inactive" data-product-filter="inactive"><span class="side-icon">⊘</span><span>已停用</span></button>
+            <p>鍟嗗搧妗ｆ</p>
+            <button class="side-link active" type="button" data-side-link data-product-view="all" data-product-filter="all"><span class="side-icon">鈻?/span><span>鍏ㄩ儴鍟嗗搧</span></button>
+            <button class="side-link" type="button" data-side-link data-product-view="own" data-product-filter="own"><span class="side-icon">鈼?/span><span>鏈簵 SKU</span></button>
+            <button class="side-link" type="button" data-side-link data-product-view="direct" data-product-filter="direct"><span class="side-icon">鈼?/span><span>鐩存帴绔炲搧</span></button>
+            <button class="side-link" type="button" data-side-link data-product-view="indirect" data-product-filter="indirect"><span class="side-icon">鈼?/span><span>闂存帴绔炲搧</span></button>
+            <button class="side-link" type="button" data-side-link data-product-view="inactive" data-product-filter="inactive"><span class="side-icon">鈯?/span><span>宸插仠鐢?/span></button>
           </div>
           <div class="sidebar-group">
-            <p>数据维护</p>
-            <button class="side-link" type="button" data-side-link data-scroll-target="importCsv" data-side-action="import"><span class="side-icon">⇧</span><span>导入商品</span></button>
-            <button class="side-link" type="button" data-side-link data-scroll-target="exportCsv" data-side-action="export"><span class="side-icon">⇩</span><span>导出数据</span></button>
+            <p>鏁版嵁缁存姢</p>
+            <button class="side-link" type="button" data-side-link data-scroll-target="importCsv" data-side-action="import"><span class="side-icon">鈬?/span><span>瀵煎叆鍟嗗搧</span></button>
+            <button class="side-link" type="button" data-side-link data-scroll-target="exportCsv" data-side-action="export"><span class="side-icon">鈬?/span><span>瀵煎嚭鏁版嵁</span></button>
           </div>
         </nav>
       </section>
 
       <section class="sidebar-module" data-sidebar-module="selection">
-        <div class="sidebar-heading"><span>智能选品</span><small>市场机会分析</small></div>
-        <nav class="sidebar-nav" aria-label="智能选品功能">
+        <div class="sidebar-heading"><span>鏅鸿兘閫夊搧</span><small>甯傚満鏈轰細鍒嗘瀽</small></div>
+        <nav class="sidebar-nav" aria-label="鏅鸿兘閫夊搧鍔熻兘">
           <div class="sidebar-group">
-            <p>选品流程</p>
-            <button class="side-link active" type="button" data-side-link data-selection-scroll="selectionKeywordPanel"><span class="side-icon">⌕</span><span>关键词机会</span></button>
-            <button class="side-link" type="button" data-side-link data-selection-scroll="selectionReportPanel"><span class="side-icon">▦</span><span>商品推荐</span></button>
+            <p>閫夊搧娴佺▼</p>
+            <button class="side-link active" type="button" data-side-link data-selection-scroll="selectionKeywordPanel"><span class="side-icon">鈱?/span><span>鍏抽敭璇嶆満浼?/span></button>
+            <button class="side-link" type="button" data-side-link data-selection-scroll="selectionReportPanel"><span class="side-icon">鈻?/span><span>鍟嗗搧鎺ㄨ崘</span></button>
           </div>
           <div class="sidebar-group">
-            <p>默认市场</p>
-            <div class="selection-sidebar-note"><strong>TikTok · 马来西亚</strong><span>可在查询区切换平台和国家。</span></div>
+            <p>榛樿甯傚満</p>
+            <div class="selection-sidebar-note"><strong>TikTok 路 椹潵瑗夸簹</strong><span>鍙湪鏌ヨ鍖哄垏鎹㈠钩鍙板拰鍥藉銆?/span></div>
           </div>
         </nav>
       </section>
 
       <section class="sidebar-module" data-sidebar-module="warehouse">
-        <div class="sidebar-heading"><span>仓配中心</span><small>仓储与履约</small></div>
-        <nav class="sidebar-nav" aria-label="仓配中心功能">
+        <div class="sidebar-heading"><span>浠撻厤涓績</span><small>浠撳偍涓庡饱绾?/small></div>
+        <nav class="sidebar-nav" aria-label="浠撻厤涓績鍔熻兘">
           <div class="sidebar-group">
-            <p>采购管理</p>
-            <button class="side-link active" type="button" data-side-link data-warehouse-view="purchase" data-purchase-view="open" data-warehouse-tab="purchase"><span class="side-icon">◫</span><span>采购与在途</span><b id="purchaseTabCount">0</b></button>
-            <button class="side-link" type="button" data-side-link data-warehouse-view="purchase" data-purchase-view="overdue" data-purchase-filter="overdue"><span class="side-icon">!</span><span>已逾期</span></button>
+            <p>閲囪喘绠＄悊</p>
+            <button class="side-link active" type="button" data-side-link data-warehouse-view="purchase" data-purchase-view="open" data-warehouse-tab="purchase"><span class="side-icon">鈼?/span><span>閲囪喘涓庡湪閫?/span><b id="purchaseTabCount">0</b></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="purchase" data-purchase-view="overdue" data-purchase-filter="overdue"><span class="side-icon">!</span><span>宸查€炬湡</span></button>
           </div>
           <div class="sidebar-group">
-            <p>库存管理</p>
-            <button class="side-link" type="button" data-side-link data-warehouse-view="inventory" data-warehouse-tab="inventory" data-scroll-target="inventoryListPanel"><span class="side-icon">▤</span><span>库存列表</span><b id="inventoryTabCount">0</b></button>
-            <button class="side-link" type="button" data-side-link data-warehouse-view="inventory" data-scroll-target="movementPanel"><span class="side-icon">↕</span><span>库存流水</span></button>
-            <button class="side-link" type="button" data-side-link data-warehouse-view="inventory" data-product-view="low-stock" data-scroll-target="inventoryListPanel"><span class="side-icon">△</span><span>低库存</span></button>
-            <button class="side-link" type="button" data-side-link data-warehouse-view="transfers" data-warehouse-tab="transfers"><span class="side-icon">⇄</span><span>仓间调拨</span><b id="transferTabCount">0</b></button>
-            <button class="side-link" type="button" data-side-link data-warehouse-view="replenishment" data-warehouse-tab="replenishment"><span class="side-icon">⌛</span><span>智能补货</span><b id="replenishmentTabCount">0</b></button>
+            <p>搴撳瓨绠＄悊</p>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="inventory" data-warehouse-tab="inventory" data-scroll-target="inventoryListPanel"><span class="side-icon">鈻?/span><span>搴撳瓨鍒楄〃</span><b id="inventoryTabCount">0</b></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="inventory" data-scroll-target="movementPanel"><span class="side-icon">鈫?/span><span>搴撳瓨娴佹按</span></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="inventory" data-product-view="low-stock" data-scroll-target="inventoryListPanel"><span class="side-icon">鈻?/span><span>浣庡簱瀛?/span></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="transfers" data-warehouse-tab="transfers"><span class="side-icon">鈬?/span><span>浠撻棿璋冩嫧</span><b id="transferTabCount">0</b></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="replenishment" data-warehouse-tab="replenishment"><span class="side-icon">鈱?/span><span>鏅鸿兘琛ヨ揣</span><b id="replenishmentTabCount">0</b></button>
           </div>
           <div class="sidebar-group">
-            <p>订单履约</p>
-            <button class="side-link" type="button" data-side-link data-warehouse-view="orders" data-order-view="open" data-warehouse-tab="orders"><span class="side-icon">□</span><span>订单处理</span><b id="orderTabCount">0</b></button>
-            <button class="side-link" type="button" data-side-link data-warehouse-view="orders" data-order-view="shortage" data-order-filter="shortage"><span class="side-icon">!</span><span>库存不足</span></button>
-            <button class="side-link" type="button" data-side-link data-warehouse-view="orders" data-order-view="shipped" data-order-filter="shipped"><span class="side-icon">✓</span><span>已出库 / 退货</span></button>
+            <p>璁㈠崟灞ョ害</p>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="orders" data-order-view="open" data-warehouse-tab="orders"><span class="side-icon">鈻?/span><span>璁㈠崟澶勭悊</span><b id="orderTabCount">0</b></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="orders" data-order-view="shortage" data-order-filter="shortage"><span class="side-icon">!</span><span>搴撳瓨涓嶈冻</span></button>
+            <button class="side-link" type="button" data-side-link data-warehouse-view="orders" data-order-view="shipped" data-order-filter="shipped"><span class="side-icon">鉁?/span><span>宸插嚭搴?/ 閫€璐?/span></button>
           </div>
         </nav>
       </section>
 
       <section class="sidebar-module" data-sidebar-module="competitors">
-        <div class="sidebar-heading"><span>竞品监控</span><small>竞品数据分析</small></div>
-        <nav class="sidebar-nav" aria-label="竞品监控功能">
+        <div class="sidebar-heading"><span>绔炲搧鐩戞帶</span><small>绔炲搧鏁版嵁鍒嗘瀽</small></div>
+        <nav class="sidebar-nav" aria-label="绔炲搧鐩戞帶鍔熻兘">
           <div class="sidebar-group">
-            <p>竞品管理</p>
-            <button class="side-link active" type="button" data-side-link data-competitor-view="products" data-competitor-tab="products"><span class="side-icon">◎</span><span>竞品商品</span></button>
-            <button class="side-link" type="button" data-side-link data-competitor-view="snapshots" data-competitor-tab="snapshots"><span class="side-icon">◴</span><span>销量记录</span></button>
+            <p>绔炲搧绠＄悊</p>
+            <button class="side-link active" type="button" data-side-link data-competitor-view="products" data-competitor-tab="products"><span class="side-icon">鈼?/span><span>绔炲搧鍟嗗搧</span></button>
+            <button class="side-link" type="button" data-side-link data-competitor-view="snapshots" data-competitor-tab="snapshots"><span class="side-icon">鈼?/span><span>閿€閲忚褰?/span></button>
           </div>
           <div class="sidebar-group">
-            <p>分析洞察</p>
-            <button class="side-link" type="button" data-side-link data-competitor-view="trends" data-competitor-tab="trends"><span class="side-icon">↗</span><span>趋势对比</span></button>
-            <button class="side-link" type="button" data-side-link data-competitor-view="alerts" data-competitor-tab="alerts"><span class="side-icon">!</span><span>变化提醒</span><b id="competitorAlertCount">0</b></button>
+            <p>鍒嗘瀽娲炲療</p>
+            <button class="side-link" type="button" data-side-link data-competitor-view="trends" data-competitor-tab="trends"><span class="side-icon">鈫?/span><span>瓒嬪娍瀵规瘮</span></button>
+            <button class="side-link" type="button" data-side-link data-competitor-view="alerts" data-competitor-tab="alerts"><span class="side-icon">!</span><span>鍙樺寲鎻愰啋</span><b id="competitorAlertCount">0</b></button>
           </div>
         </nav>
       </section>
 
       <section class="sidebar-module" data-sidebar-module="profit">
-        <div class="sidebar-heading"><span>利润试算</span><small>TIKTOK SHOP MY</small></div>
-        <nav class="sidebar-nav" aria-label="利润试算功能">
+        <div class="sidebar-heading"><span>鍒╂鼎璇曠畻</span><small>TIKTOK SHOP MY</small></div>
+        <nav class="sidebar-nav" aria-label="鍒╂鼎璇曠畻鍔熻兘">
           <div class="sidebar-group">
-            <p>结算测算</p>
-            <button class="side-link active" type="button" data-side-link data-profit-view="calculator" data-scroll-target="profitInputPanel"><span class="side-icon">▦</span><span>商品试算</span></button>
-            <button class="side-link" type="button" data-side-link data-profit-view="calculator" data-scroll-target="profitResultPanel"><span class="side-icon">∑</span><span>费用明细</span></button>
+            <p>缁撶畻娴嬬畻</p>
+            <button class="side-link active" type="button" data-side-link data-profit-view="calculator" data-scroll-target="profitInputPanel"><span class="side-icon">鈻?/span><span>鍟嗗搧璇曠畻</span></button>
+            <button class="side-link" type="button" data-side-link data-profit-view="calculator" data-scroll-target="profitResultPanel"><span class="side-icon">鈭?/span><span>璐圭敤鏄庣粏</span></button>
           </div>
           <div class="sidebar-group">
-            <p>核算口径</p>
-            <button class="side-link" type="button" data-side-link data-profit-view="rules"><span class="side-icon">i</span><span>规则与说明</span></button>
+            <p>鏍哥畻鍙ｅ緞</p>
+            <button class="side-link" type="button" data-side-link data-profit-view="rules"><span class="side-icon">i</span><span>瑙勫垯涓庤鏄?/span></button>
           </div>
         </nav>
       </section>
 
-      <div class="sidebar-status" id="sidebarRuntimeState"><i></i><div><strong id="sidebarRuntimeTitle">数据保存在本机</strong><span id="sidebarRuntimeDetail">库存与竞品记录自动保存</span></div></div>
+      <div class="sidebar-status" id="sidebarRuntimeState"><i></i><div><strong id="sidebarRuntimeTitle">鏁版嵁淇濆瓨鍦ㄦ湰鏈?/strong><span id="sidebarRuntimeDetail">搴撳瓨涓庣珵鍝佽褰曡嚜鍔ㄤ繚瀛?/span></div></div>
     </aside>
 
-    <button class="sidebar-scrim" id="sidebarScrim" type="button" aria-label="关闭功能导航" aria-hidden="true"></button>
+    <button class="sidebar-scrim" id="sidebarScrim" type="button" aria-label="鍏抽棴鍔熻兘瀵艰埅" aria-hidden="true"></button>
 
     <main class="workspace">
-    <div class="connection-banner" id="connectionBanner" role="status" hidden><strong id="connectionBannerTitle"></strong><span id="connectionBannerDetail"></span><button class="button tiny secondary" id="retryConnection" type="button">重新连接</button></div>
+    <div class="connection-banner" id="connectionBanner" role="status" hidden><strong id="connectionBannerTitle"></strong><span id="connectionBannerDetail"></span><button class="button tiny secondary" id="retryConnection" type="button">閲嶆柊杩炴帴</button></div>
     <section class="module-page active" id="module-products" data-module-page="products">
       <div class="page-heading">
         <div>
-          <p class="eyebrow">商品主数据</p>
-          <h1>商品中心</h1>
-          <p>所有商品只建立一次。本店 SKU 进入仓配中心，竞品进入监控中心。</p>
+          <p class="eyebrow">鍟嗗搧涓绘暟鎹?/p>
+          <h1>鍟嗗搧涓績</h1>
+          <p>鎵€鏈夊晢鍝佸彧寤虹珛涓€娆°€傛湰搴?SKU 杩涘叆浠撻厤涓績锛岀珵鍝佽繘鍏ョ洃鎺т腑蹇冦€?/p>
         </div>
         <div class="page-actions">
-          <button class="button secondary" id="downloadTemplate">下载模板</button>
-          <button class="button secondary" id="exportCsv">导出数据</button>
-          <button class="button primary" id="tableAddProduct">＋ 新增商品</button>
+          <button class="button secondary" id="downloadTemplate">涓嬭浇妯℃澘</button>
+          <button class="button secondary" id="exportCsv">瀵煎嚭鏁版嵁</button>
+          <button class="button primary" id="tableAddProduct">锛?鏂板鍟嗗搧</button>
         </div>
       </div>
 
-      <section class="summary-strip" aria-label="商品统计">
-        <article><span>全部商品</span><strong id="productTotalMetric">0</strong><small>统一商品主档</small></article>
-        <article><span>本店 SKU</span><strong id="ownProductMetric">0</strong><small>已进入仓配中心</small></article>
-        <article><span>竞品商品</span><strong id="competitorProductMetric">0</strong><small>直接与间接竞品</small></article>
-        <article><span>需要补货</span><strong id="replenishmentMetric">0</strong><small>可用库存低于安全库存</small></article>
+      <section class="summary-strip" aria-label="鍟嗗搧缁熻">
+        <article><span>鍏ㄩ儴鍟嗗搧</span><strong id="productTotalMetric">0</strong><small>缁熶竴鍟嗗搧涓绘。</small></article>
+        <article><span>鏈簵 SKU</span><strong id="ownProductMetric">0</strong><small>宸茶繘鍏ヤ粨閰嶄腑蹇?/small></article>
+        <article><span>绔炲搧鍟嗗搧</span><strong id="competitorProductMetric">0</strong><small>鐩存帴涓庨棿鎺ョ珵鍝?/small></article>
+        <article><span>闇€瑕佽ˉ璐?/span><strong id="replenishmentMetric">0</strong><small>鍙敤搴撳瓨浣庝簬瀹夊叏搴撳瓨</small></article>
       </section>
 
       <section class="panel">
         <div class="panel-toolbar">
-          <div class="filter-group" role="group" aria-label="商品筛选">
-            <button class="filter-chip active" data-product-filter="all">全部</button>
-            <button class="filter-chip" data-product-filter="own">本店 SKU</button>
-            <button class="filter-chip" data-product-filter="direct">直接竞品</button>
-            <button class="filter-chip" data-product-filter="indirect">间接竞品</button>
-            <button class="filter-chip" data-product-filter="inactive">已停用</button>
-          </div>
-          <button class="button tiny danger-outline" id="clearAllData">清空本机数据</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>商品</th><th>类型</th><th>SKU</th><th>标准成本</th><th>在途</th><th>已在库</th><th>可用</th><th>状态</th><th>操作</th></tr></thead>
-            <tbody id="productRows"></tbody>
-          </table>
-          <div class="empty-state" id="productEmpty"><span>◎</span><strong>还没有符合条件的商品</strong><p>新增本店 SKU 或竞品，商品图片、链接和成本会统一保存。</p><button class="button primary" id="emptyAddProduct">新增第一个商品</button></div>
-        </div>
-      </section>
-    </section>
-
-    <section class="module-page" id="module-selection" data-module-page="selection" hidden>
-      <div class="page-heading">
-        <div>
-          <p class="eyebrow">ALPHASHOP DATA</p>
-          <h1>智能选品</h1>
-          <p>先找高机会关键词，再按价格、销量、评分和上架时间筛选商品。默认 TikTok 马来西亚。</p>
-        </div>
-        <div class="page-heading-actions"><button class="button secondary" id="openSelectionConfig" type="button" hidden>配置选品接口</button><div class="selection-api-state" id="selectionApiState"><i></i><div><strong>正在检查接口</strong><span>密钥只保存在服务器</span></div></div></div>
-      </div>
-
-      <section class="panel selection-panel" id="selectionKeywordPanel">
-        <div class="panel-title"><div><h2>第一步：搜索关键词机会</h2><p>报告只接受这里返回的候选词；先搜索再选择可避免无效调用。</p></div><span class="selection-step">01</span></div>
-        <form class="selection-search-form" id="selectionKeywordForm">
-          <label>平台<select id="selectionPlatform"><option value="tiktok">TikTok Shop</option><option value="amazon">Amazon</option></select></label>
-          <label>国家 / 地区<select id="selectionRegion"><option value="MY">马来西亚 MY</option></select></label>
-          <label>上架时间<select id="selectionListingTime"><option value="90">近 90 天</option><option value="180">近 180 天</option></select></label>
-          <label class="selection-keyword-input">产品方向 / 关键词<input id="selectionKeyword" maxlength="120" required placeholder="例如：women bag、收纳盒、宠物玩具" /></label>
-          <button class="button primary" id="selectionKeywordButton" type="submit">查询关键词</button>
-        </form>
-        <div class="selection-call-note">每次点击才会调用接口；相同条件会优先使用服务器缓存，减少重复扣费。</div>
-        <div class="selection-loading" id="selectionKeywordLoading" hidden><i></i><span>正在查询关键词机会…</span></div>
-        <div class="selection-keyword-grid" id="selectionKeywordResults"></div>
-        <div class="empty-state compact show" id="selectionKeywordEmpty"><span>⌕</span><strong>输入产品方向开始选品</strong><p>建议用具体品类词，不要只输入过宽的单词。</p></div>
-      </section>
-
-      <section class="panel selection-panel" id="selectionReportPanel">
-        <div class="panel-title"><div><h2>第二步：生成商品报告</h2><p id="selectionChosenHint">请先从上方选择一个候选关键词。</p></div><span class="selection-step">02</span></div>
-        <form class="selection-filter-form" id="selectionReportForm">
-          <input id="selectionChosenKeyword" type="hidden" />
-          <label>最低价格<input id="selectionMinPrice" type="number" min="0" step="0.01" placeholder="不限" /></label>
-          <label>最高价格<input id="selectionMaxPrice" type="number" min="0" step="0.01" placeholder="不限" /></label>
-          <label>最低月销量<input id="selectionMinVolume" type="number" min="0" step="1" placeholder="例如 50" /></label>
-          <label>最高月销量<input id="selectionMaxVolume" type="number" min="0" step="1" placeholder="不限" /></label>
-          <label>最低评分<input id="selectionMinRating" type="number" min="0" max="5" step="0.1" placeholder="例如 4.0" /></label>
-          <label>最高评分<input id="selectionMaxRating" type="number" min="0" max="5" step="0.1" placeholder="5.0" /></label>
-          <button class="button primary" id="selectionReportButton" type="submit" disabled>生成选品报告</button>
-        </form>
-        <div class="selection-cost-warning">生成报告属于高成本调用。系统会要求二次确认，并限制短时间内的重复请求。</div>
-        <div class="selection-loading" id="selectionReportLoading" hidden><i></i><span>正在分析市场和商品，最长可能需要约 2 分钟…</span></div>
-        <div id="selectionSummary"></div>
-        <div class="selection-product-grid" id="selectionProducts"></div>
-        <div class="empty-state compact show" id="selectionProductEmpty"><span>▦</span><strong>还没有商品报告</strong><p>选择关键词并设置筛选条件后生成。</p></div>
-      </section>
-    </section>
-
-    <section class="module-page" id="module-warehouse" data-module-page="warehouse" hidden>
-      <div class="page-heading compact-heading">
-        <div>
-          <p class="eyebrow">仓储与履约中心</p>
-          <h1>仓配中心</h1>
-          <p>采购产生在途，收货转入在库，订单锁定并扣减库存。</p>
-        </div>
-      </div>
-
-      <section class="warehouse-context-bar" aria-label="当前仓库">
-        <div class="warehouse-context-copy"><span>当前仓库</span><strong id="currentWarehouseName">默认仓</strong><small id="currentWarehouseMeta">本地仓 · CN</small></div>
-        <div class="warehouse-switcher" id="warehouseSwitcher" role="group" aria-label="切…13724 tokens truncated…n value="manual_outbound">手动出库</option><option value="adjust_add">盘盈增加</option><option value="adjust_sub">盘亏减少</option><option value="damage">报损出库</option></select></label>
-          <label>数量 <span>*</span><input id="stockQuantity" type="number" min="1" step="1" required /></label>
-          <label>操作时间 <span>*</span><input id="stockAt" type="datetime-local" required /></label>
-          <label>原因/备注（可选）<input id="stockNote" maxlength="100" placeholder="例如：月末盘点差异" /></label>
-        </div>
-        <div class="last-value" id="stockHint"></div>
-        <div class="modal-actions"><button class="button secondary" type="button" data-close="stockModal">取消</button><button class="button primary" type="submit">保存库存调整</button></div>
-      </form>
-    </section>
-  </div>
-
-  <div class="modal-backdrop" id="orderModal" aria-hidden="true">
-    <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="orderModalTitle">
-      <button class="modal-close" data-close="orderModal" aria-label="关闭">×</button>
-      <p class="eyebrow">销售订单</p><h2 id="orderModalTitle">创建订单并出库</h2><p class="modal-intro">点击一次确认后，系统整单校验库存并直接出库；库存不足时不会部分扣减。</p>
-      <form id="orderForm">
-        <div class="form-grid three">
-          <label>订单号 <span>可稍后完善</span><input id="orderNumber" /></label>
-          <label>平台 <span>*</span><select id="orderPlatform"><option>TikTok Shop</option><option>Shopee</option><option>Temu</option><option>Ozon</option><option>手工订单</option></select></label>
-          <label>店铺<input id="orderStore" placeholder="例如：Dongbo MY" /></label>
-          <label>下单时间 <span>可稍后完善</span><input id="orderAt" type="datetime-local" /></label>
-          <label>物流单号<input id="orderTracking" /></label>
-          <label>备注<input id="orderNote" maxlength="100" /></label>
-        </div>
-        <div class="line-builder">
-          <div class="form-section-title"><strong>订单商品明细</strong><span>系统会一次校验整单可用库存</span></div>
-          <div class="line-entry three"><label>本店 SKU<select id="orderLineProduct"></select></label><label>订单数量<input id="orderLineQty" type="number" min="1" step="1" /></label><button class="button secondary" id="addOrderLine" type="button">＋ 加入明细</button></div>
-          <div class="line-list" id="orderLineList"></div>
-        </div>
-        <div class="modal-actions"><button class="button secondary" type="button" data-close="orderModal">取消</button><button class="button primary" type="submit">确认并出库</button></div>
-      </form>
-    </section>
-  </div>
-
-  <div class="modal-backdrop" id="snapshotModal" aria-hidden="true">
-    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="snapshotModalTitle">
-      <button class="modal-close" data-close="snapshotModal" aria-label="关闭">×</button>
-      <p class="eyebrow">PUBLIC SALES UPDATE</p><h2 id="snapshotModalTitle">更新竞品销量</h2><p class="modal-intro">已有基准后只需修改累计销量；价格、评分和评价数默认沿用上次数据。</p>
-      <form id="snapshotForm">
-        <label>监控商品 <span>*</span><select id="snapshotProduct" required></select></label>
-        <div class="form-grid two quick-snapshot-fields"><label>记录时间 <span>*</span><input id="snapshotAt" type="datetime-local" required /></label><label>公开累计销量 <span>*</span><input id="snapshotSold" type="number" min="0" step="1" required autofocus /></label></div>
-        <details class="advanced-fields" id="snapshotAdvanced"><summary>其他公开数据（已自动沿用，有变化时再修改）</summary><div class="form-grid two"><label>当前价格 <span>*</span><input id="snapshotPrice" type="number" min="0" step="0.01" required /></label><label>评分<input id="snapshotRating" type="number" min="0" max="5" step="0.1" /></label><label>评价总数<input id="snapshotReviews" type="number" min="0" step="1" /></label><label>1–2 星评价数<input id="snapshotLowReviews" type="number" min="0" step="1" /></label><label>店铺评分<input id="snapshotShopRating" type="number" min="0" max="5" step="0.1" /></label></div></details>
-        <div class="last-value" id="lastValueHint"></div>
-        <div class="modal-actions"><button class="button secondary" type="button" data-close="snapshotModal">取消</button><button class="button primary" type="submit">保存销量并计算</button></div>
-      </form>
-    </section>
-  </div>
-
-  <div class="modal-backdrop" id="returnModal" aria-hidden="true">
-    <section class="modal small-modal" role="dialog" aria-modal="true" aria-labelledby="returnModalTitle">
-      <button class="modal-close" data-close="returnModal" aria-label="关闭">×</button>
-      <p class="eyebrow">销售退货</p><h2 id="returnModalTitle">退货入库</h2><p class="modal-intro" id="returnIntro">按原订单商品登记可再次入库的退货数量。</p>
-      <form id="returnForm">
-        <input id="returnOrderId" type="hidden" />
-          <label>退货商品 <span>*</span><select id="returnLine" required></select></label>
-          <div class="form-grid two">
-            <label>本次退货数量 <span>*</span><input id="returnQty" type="number" min="1" step="1" required /></label>
-            <label>退货入库时间 <span>*</span><input id="returnAt" type="datetime-local" required /></label>
-            <label>商品状况 <span>*</span><select id="returnCondition" required><option value="restock">完好，可重新入库</option><option value="damaged">残损，不回到可售库存</option></select></label>
-            <label class="full">退货原因/备注 <span>*</span><input id="returnNote" maxlength="100" required placeholder="例如：买家无理由退货，商品完好" /></label>
-        </div>
-        <div class="last-value" id="returnHint"></div>
-        <div class="modal-actions"><button class="button secondary" type="button" data-close="returnModal">取消</button><button class="button primary" type="submit">确认退货入库</button></div>
-      </form>
-    </section>
-  </div>
-
-  <div class="modal-backdrop" id="sessionModal" aria-hidden="true">
-    <section class="modal session-modal" role="dialog" aria-modal="true" aria-labelledby="sessionModalTitle">
-      <button class="modal-close" type="button" data-close="sessionModal" aria-label="关闭">×</button>
-      <p class="eyebrow">数据与账号</p><h2 id="sessionModalTitle">数据、账号与权限</h2>
-      <p class="modal-intro" id="sessionIntro">内部系统使用唯一组织。主账号可管理子账号和权限，数据会自动同步。</p>
-
-      <div id="localSessionPanel">
-        <div class="mode-card local"><i></i><div><strong>本机演示模式</strong><span>数据只保存在当前浏览器，不会与其他设备同步。</span></div></div>
-        <p class="session-help">正式系统部署后，此处会自动切换为账号登录和仓库选择。</p>
-        <div class="session-sync-row"><span>换到团队版前，请先保存完整 JSON 备份。</span><button class="button tiny secondary" id="downloadLocalBackup" type="button">下载完整备份</button></div>
-      </div>
-
-      <form id="teamLoginForm" hidden>
-        <div class="mode-card team"><i></i><div><strong>登录团队 ERP</strong><span>登录后读取组织共享的商品、库存与单据。</span></div></div>
-        <div class="form-grid two">
-          <label>账号 <span>*</span><input id="teamUsername" autocomplete="username" required /></label>
-          <label>密码 <span>*</span><input id="teamPassword" type="password" autocomplete="current-password" required /></label>
-        </div>
-        <div class="modal-actions"><button class="button secondary" type="button" data-close="sessionModal">取消</button><button class="button primary" id="teamLoginButton" type="submit">登录并同步</button></div>
-      </form>
-
-      <form id="ownerVerificationForm" hidden>
-        <div class="mode-card team"><i></i><div><strong>主账号邮箱验证</strong><span>验证码已发往主账号邮箱。子账号无需进行邮箱验证。</span></div></div>
-        <label>邮箱验证码 <span>*</span><input id="ownerLoginCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /></label>
-        <div class="modal-actions"><button class="button secondary" id="cancelOwnerVerification" type="button">返回登录</button><button class="button primary" id="verifyOwnerLoginButton" type="submit">验证并登录</button></div>
-      </form>
-
-      <div id="teamSessionPanel" hidden>
-        <div class="mode-card team"><i></i><div><strong id="teamIdentity">团队账号</strong><span id="teamRoleText">正在读取权限</span></div></div>
-        <div class="form-grid two">
-          <label>仓库<select id="teamWarehouse"></select></label>
-        </div>
-        <div class="session-sync-row"><span id="teamSyncDetail">尚未同步</span><button class="button tiny secondary" id="refreshTeamData" type="button">立即同步</button></div>
-        <div class="session-sync-row" id="ownerAccountActions" hidden><span>主账号可统一管理所有内部成员和外部授权。</span><div><button class="button tiny secondary" id="openAccountManager" type="button">账号与权限</button><button class="button tiny secondary" id="openIntegrations" type="button">店铺与 AI 接口</button><button class="button tiny secondary" id="openOwnerPasswordChange" type="button">修改主账号密码</button></div></div>
-        <input id="localBackupFile" type="file" accept=".json,application/json" hidden />
-        <div class="session-sync-row"><span>可导入本机商品、竞品、快照与期初库存。</span><button class="button tiny secondary" id="chooseLocalBackup" type="button">导入本机备份</button></div>
-        <div class="migration-preview" id="migrationPreview" hidden>
-          <strong id="migrationPreviewTitle">迁移预检</strong>
-          <span id="migrationPreviewSummary"></span>
-          <ul id="migrationWarnings"></ul>
-          <button class="button primary" id="commitLocalMigration" type="button" disabled>确认导入团队数据库</button>
-        </div>
-        <div class="modal-actions"><button class="button secondary" id="teamLogout" type="button">退出登录</button><button class="button primary" type="button" data-close="sessionModal">完成</button></div>
-      </div>
-
-      <section id="accountManagerPanel" hidden>
-        <div class="form-section-title"><strong>内部账号与权限</strong><span>子账号创建后可直接用账号和密码登录，不会创建或选择组织。</span></div>
-        <form id="internalAccountForm">
-          <input id="internalAccountId" type="hidden" />
-          <div class="form-grid two">
-            <label>账号名 <span>*</span><input id="internalAccountUsername" autocomplete="username" required /></label>
-            <label>成员名称 <span>*</span><input id="internalAccountDisplayName" maxlength="80" placeholder="例如：小王 / 采购一组" required /></label>
-            <label>密码 <span id="internalAccountPasswordRequired">*</span><input id="internalAccountPassword" type="password" autocomplete="new-password" minlength="8" /></label>
-            <label>角色 <span>*</span><select id="internalAccountRole" required></select></label>
-          </div>
-          <div class="form-section-title compact"><strong>可访问仓库</strong><span>管理员可访问全部仓库；其他角色仅可查看和操作勾选的仓库。</span></div>
-          <div class="permission-checklist warehouse-checklist" id="internalAccountWarehouses"></div>
-          <div class="form-section-title compact"><strong>功能权限（可按角色微调）</strong><span>切换角色会预填该角色的默认权限，之后可单独勾选调整。</span></div>
-          <div class="permission-checklist" id="internalAccountPermissions"></div>
-          <div class="modal-actions"><button class="button secondary" id="cancelInternalAccount" type="button">取消</button><button class="button primary" id="saveInternalAccount" type="submit">新增子账号</button></div>
-        </form>
-        <div class="account-list" id="internalAccountRows"></div>
-      </section>
-
-      <section id="integrationsPanel" hidden>
-        <div class="form-section-title"><strong>店铺与 AI 接口</strong><span>密钥只会发送到服务器加密保存，页面不会回显。</span></div>
-        <div class="mode-card team"><i></i><div><strong>AlphaShop 智能选品</strong><span>仅主账号可配置；保存后系统会优先使用此配置，子账号只能使用选品功能。</span></div></div>
-        <form id="alphashopConfigForm">
-          <div class="form-grid two"><label>Access Key <span>*</span><input id="alphashopAccessKey" type="password" autocomplete="new-password" /></label><label>Secret Key <span>*</span><input id="alphashopSecretKey" type="password" autocomplete="new-password" /></label><label>API 地址 <span>*</span><input id="alphashopApiBaseUrl" type="url" required value="https://api.alphashop.cn" /></label><label class="check-label"><input id="alphashopEnabled" type="checkbox" checked /> 启用智能选品接口</label><label>选品分析模型（可选）<select id="alphashopAnalysisProvider"><option value="">不调用大模型，仅展示选品接口数据</option></select></label><label class="check-label"><input id="alphashopAnalysisEnabled" type="checkbox" /> 用所选大模型分析选品报告</label></div>
-          <p class="session-help" id="alphashopConfigHint">密钥只在本次提交时发送，保存后不会再显示。首次保存需要同时填写两个密钥。</p>
-          <div class="modal-actions"><button class="button secondary" id="testAlphaShopConfig" type="button">测试连接</button><button class="button primary" type="submit">加密保存选品配置</button></div>
-        </form>
-        <div class="mode-card team"><i></i><div><strong>TikTok Shop 店铺</strong><span>需先在 TikTok Shop Partner Center 配置回调地址与所需权限。</span></div></div>
-        <div class="form-grid two"><label>授权区域<select id="tiktokAuthorizeRegion"><option value="MY">马来西亚 / ROW</option><option value="US">美国</option></select></label><div class="modal-actions"><button class="button primary" id="startTikTokAuthorization" type="button">授权 TikTok Shop</button></div></div>
-        <div class="account-list" id="tiktokConnectionRows"></div>
-        <div class="form-section-title"><strong>外部大模型 API</strong><span>兼容 OpenAI Chat Completions 协议；库存建议只生成待确认方案，不会自动改库存。</span></div>
-        <form id="aiProviderForm">
-          <input id="aiProviderId" type="hidden" />
-          <div class="form-grid two"><label>配置名称 <span>*</span><input id="aiProviderName" required maxlength="120" placeholder="例如：主力模型" /></label><label>API 地址 <span>*</span><input id="aiProviderBaseUrl" type="url" required placeholder="例如：https://api.deepseek.com" /></label><label>模型名称 <span>*</span><input id="aiProviderModel" required maxlength="160" placeholder="例如：deepseek-v4-flash" /></label><label>API Key <span id="aiProviderKeyRequired">*</span><input id="aiProviderKey" type="password" required autocomplete="new-password" /></label><label>超时（秒）<input id="aiProviderTimeout" type="number" min="5" max="120" value="30" /></label><label>重试次数<input id="aiProviderRetries" type="number" min="0" max="5" value="2" /></label><label class="check-label"><input id="aiProviderEnabled" type="checkbox" checked /> 启用此模型</label><label class="full">请求参数（JSON，可选）<textarea id="aiProviderParameters" rows="4" placeholder='例如：{"temperature":0.3,"max_tokens":1200}'>{}</textarea></label></div>
-          <p class="session-help">DeepSeek 请使用 OpenAI 兼容地址 <code>https://api.deepseek.com</code>，模型使用 <code>deepseek-v4-flash</code> 或 <code>deepseek-v4-pro</code>；不要填写 <code>/anthropic</code>。</p>
-          <div class="modal-actions"><button class="button secondary" id="resetAIProvider" type="button">新建配置</button><button class="button primary" id="saveAIProvider" type="submit">加密保存并测试</button></div>
-        </form>
-        <div class="account-list" id="aiProviderRows"></div>
-        <div class="last-value" id="aiUsageSummary">尚无大模型调用记录。</div>
-        <div class="ai-operation-panel">
-          <div class="form-section-title"><strong>AI 建议工作台</strong><span>库存预测、补货建议、商品分析和文案生成都会先生成待确认方案；确认只记录决策，不会自动改库存。</span></div>
-          <form id="aiRecommendationForm">
-            <div class="form-grid two"><label>使用模型 <span>*</span><select id="aiRecommendationProvider" required></select></label><label>建议类型 <span>*</span><select id="aiRecommendationKind"><option value="inventory_forecast">库存预测</option><option value="replenishment">补货建议</option><option value="product_analysis">商品分析</option><option value="copywriting">文案生成</option></select></label><label class="full">输入数据（JSON）<textarea id="aiRecommendationInput" rows="5" required placeholder='例如：{"sku":"SKU-001","available_stock":12,"recent_daily_sales":[2,4,3],"lead_time_days":14}'>{}</textarea></label></div>
-            <div class="modal-actions"><button class="button primary" type="submit">生成待确认建议</button></div>
-          </form>
-          <div class="account-list ai-recommendation-list" id="aiRecommendationRows"></div>
-        </div>
-        <div class="ai-operation-panel">
-          <div class="form-section-title"><strong>调用日志</strong><span>只保留调用状态、耗时、重试次数和用量；不会显示 API Key 或请求密钥。</span></div>
-          <div class="account-list ai-invocation-list" id="aiInvocationRows"></div>
-        </div>
-      </section>
-
-      <section id="ownerPasswordPanel" hidden>
-        <div class="form-section-title"><strong>修改主账号密码</strong><span>需先向主账号邮箱发送验证码。子账号没有修改密码的权限。</span></div>
-        <form id="ownerPasswordChangeForm">
-          <label>邮箱验证码 <span>*</span><input id="ownerPasswordCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /></label>
-          <label>新密码 <span>*</span><input id="ownerPasswordNew" type="password" autocomplete="new-password" minlength="8" required /></label>
-          <div class="modal-actions"><button class="button secondary" id="cancelOwnerPasswordChange" type="button">取消</button><button class="button primary" type="submit">确认修改密码</button></div>
-        </form>
-      </section>
-    </section>
-  </div>
-
-  <div class="confirm-bar" id="confirmBar" aria-hidden="true"><span id="confirmText"></span><div><button class="button tiny secondary" id="cancelConfirm">取消</button><button class="button tiny danger" id="acceptConfirm">确认</button></div></div>
-  <div class="toast" id="toast" role="status"></div>
-
-  <script src="runtime-config.js?v=20260728-profit-calculator-server-1"></script>
-  <script src="team.js?v=20260728-profit-calculator-server-1"></script>
-  <script src="profit-calculator.js?v=20260730-profit-alignment-11"></script>
-  <script src="app.js?v=20260730-profit-alignment-11"></script>
-</body>
-</html>
-
+          <div class="filter-group" role="group" aria-label="鍟嗗搧绛涢€?>
+            <button class="filter-chip active" data-product-filter="all">鍏ㄩ儴</button>
+            <button class="filter-chip" data-product-filter="own">鏈簵 SKU</button>
+            <button class="filter-chip" data-product-filter="direct">鐩存帴绔炲搧</button>
+ …52384 tokens truncated…ction: column; }
+  .warehouse-switcher-label { padding: 0 4px; }
+  .replenishment-grid { grid-template-columns: 1fr; }
+  .quick-snapshot-header { align-items: stretch; flex-direction: column; }
+  .quick-snapshot-row { grid-template-columns: minmax(0, 1fr) 112px; padding: 12px; }
+  .quick-snapshot-inherited { grid-column: 1/-1; }
+  .quick-snapshot-row > .button { grid-column: 1/-1; width: 100%; }
+  .selection-api-state { width: 100%; }
+  .selection-search-form, .selection-filter-form { grid-template-columns: 1fr; }
+  .selection-keyword-input { grid-column: auto; }
+  .selection-keyword-grid, .selection-product-grid { grid-template-columns: 1fr; padding-inline: 12px; }
+  .selection-summary-head { flex-direction: column; }
+  .selection-summary-score { text-align: left; }
+  .selection-summary-metrics { grid-template-columns: repeat(2, 1fr); }
+  .confirm-bar { align-items: stretch; flex-direction: column; }
+  .confirm-bar div { justify-content: flex-end; }
+}
