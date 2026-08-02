@@ -88,6 +88,7 @@ from .profit_shipping_rates import (
     MALAYSIA_CROSS_BORDER_EFFECTIVE_DATE,
     MALAYSIA_CROSS_BORDER_MAX_G,
     MALAYSIA_CROSS_BORDER_RATE_VERSION,
+    MALAYSIA_CROSS_BORDER_SOURCE_FILE,
 )
 from .single_tenant import active_internal_membership, ensure_internal_organization, internal_organization
 from .sync import bump_sync_revision
@@ -199,6 +200,7 @@ def profit_calculator_config(request):
         "lvg_rate": str(LVG_RATE),
         "shipping_rate_version": MALAYSIA_CROSS_BORDER_RATE_VERSION,
         "shipping_effective_date": MALAYSIA_CROSS_BORDER_EFFECTIVE_DATE,
+        "shipping_source_file": MALAYSIA_CROSS_BORDER_SOURCE_FILE,
         "shipping_max_weight_g": str(MALAYSIA_CROSS_BORDER_MAX_G),
         "rule_effective_date": str(RULE_EFFECTIVE_DATE),
         "sources": {

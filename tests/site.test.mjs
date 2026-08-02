@@ -38,7 +38,7 @@ test("versions browser assets so production never mixes new markup with cached s
   const html = await (await fetchPath("/index.html")).text();
   assert.match(html, /styles\.css\?v=20260730-profit-alignment-12/);
   assert.match(html, /team\.js\?v=20260728-profit-calculator-server-1/);
-  assert.match(html, /profit-calculator\.js\?v=20260730-profit-alignment-12/);
+  assert.match(html, /profit-calculator\.js\?v=20260803-profit-completion-1/);
   assert.match(html, /app\.js\?v=20260730-profit-alignment-12/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
@@ -82,6 +82,22 @@ test("keeps profit rules on a dedicated route and collapses fee bases by default
   assert.match(html, /id="profit-rules-ads"/);
   assert.match(html, /id="profit-rules-boundary"/);
   assert.doesNotMatch(html, /class="profit-formula-notes"/);
+});
+
+test("keeps per-SKU profit fee editing and the single rate-share column wired", async () => {
+  const [html, profitScript] = await Promise.all([
+    (await fetchPath("/index.html")).text(),
+    (await fetchPath("/profit-calculator.js")).text(),
+  ]);
+  assert.match(html, /id="profitCommissionAdjustment"[^>]*value="1\.00"/);
+  assert.match(html, /<th>费率 \/ 占比<\/th>/);
+  assert.doesNotMatch(html, /<th>费率<\/th>\s*<th>占结算收入<\/th>/);
+  assert.match(html, /包装后重量分别向上取整至 10g，只计算商家承担的跨境段运费/);
+  assert.match(html, /东南亚跨境物流运费价格表20260515\(1\)\.xlsx/);
+  assert.match(profitScript, /const manualCommissionByRow = new Map\(\)/);
+  assert.match(profitScript, /data-manual-commission-row/);
+  assert.match(profitScript, /result\.manual_commission_rate = manualCommissionByRow\.get/);
+  assert.match(profitScript, /参考 · /);
 });
 
 test("contains product, warehouse, order and monitoring workflows", async () => {

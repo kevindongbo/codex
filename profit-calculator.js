@@ -22,8 +22,8 @@
   let displayCurrency = 'MYR';
   let openCategoryRow = null;
   let rateMode = 'auto';
-  let manualCommissionRate = null;
   const buyerShippingByRow = new Map();
+  const manualCommissionByRow = new Map();
 
   function el(id) { return document.getElementById(id); }
   function escapeHtml(value) {
@@ -178,6 +178,7 @@
       weight_g: '200', product_cost_cny: '18.90', item_price: '79.90', affiliate_rate: '15.00', ad_cost_type: 'none', ad_cost_value: '', buyer_shipping_fee: '0.00'
     }, seed || {});
     buyerShippingByRow.set(rowId, fixed(item.buyer_shipping_fee));
+    manualCommissionByRow.set(rowId, item.manual_commission_rate == null ? '' : fixed(item.manual_commission_rate));
     const tr = document.createElement('tr');
     tr.dataset.profitRow = rowId;
     tr.innerHTML =
@@ -198,6 +199,7 @@
     const result = {};
     row.querySelectorAll('[data-profit-field]').forEach(function (field) { result[field.dataset.profitField] = field.value; });
     result.buyer_shipping_fee = buyerShippingByRow.get(row.dataset.profitRow) || '0.00';
+    result.manual_commission_rate = manualCommissionByRow.get(row.dataset.profitRow) || null;
     if (result.ad_cost_type === 'none' || result.ad_cost_value === '') result.ad_cost_value = null;
     return result;
   }
@@ -209,8 +211,8 @@
   function sourceMarkup(row) {
     if (!row.source) return '<span>自动计算</span>';
     const source = String(row.source);
-    const detail = row.source_detail ? '<small>' + escapeHtml(row.source_detail) + '</small>' : '';
-    const date = row.effective_date ? '<small>' + escapeHtml(row.effective_date) + '</small>' : '';
+    const detail = row.source_detail ? '<small> · ' + escapeHtml(row.source_detail) + '</small>' : '';
+    const date = row.effective_date ? '<small> · ' + escapeHtml(row.effective_date) + '</small>' : '';
     if (source.indexOf('http') !== 0) return '<span>' + escapeHtml(source) + '</span>' + detail + date;
     const label = source.indexOf('mysst.customs.gov.my') >= 0 ? '马来西亚海关官方规则 ↗' : 'TikTok Shop 官方规则 ↗';
     return '<a href="' + escapeHtml(source) + '" target="_blank" rel="noopener">' + label + '</a>' + date;
@@ -218,7 +220,10 @@
   function rateShareText(row) {
     const hasRate = row.rate !== null && row.rate !== undefined && row.rate !== '';
     const share = number(row.share);
-    if (!hasRate) return share === 0 && row.key === 'advertising_cost' ? '—' : '占比 ' + share.toFixed(2) + '%';
+    if (!hasRate) {
+      if (share === 0 && row.key === 'advertising_cost') return '—';
+      return (row.kind === 'reference' ? '参考 · ' : '') + '占比 ' + share.toFixed(2) + '%';
+    }
     const rate = number(row.rate);
     if (Math.abs(rate - share) < 0.005) return rate.toFixed(2) + '%';
     return '费率 ' + rate.toFixed(2) + '% · 占比 ' + share.toFixed(2) + '%';
@@ -309,14 +314,19 @@
     modal.setAttribute('aria-hidden', 'true');
   }
   function openCommissionEditor() {
+    const rows = Array.from(document.querySelectorAll('[data-profit-row]'));
     el('profitFeeModalTitle').textContent = '编辑类目佣金';
-    el('profitFeeModalDescription').textContent = '留空时使用“官方类目佣金 + 当前调试百分点”；填写后，本次试算全部 SKU 优先使用你输入的最终佣金率。';
-    el('profitFeeModalBody').innerHTML = '<label class="profit-modal-field">最终类目佣金率（%）<input id="profitManualCommissionInput" type="number" min="0" max="100" step="0.01" placeholder="留空自动恢复默认" value="' + escapeHtml(manualCommissionRate == null ? '' : manualCommissionRate) + '" /></label>';
+    el('profitFeeModalDescription').textContent = '留空时使用“官方类目佣金 + 当前调试百分点”；填写后，仅对应 SKU 使用你输入的最终佣金率。';
+    el('profitFeeModalBody').innerHTML = rows.map(function (row) {
+      const sku = row.querySelector('[data-profit-field="sku_name"]').value || 'SKU';
+      return '<label class="profit-modal-field">' + escapeHtml(sku) + ' · 最终类目佣金率（%）<input data-manual-commission-row="' + escapeHtml(row.dataset.profitRow) + '" type="number" min="0" max="100" step="0.01" placeholder="留空自动恢复默认" value="' + escapeHtml(manualCommissionByRow.get(row.dataset.profitRow) || '') + '" /></label>';
+    }).join('');
     const modal = el('profitFeeModal');
     modal.dataset.mode = 'commission';
     modal.hidden = false;
     modal.setAttribute('aria-hidden', 'false');
-    el('profitManualCommissionInput').focus();
+    const input = modal.querySelector('input');
+    if (input) input.focus();
   }
   function openBuyerShippingEditor() {
     const rows = Array.from(document.querySelectorAll('[data-profit-row]'));
@@ -336,8 +346,9 @@
   async function saveFeeModal() {
     const modal = el('profitFeeModal');
     if (modal.dataset.mode === 'commission') {
-      const raw = el('profitManualCommissionInput').value.trim();
-      manualCommissionRate = raw === '' ? null : fixed(raw);
+      modal.querySelectorAll('[data-manual-commission-row]').forEach(function (input) {
+        manualCommissionByRow.set(input.dataset.manualCommissionRow, input.value.trim() === '' ? '' : fixed(input.value));
+      });
     } else {
       modal.querySelectorAll('[data-buyer-shipping-row]').forEach(function (input) {
         buyerShippingByRow.set(input.dataset.buyerShippingRow, fixed(Math.max(0, number(input.value))));
@@ -380,7 +391,6 @@
           bxp: el('profitBxp').checked,
           delivered: true,
           commission_adjustment: el('profitCommissionAdjustment').value || '0',
-          manual_commission_rate: manualCommissionRate,
           cny_per_myr: el('profitExchangeRate').value,
           usd_per_myr: el('profitUsdRate').value,
           items: rows.map(collectRow)
@@ -481,6 +491,7 @@
         if (rows.length === 1) return setStatus('至少保留一个 SKU。', true);
         const row = remove.closest('[data-profit-row]');
         buyerShippingByRow.delete(row.dataset.profitRow);
+        manualCommissionByRow.delete(row.dataset.profitRow);
         row.remove();
       }
     });

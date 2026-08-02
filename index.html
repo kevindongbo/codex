@@ -548,7 +548,7 @@
           <div class="profit-rule-section-title"><span>01</span><div><h2>计算顺序</h2><p>所有金额先以 MYR 计算，最后才按页面汇率换算显示。</p></div></div>
           <ol class="profit-flow-list">
             <li><span>1</span><div><strong>收入基数</strong><p>各 SKU 商品售价合计。买家运费不计入收入，也不进入费用占比分母。</p></div></li>
-            <li><span>2</span><div><strong>平台代扣</strong><p>类目佣金 ＋ 支付交易手续费 ＋ BXP 增值服务费（如参加）＋ 每单平台支持费。</p></div></li>
+            <li><span>2</span><div><strong>平台代扣</strong><p>类目佣金 ＋ 支付交易手续费 ＋ BXP 增值服务费（如参加）＋ 每个 SKU 的平台支持费。</p></div></li>
             <li><span>3</span><div><strong>预计平台回款</strong><p>商品售价 − 平台代扣 − 达人推广佣金 − 商家运费。</p></div></li>
             <li><span>4</span><div><strong>广告前毛利</strong><p>预计平台回款 − 商品采购成本；商品成本由 CNY 按页面汇率折算为 MYR。</p></div></li>
             <li><span>5</span><div><strong>净利润</strong><p>广告前毛利 − 实际广告投入。未填写广告数据时，只展示广告前毛利和毛利率。</p></div></li>
@@ -560,7 +560,7 @@
             <div class="profit-rule-section-title"><span>02</span><div><h2>自动计算项</h2><p>用户只填核心经营数据，其余按已核验规则估算。</p></div></div>
             <div class="profit-rule-cards">
               <article><strong>数量与折扣</strong><p>每行固定代表 1 件商品，卖家折扣固定为 0，不需要手工输入。</p></article>
-              <article><strong>跨境商家运费</strong><p>每个 SKU 的包装后重量分别向上取整至 10g，按马来西亚跨境价目表估算；本土发货为 0。超过 30,000g 停止计算，不外推。</p></article>
+              <article><strong>跨境商家运费</strong><p>每个 SKU 的包装后重量分别向上取整至 10g，只计算商家承担的跨境段运费，不加入西马或东马末端配送费；本土发货为 0。超过 30,000g 停止计算，不外推。</p></article>
               <article><strong>买家运费</strong><p>默认 0，可在费用明细中临时编辑。它不增加收入、不抵扣商家运费，只加入交易手续费基数；刷新页面后恢复 0。</p></article>
               <article><strong>类目佣金</strong><p>三级类目先匹配官方名义佣金，再加计算配置中的调试百分点（默认 +1）。点击费用明细“类目佣金”可填最终费率；手动值优先，清空即恢复自动。</p></article>
               <article><strong>交易及支持费</strong><p>交易手续费按“商品售价＋买家运费”计算；平台支持费按每个 SKU 收取 RM0.54，指定基础类目自动豁免。</p></article>
@@ -597,7 +597,7 @@
             <a href="https://seller-my.tiktok.com/university/essay?knowledge_id=10013511&amp;lang=en" target="_blank" rel="noopener">交易手续费</a>
             <a href="https://seller-my.tiktok.com/university/essay?knowledge_id=7992113007347457&amp;lang=en" target="_blank" rel="noopener">平台支持费</a>
             <a href="https://seller-my.tiktok.com/university/essay?knowledge_id=6837846988539650&amp;lang=en" target="_blank" rel="noopener">达人佣金</a>
-            <span class="profit-rule-source-note">商家运费：马来西亚跨境物流运费价格表 2026-05-15</span>
+            <span class="profit-rule-source-note">商家运费：东南亚跨境物流运费价格表20260515(1).xlsx · 2026-05-15</span>
             <a href="https://mysst.customs.gov.my/assets/document/Industry%20Guides/GI/Guide%20on%20Low%20Value%20Goods_Draft.pdf" target="_blank" rel="noopener">马来西亚 LVG 指南</a>
           </div>
         </section>
@@ -1040,7 +1040,7 @@
 
   <script src="runtime-config.js?v=20260728-profit-calculator-server-1"></script>
   <script src="team.js?v=20260728-profit-calculator-server-1"></script>
-  <script src="profit-calculator.js?v=20260730-profit-alignment-12"></script>
+  <script src="profit-calculator.js?v=20260803-profit-completion-1"></script>
   <script src="app.js?v=20260730-profit-alignment-12"></script>
 </body>
 </html>

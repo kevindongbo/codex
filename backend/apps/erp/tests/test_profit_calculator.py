@@ -1,4 +1,5 @@
 from decimal import Decimal
+from dataclasses import replace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -6,7 +7,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.erp.models import Membership, Organization
-from apps.erp.profit_calculator import calculate_profit, category_tree
+from apps.erp.profit_calculator import CATEGORY_RULES, calculate_profit, category_tree
 from apps.erp.profit_shipping_rates import malaysia_cross_border_shipping
 
 
@@ -63,7 +64,6 @@ class ProfitCalculatorTests(TestCase):
             "bxp": False,
             "delivered": True,
             "commission_adjustment": Decimal("1.00"),
-            "manual_commission_rate": None,
             "cny_per_myr": Decimal("1.68"),
             "usd_per_myr": Decimal("0.235"),
             "items": [{
@@ -119,10 +119,10 @@ class ProfitCalculatorTests(TestCase):
 
     def test_weight_rounds_up_to_the_next_ten_gram_tier(self):
         payload = self.base_payload()
-        payload["items"][0]["weight_g"] = Decimal("201")
+        payload["items"][0]["weight_g"] = Decimal("181")
         item = calculate_profit(payload)["items"][0]
-        self.assertEqual(item["rounded_weight_g"], 210)
-        self.assertEqual(item["seller_shipping_cost"], "3.15")
+        self.assertEqual(item["rounded_weight_g"], 190)
+        self.assertEqual(item["seller_shipping_cost"], "2.85")
 
     def test_uploaded_shipping_price_list_examples(self):
         examples = {
@@ -136,8 +136,9 @@ class ProfitCalculatorTests(TestCase):
                 self.assertEqual(malaysia_cross_border_shipping(weight), expected)
 
     def test_shipping_does_not_extrapolate_beyond_price_list_limit(self):
-        with self.assertRaisesRegex(ValueError, "30,000g"):
-            malaysia_cross_border_shipping(Decimal("30000.01"))
+        self.assertEqual(malaysia_cross_border_shipping(Decimal("30000")), (30000, Decimal("450.00")))
+        with self.assertRaisesRegex(ValueError, "超过当前运费价表范围"):
+            malaysia_cross_border_shipping(Decimal("30001"))
 
     def test_local_store_does_not_apply_cross_border_lvg_tax(self):
         result = calculate_profit(self.base_payload(seller_type="local"))
@@ -203,16 +204,37 @@ class ProfitCalculatorTests(TestCase):
         self.assertEqual(item["official_commission_rate"], "15.12")
         self.assertEqual(item["commission_rate"], "16.12")
 
-    def test_manual_commission_overrides_adjusted_official_rate(self):
-        result = calculate_profit(self.base_payload(manual_commission_rate=Decimal("10")))
-        item = result["items"][0]
-        self.assertEqual(item["commission_rate"], "10")
-        self.assertEqual(item["commission_rate_source"], "manual")
-        self.assertEqual(item["fees"]["platform_commission"], "7.99")
+    def test_manual_commission_overrides_only_its_sku_and_clearing_restores_auto(self):
+        payload = self.base_payload()
+        payload["items"].append(dict(payload["items"][0], sku_name="第二件"))
+        payload["items"][0]["manual_commission_rate"] = Decimal("10")
+        result = calculate_profit(payload)
+        self.assertEqual(result["items"][0]["commission_rate"], "10")
+        self.assertEqual(result["items"][0]["commission_rate_source"], "manual")
+        self.assertEqual(result["items"][1]["commission_rate"], "15.58")
+        self.assertEqual(result["items"][1]["commission_rate_source"], "official_adjusted")
+        del payload["items"][0]["manual_commission_rate"]
+        self.assertEqual(calculate_profit(payload)["items"][0]["commission_rate"], "15.58")
 
     def test_zero_adjustment_restores_official_rate(self):
         result = calculate_profit(self.base_payload(commission_adjustment=Decimal("0")))
         self.assertEqual(result["items"][0]["commission_rate"], "14.58")
+
+    @patch("apps.erp.profit_calculator.resolve_category")
+    def test_missing_official_commission_requires_a_manual_rate(self, mocked_resolve_category):
+        original = CATEGORY_RULES["bag-womens-womens-tote-bags"]
+        mocked_resolve_category.return_value = replace(
+            original,
+            marketplace_bxp=None,
+            marketplace_standard=None,
+            mall_bxp=None,
+            mall_standard=None,
+        )
+        with self.assertRaisesRegex(ValueError, "没有官方佣金率"):
+            calculate_profit(self.base_payload())
+        payload = self.base_payload()
+        payload["items"][0]["manual_commission_rate"] = Decimal("10")
+        self.assertEqual(calculate_profit(payload)["items"][0]["commission_rate"], "10")
 
     def test_buyer_shipping_only_changes_transaction_fee_base(self):
         payload = self.base_payload()
@@ -222,8 +244,31 @@ class ProfitCalculatorTests(TestCase):
         self.assertEqual(result["revenue"], "79.90")
         self.assertEqual(item["transaction_base"], "81.90")
         self.assertEqual(item["fees"]["transaction_fee"], "3.10")
+        self.assertEqual(result["amount_summary"]["buyer_shipping_revenue"], "2.00")
         buyer_shipping = next(row for row in result["breakdown"] if row["key"] == "buyer_shipping_fee")
         self.assertTrue(buyer_shipping["exclude_from_group_total"])
+
+    def test_buyer_shipping_is_reference_only_and_follows_logistics_sorting(self):
+        payload = self.base_payload()
+        payload["items"][0]["buyer_shipping_fee"] = Decimal("5.00")
+        result = calculate_profit(payload)
+        logistics = next(group for group in result["breakdown_groups"] if group["key"] == "物流")
+        self.assertEqual(logistics["amount"], "3.00")
+        self.assertEqual([row["key"] for row in logistics["items"]], ["buyer_shipping_fee", "seller_shipping_cost"])
+        self.assertEqual(result["revenue"], "79.90")
+
+    def test_unrelated_actual_settlement_values_never_override_estimate(self):
+        expected = calculate_profit(self.base_payload())
+        payload = self.base_payload()
+        payload.update({
+            "actual_platform_commission": Decimal("0"),
+            "actual_transaction_fee": Decimal("0"),
+            "actual_bxp_fee": Decimal("0"),
+            "actual_affiliate_commission": Decimal("0"),
+            "actual_seller_shipping_cost": Decimal("0"),
+            "actual_platform_support_fee": Decimal("0"),
+        })
+        self.assertEqual(calculate_profit(payload), expected)
 
     def test_breakdown_keeps_sales_first_and_sorts_groups_by_share(self):
         groups = calculate_profit(self.base_payload())["breakdown_groups"]
@@ -262,6 +307,7 @@ class ProfitCalculatorApiTests(TestCase):
         self.assertEqual(response.data["lvg_rate"], "10.00")
         self.assertEqual(response.data["default_commission_adjustment"], "1.00")
         self.assertEqual(response.data["shipping_rate_version"], "MY-CB-2026-05-15")
+        self.assertEqual(response.data["shipping_source_file"], "东南亚跨境物流运费价格表20260515(1).xlsx")
         self.assertEqual(response.data["shipping_max_weight_g"], "30000")
         self.assertGreater(len(response.data["categories"]), 240)
         self.assertEqual(
@@ -284,6 +330,21 @@ class ProfitCalculatorApiTests(TestCase):
         }, format="json")
         self.assertEqual(response.status_code, 400)
         self.assertIn("weight_g", response.data["items"][0])
+
+    def test_calculate_rejects_weight_outside_shipping_price_list(self):
+        response = self.client.post("/api/profit-calculator/calculate/", {
+            "country": "MY",
+            "seller_type": "cross_border",
+            "shop_identity": "marketplace",
+            "cny_per_myr": "1.68",
+            "items": [{
+                "category_code": "bag-womens-womens-tote-bags",
+                "weight_g": "30001",
+                "item_price": "10.00",
+            }],
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("超过当前运费价表范围", str(response.data["items"][0]["weight_g"]))
 
     @patch("apps.erp.views.urlopen", return_value=FakeRateResponse())
     def test_exchange_rates_are_derived_from_one_ecb_daily_snapshot(self, mocked_urlopen):

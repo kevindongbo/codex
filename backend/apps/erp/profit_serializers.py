@@ -14,7 +14,7 @@ class ProfitItemSerializer(serializers.Serializer):
         max_digits=8,
         decimal_places=2,
         min_value=Decimal("1"),
-        max_value=Decimal("30000"),
+        max_value=None,
     )
     item_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"))
     product_cost_cny = serializers.DecimalField(required=False, default=Decimal("0"), max_digits=14, decimal_places=2, min_value=Decimal("0"))
@@ -38,6 +38,20 @@ class ProfitItemSerializer(serializers.Serializer):
         decimal_places=4,
         min_value=Decimal("0"),
     )
+    manual_commission_rate = serializers.DecimalField(
+        required=False,
+        allow_null=True,
+        default=None,
+        max_digits=6,
+        decimal_places=2,
+        min_value=Decimal("0"),
+        max_value=Decimal("100"),
+    )
+
+    def validate_weight_g(self, value):
+        if value > Decimal("30000"):
+            raise serializers.ValidationError("超过当前运费价表范围")
+        return value
 
 
 class ProfitCalculationSerializer(serializers.Serializer):
@@ -52,15 +66,6 @@ class ProfitCalculationSerializer(serializers.Serializer):
         max_digits=6,
         decimal_places=2,
         min_value=Decimal("-100"),
-        max_value=Decimal("100"),
-    )
-    manual_commission_rate = serializers.DecimalField(
-        required=False,
-        allow_null=True,
-        default=None,
-        max_digits=6,
-        decimal_places=2,
-        min_value=Decimal("0"),
         max_value=Decimal("100"),
     )
     cny_per_myr = serializers.DecimalField(max_digits=12, decimal_places=6, min_value=Decimal("0.000001"))

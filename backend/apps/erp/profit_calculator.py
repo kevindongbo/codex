@@ -208,9 +208,6 @@ def calculate_profit(payload: dict) -> dict:
     cny_per_myr = decimal(payload.get("cny_per_myr", "1"))
     usd_per_myr = decimal(payload.get("usd_per_myr", "0.235"))
     commission_adjustment = decimal(payload.get("commission_adjustment", "1.00"))
-    manual_commission_rate = payload.get("manual_commission_rate")
-    if manual_commission_rate is not None:
-        manual_commission_rate = decimal(manual_commission_rate)
     items = payload["items"]
 
     fee_totals = {
@@ -235,6 +232,7 @@ def calculate_profit(payload: dict) -> dict:
     tax_total = Decimal("0")
     item_results = []
     has_ad_cost = False
+    has_manual_commission_rate = False
 
     for item in items:
         item_price = money(item["item_price"])
@@ -254,6 +252,10 @@ def calculate_profit(payload: dict) -> dict:
 
         rule = resolve_category(item["category_code"])
         official_commission_rate = rule.rate(shop_identity, bxp)
+        manual_commission_rate = item.get("manual_commission_rate")
+        if manual_commission_rate is not None:
+            manual_commission_rate = decimal(manual_commission_rate)
+            has_manual_commission_rate = True
         if official_commission_rate is None and manual_commission_rate is None:
             raise ValueError("所选三级类目没有官方佣金率，请在费用明细中手动填写类目佣金率。")
         system_commission_rate = (
@@ -443,7 +445,11 @@ def calculate_profit(payload: dict) -> dict:
             "平台代扣",
             rate=weighted_commission_rate,
             editable=True,
-            rate_source="manual" if manual_commission_rate is not None else "official_adjusted",
+            rate_source=(
+                "manual"
+                if has_manual_commission_rate
+                else "official_adjusted"
+            ),
             source=COMMISSION_SOURCE,
             effective_date="2026-06-06",
         ),
@@ -531,7 +537,6 @@ def calculate_profit(payload: dict) -> dict:
         group_kind = "income" if group_name == "收入" else ("info" if group_name == "税费" else "cost")
         group_items.sort(
             key=lambda item: (
-                item["key"] == "buyer_shipping_fee",
                 decimal(item["amount"]) == 0,
                 -abs(decimal(item["amount"])),
                 item_business_order[item["key"]],
@@ -595,11 +600,6 @@ def calculate_profit(payload: dict) -> dict:
         "breakdown_groups": breakdown_groups,
         "amount_summary": amount_summary,
         "commission_adjustment": str(commission_adjustment),
-        "manual_commission_rate": (
-            str(manual_commission_rate)
-            if manual_commission_rate is not None
-            else None
-        ),
         "shipping_rate_version": MALAYSIA_CROSS_BORDER_RATE_VERSION,
         "shipping_max_weight_g": str(MALAYSIA_CROSS_BORDER_MAX_G),
         "rule_version": RULE_VERSION,
