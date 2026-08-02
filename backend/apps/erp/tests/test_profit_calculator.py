@@ -32,6 +32,28 @@ class FakeRateResponse:
         return ECB_FIXTURE
 
 
+ECB_FIXTURE = b'''<?xml version="1.0" encoding="UTF-8"?>
+<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01"
+ xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref">
+  <Cube><Cube time="2026-07-29">
+    <Cube currency="USD" rate="1.1600"/>
+    <Cube currency="CNY" rate="8.4000"/>
+    <Cube currency="MYR" rate="5.0000"/>
+  </Cube></Cube>
+</gesmes:Envelope>'''
+
+
+class FakeRateResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return ECB_FIXTURE
+
+
 class ProfitCalculatorTests(TestCase):
     def base_payload(self, **overrides):
         payload = {
