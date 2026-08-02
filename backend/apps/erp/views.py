@@ -84,6 +84,11 @@ from .profit_calculator import (
     calculate_profit,
 )
 from .profit_serializers import ProfitCalculationSerializer
+from .profit_shipping_rates import (
+    MALAYSIA_CROSS_BORDER_EFFECTIVE_DATE,
+    MALAYSIA_CROSS_BORDER_MAX_G,
+    MALAYSIA_CROSS_BORDER_RATE_VERSION,
+)
 from .single_tenant import active_internal_membership, ensure_internal_organization, internal_organization
 from .sync import bump_sync_revision
 
@@ -189,8 +194,12 @@ def profit_calculator_config(request):
         "categories": category_config(),
         "category_tree": category_tree(),
         "transaction_rate": str(TRANSACTION_RATE),
+        "default_commission_adjustment": "1.00",
         "platform_support_fee": str(PLATFORM_SUPPORT_FEE),
         "lvg_rate": str(LVG_RATE),
+        "shipping_rate_version": MALAYSIA_CROSS_BORDER_RATE_VERSION,
+        "shipping_effective_date": MALAYSIA_CROSS_BORDER_EFFECTIVE_DATE,
+        "shipping_max_weight_g": str(MALAYSIA_CROSS_BORDER_MAX_G),
         "rule_effective_date": str(RULE_EFFECTIVE_DATE),
         "sources": {
             "commission": COMMISSION_SOURCE,

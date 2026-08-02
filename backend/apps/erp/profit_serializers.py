@@ -14,11 +14,18 @@ class ProfitItemSerializer(serializers.Serializer):
         max_digits=8,
         decimal_places=2,
         min_value=Decimal("1"),
-        max_value=Decimal("15000"),
+        max_value=Decimal("30000"),
     )
     item_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"))
     product_cost_cny = serializers.DecimalField(required=False, default=Decimal("0"), max_digits=14, decimal_places=2, min_value=Decimal("0"))
     affiliate_rate = serializers.DecimalField(required=False, default=Decimal("0"), max_digits=6, decimal_places=2, min_value=Decimal("0"), max_value=Decimal("100"))
+    buyer_shipping_fee = serializers.DecimalField(
+        required=False,
+        default=Decimal("0"),
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0"),
+    )
     ad_cost_type = serializers.ChoiceField(
         choices=("none", "roi", "cpa_usd", "ratio"),
         required=False,
@@ -39,6 +46,23 @@ class ProfitCalculationSerializer(serializers.Serializer):
     shop_identity = serializers.ChoiceField(choices=("marketplace", "mall"), default="marketplace")
     bxp = serializers.BooleanField(required=False, default=False)
     delivered = serializers.BooleanField(required=False, default=True)
+    commission_adjustment = serializers.DecimalField(
+        required=False,
+        default=Decimal("1.00"),
+        max_digits=6,
+        decimal_places=2,
+        min_value=Decimal("-100"),
+        max_value=Decimal("100"),
+    )
+    manual_commission_rate = serializers.DecimalField(
+        required=False,
+        allow_null=True,
+        default=None,
+        max_digits=6,
+        decimal_places=2,
+        min_value=Decimal("0"),
+        max_value=Decimal("100"),
+    )
     cny_per_myr = serializers.DecimalField(max_digits=12, decimal_places=6, min_value=Decimal("0.000001"))
     usd_per_myr = serializers.DecimalField(
         required=False,
