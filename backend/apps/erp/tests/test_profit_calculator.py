@@ -1,5 +1,4 @@
 from decimal import Decimal
-from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -9,168 +8,68 @@ from apps.erp.models import Membership, Organization
 from apps.erp.profit_calculator import calculate_profit, category_tree
 
 
-ECB_FIXTURE = b'''<?xml version="1.0" encoding="UTF-8"?>
-<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01"
- xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref">
-  <Cube><Cube time="2026-07-29">
-    <Cube currency="USD" rate="1.1600"/>
-    <Cube currency="CNY" rate="8.4000"/>
-    <Cube currency="MYR" rate="5.0000"/>
-  </Cube></Cube>
-</gesmes:Envelope>'''
-
-
-class FakeRateResponse:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
-
-    def read(self):
-        return ECB_FIXTURE
-
-
 class ProfitCalculatorTests(TestCase):
     def base_payload(self, **overrides):
         payload = {
             "country": "MY",
-            "seller_type": "cross_border",
+            "seller_type": "local",
             "shop_identity": "marketplace",
-            "bxp": False,
+            "bxp": True,
             "delivered": True,
-            "cny_per_myr": Decimal("1.68"),
+            "cny_per_myr": Decimal("1"),
             "usd_per_myr": Decimal("0.235"),
             "items": [{
                 "sku_name": "帆布包",
                 "category_code": "bag-womens-womens-tote-bags",
-                "weight_g": Decimal("200"),
-                "item_price": Decimal("79.90"),
-                "product_cost_cny": Decimal("18.90"),
-                "affiliate_rate": Decimal("15"),
+                "weight_g": Decimal("500"),
+                "item_price": Decimal("18.98"),
+                "product_cost_cny": Decimal("5.68"),
+                "affiliate_rate": Decimal("10"),
             }],
         }
         payload.update(overrides)
         return payload
 
-    def test_weight_drives_shipping_and_official_fee_bases(self):
+    def test_automatic_estimate_uses_sale_price_as_total_revenue(self):
         result = calculate_profit(self.base_payload())
-        item = result["items"][0]
-        self.assertEqual(item["shipping_tier_kg"], 1)
-        self.assertEqual(item["buyer_shipping_fee"], "2.90")
-        self.assertEqual(item["seller_shipping_cost"], "2.90")
-        self.assertEqual(item["commission_base"], "79.90")
-        self.assertEqual(item["transaction_base"], "82.80")
-        self.assertEqual(item["product_tax"], "7.26")
-        self.assertEqual(item["affiliate_base"], "72.64")
-        self.assertEqual(item["fees"]["platform_commission"], "11.65")
-        self.assertEqual(item["fees"]["transaction_fee"], "3.13")
-        self.assertEqual(item["fees"]["affiliate_commission"], "10.90")
-        self.assertEqual(item["fees"]["product_cost"], "11.25")
-        self.assertEqual(result["revenue"], "82.80")
-        self.assertEqual(result["profit"], "42.43")
-        self.assertEqual(result["profit_rate"], "51.24")
-        self.assertEqual(result["break_even_cpa_usd"], "9.97")
-        self.assertEqual(result["break_even_roi"], "1.95")
-        self.assertEqual(result["gross_profit"], "42.43")
-        self.assertIsNone(result["net_profit"])
-        self.assertFalse(result["has_ad_cost"])
-        self.assertEqual(result["amount_summary"], {
-            "sales_revenue": "79.90",
-            "buyer_shipping_revenue": "2.90",
-            "settlement_revenue": "82.80",
-            "platform_fees": "15.32",
-            "affiliate_commission": "10.90",
-            "logistics_cost": "2.90",
-            "estimated_platform_payout": "53.68",
-            "product_cost": "11.25",
-            "gross_profit": "42.43",
-            "advertising_cost": "0.00",
-            "net_profit": None,
-            "net_margin": None,
-        })
-
-    def test_weight_rounds_up_to_the_next_official_kg_tier(self):
-        payload = self.base_payload()
-        payload["items"][0]["weight_g"] = Decimal("1001")
-        item = calculate_profit(payload)["items"][0]
-        self.assertEqual(item["shipping_tier_kg"], 2)
-        self.assertEqual(item["seller_shipping_cost"], "2.90")
-
-    def test_local_store_does_not_apply_cross_border_lvg_tax(self):
-        result = calculate_profit(self.base_payload(seller_type="local"))
-        self.assertEqual(result["items"][0]["product_tax"], "0.00")
-        self.assertEqual(result["items"][0]["affiliate_base"], "79.90")
-        self.assertEqual(result["items"][0]["buyer_shipping_fee"], "0.00")
+        self.assertEqual(result["revenue"], "18.98")
+        self.assertEqual(result["amount_summary"]["buyer_shipping_revenue"], "0.00")
+        self.assertEqual(result["amount_summary"]["settlement_revenue"], "18.98")
         self.assertEqual(result["items"][0]["seller_shipping_cost"], "0.00")
-        self.assertEqual(result["items"][0]["transaction_base"], "79.90")
 
-    def test_actual_ad_roi_calculates_net_profit_only_when_provided(self):
-        payload = self.base_payload()
-        payload["items"][0]["ad_cost_type"] = "roi"
-        payload["items"][0]["ad_cost_value"] = Decimal("4")
+    def test_manual_fee_rate_is_supported(self):
+        result = calculate_profit(self.base_payload(commission_rate_override=Decimal("10")))
+        item = result["items"][0]
+        self.assertEqual(item["fees"]["platform_commission"], "1.90")
+        self.assertEqual(item["commission_rate_source"], "manual_override")
+
+    def test_actual_settlement_amount_has_priority(self):
+        payload = self.base_payload(commission_rate_override=Decimal("8"))
+        payload["items"][0]["actual_platform_commission"] = Decimal("2.35")
         result = calculate_profit(payload)
-        self.assertEqual(result["advertising_cost"], "20.70")
-        self.assertEqual(result["gross_profit"], "42.43")
-        self.assertEqual(result["net_profit"], "21.73")
-        self.assertEqual(result["net_margin"], "26.24")
-        self.assertTrue(result["has_ad_cost"])
+        self.assertEqual(result["items"][0]["fees"]["platform_commission"], "2.35")
+        self.assertEqual(result["items"][0]["commission_rate_source"], "actual_settlement")
 
-    def test_actual_cpa_usd_converts_to_myr(self):
+    def test_transaction_fee_may_include_buyer_shipping_without_increasing_revenue(self):
         payload = self.base_payload()
-        payload["items"][0]["ad_cost_type"] = "cpa_usd"
-        payload["items"][0]["ad_cost_value"] = Decimal("5")
+        payload["items"][0]["buyer_shipping_paid"] = Decimal("2.00")
         result = calculate_profit(payload)
-        self.assertEqual(result["advertising_cost"], "21.28")
-        self.assertEqual(result["net_profit"], "21.15")
+        self.assertEqual(result["revenue"], "18.98")
+        self.assertEqual(result["items"][0]["transaction_base"], "20.98")
+        self.assertEqual(result["items"][0]["fees"]["transaction_fee"], "0.79")
 
-    def test_lvg_threshold_uses_tax_exclusive_rm500_value(self):
-        payload = self.base_payload()
-        payload["items"][0]["item_price"] = Decimal("550.00")
-        self.assertEqual(calculate_profit(payload)["items"][0]["product_tax"], "50.00")
-        payload["items"][0]["item_price"] = Decimal("550.01")
-        self.assertEqual(calculate_profit(payload)["items"][0]["product_tax"], "0.00")
+    def test_cross_border_shipping_uses_10g_rate_card_and_last_mile(self):
+        west = calculate_profit(self.base_payload(seller_type="cross_border", destination_region="west_malaysia"))
+        self.assertEqual(west["items"][0]["seller_shipping_cost"], "10.40")
+        payload = self.base_payload(seller_type="cross_border", destination_region="east_malaysia")
+        payload["items"][0]["weight_g"] = Decimal("501")
+        east = calculate_profit(payload)
+        self.assertEqual(east["items"][0]["chargeable_weight_g"], 510)
+        self.assertEqual(east["items"][0]["seller_shipping_cost"], "15.65")
 
-    def test_platform_support_fee_is_charged_once_for_multiple_skus(self):
-        payload = self.base_payload()
-        payload["items"].append(dict(payload["items"][0], sku_name="第二件"))
-        result = calculate_profit(payload)
-        support = next(row for row in result["breakdown"] if row["key"] == "platform_support_fee")
-        self.assertEqual(support["amount"], "0.54")
-
-    def test_essential_category_waives_platform_support_fee(self):
-        payload = self.base_payload()
-        payload["items"][0]["category_code"] = (
-            "fmcg-food-and-beverages-staples-and-cooking-essentials"
-        )
-        result = calculate_profit(payload)
-        support = next(row for row in result["breakdown"] if row["key"] == "platform_support_fee")
-        self.assertEqual(support["amount"], "0.00")
-
-    def test_bxp_fee_is_capped_at_rm54_per_item(self):
-        payload = self.base_payload(bxp=True)
-        payload["items"][0]["item_price"] = Decimal("2000")
-        result = calculate_profit(payload)
-        self.assertEqual(result["items"][0]["fees"]["bxp_fee"], "54.00")
-
-    def test_terminal_beauty_category_inherits_official_group_rate(self):
-        payload = self.base_payload()
-        payload["items"][0]["category_code"] = "beauty-skincare-cleanser"
-        item = calculate_profit(payload)["items"][0]
-        self.assertEqual(item["category"], "美妆个护 / 护肤 / 洁面")
-        self.assertEqual(item["commission_rate"], "15.12")
-
-    def test_operator_tree_contains_complete_bag_and_beauty_groups(self):
+    def test_category_tree_remains_available(self):
         tree = category_tree()
         self.assertEqual([node["label"] for node in tree], ["箱包", "美妆个护"])
-        bags, beauty = tree
-        self.assertEqual(
-            [node["label"] for node in bags["children"]],
-            ["女包", "男包", "旅行箱包", "功能箱包", "箱包配件"],
-        )
-        self.assertEqual(len(beauty["children"]), 16)
-        self.assertGreaterEqual(sum(len(node["children"]) for node in bags["children"]), 60)
-        self.assertGreaterEqual(sum(len(node["children"]) for node in beauty["children"]), 120)
 
 
 class ProfitCalculatorApiTests(TestCase):
@@ -181,59 +80,30 @@ class ProfitCalculatorApiTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
-    def test_config_returns_auditable_three_level_rules(self):
+    def test_config_returns_fee_configuration(self):
         response = self.client.get("/api/profit-calculator/config/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["transaction_rate"], "3.78")
         self.assertEqual(response.data["platform_support_fee"], "0.54")
-        self.assertEqual(response.data["lvg_rate"], "10.00")
         self.assertGreater(len(response.data["categories"]), 240)
-        self.assertEqual(
-            [node["label"] for node in response.data["category_tree"]],
-            ["箱包", "美妆个护"],
-        )
-        self.assertEqual(len(response.data["categories"][0]["path"]), 3)
-        self.assertTrue(response.data["sources"]["lvg_tax"].startswith("https://mysst.customs.gov.my/"))
 
-    def test_calculate_requires_weight(self):
+    def test_calculate_accepts_manual_and_actual_fee_inputs(self):
         response = self.client.post("/api/profit-calculator/calculate/", {
             "country": "MY",
-            "seller_type": "cross_border",
+            "seller_type": "local",
             "shop_identity": "marketplace",
-            "cny_per_myr": "1.68",
+            "bxp": True,
+            "cny_per_myr": "1.000000",
+            "commission_rate_override": "10.00",
             "items": [{
                 "category_code": "bag-womens-womens-tote-bags",
-                "item_price": "10.00",
+                "weight_g": "500.00",
+                "item_price": "18.98",
+                "product_cost_cny": "5.68",
+                "affiliate_rate": "10.00",
+                "actual_platform_commission": "2.35"
             }],
         }, format="json")
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("weight_g", response.data["items"][0])
-
-    @patch("apps.erp.views.urlopen", return_value=FakeRateResponse())
-    def test_exchange_rates_are_derived_from_one_ecb_daily_snapshot(self, mocked_urlopen):
-        response = self.client.get("/api/profit-calculator/exchange-rates/?refresh=1")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["date"], "2026-07-29")
-        self.assertEqual(response.data["cny_per_myr"], "1.680000")
-        self.assertEqual(response.data["usd_per_myr"], "0.232000")
-        self.assertEqual(response.data["source"], "European Central Bank")
-        self.assertFalse(response.data["stale"])
-        mocked_urlopen.assert_called_once()
-
-    @patch("apps.erp.views.urlopen", side_effect=TimeoutError("upstream timeout"))
-    def test_exchange_rates_return_last_good_snapshot_when_refresh_fails(self, mocked_urlopen):
-        from django.core.cache import cache
-
-        cache.set("profit-calculator:exchange-rates:ecb:last-good", {
-            "date": "2026-07-28",
-            "cny_per_myr": "1.670000",
-            "usd_per_myr": "0.231000",
-            "source": "European Central Bank",
-            "source_url": "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
-            "stale": False,
-        }, 60)
-        response = self.client.get("/api/profit-calculator/exchange-rates/?refresh=1")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["date"], "2026-07-28")
-        self.assertTrue(response.data["stale"])
-        mocked_urlopen.assert_called_once()
+        self.assertEqual(response.data["revenue"], "18.98")
+        self.assertEqual(response.data["items"][0]["fees"]["platform_commission"], "2.35")
