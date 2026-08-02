@@ -628,7 +628,7 @@ class ReplenishmentRecommendationQuerySerializer(
 class StockTransferLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = StockTransferLine
-        fields = ["id", "sku", "quantity", "created_at", "updated_at"]
+        fields = ["id", "sku", "quantity", "received_quantity", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
@@ -694,6 +694,13 @@ class TransferPostInputSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(max_length=120)
 
 
+class TransferReceiveInputSerializer(TransferPostInputSerializer):
+    quantities = serializers.DictField(
+        child=serializers.DecimalField(max_digits=14, decimal_places=3, min_value=Decimal("0.001")),
+        required=False,
+    )
+
+
 class AdjustmentInputSerializer(OrganizationValidationMixin, serializers.Serializer):
     warehouse = serializers.PrimaryKeyRelatedField(queryset=Warehouse.objects.all())
     sku = serializers.PrimaryKeyRelatedField(queryset=SKU.objects.all())
@@ -752,8 +759,10 @@ class ReplenishmentSettingsSerializer(ScopedSerializer):
             attrs.get("velocity_weight_15", getattr(self.instance, "velocity_weight_15", Decimal("0"))),
             attrs.get("velocity_weight_30", getattr(self.instance, "velocity_weight_30", Decimal("0"))),
         ]
-        if sum(weights) <= 0:
-            raise serializers.ValidationError("近 3/7/15/30 天销量权重之和必须大于 0")
+        if sum(weights) != Decimal("1.000"):
+            raise serializers.ValidationError({
+                "non_field_errors": "近3/7/15/30天销量权重之和必须恰好为 1.000"
+            })
         safety_margin_ratio = attrs.get(
             "safety_margin_ratio", getattr(self.instance, "safety_margin_ratio", Decimal("0.200"))
         )

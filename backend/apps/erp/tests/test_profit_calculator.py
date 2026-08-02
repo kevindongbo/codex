@@ -174,12 +174,16 @@ class ProfitCalculatorTests(TestCase):
         payload["items"][0]["item_price"] = Decimal("550.01")
         self.assertEqual(calculate_profit(payload)["items"][0]["product_tax"], "0.00")
 
-    def test_platform_support_fee_is_charged_per_sku(self):
+    def test_platform_support_fee_is_charged_once_per_delivered_order_and_allocated(self):
         payload = self.base_payload()
         payload["items"].append(dict(payload["items"][0], sku_name="第二件"))
         result = calculate_profit(payload)
         support = next(row for row in result["breakdown"] if row["key"] == "platform_support_fee")
-        self.assertEqual(support["amount"], "1.08")
+        self.assertEqual(support["amount"], "0.54")
+        self.assertEqual(
+            [item["fees"]["platform_support_fee"] for item in result["items"]],
+            ["0.27", "0.27"],
+        )
 
     def test_essential_category_waives_platform_support_fee(self):
         payload = self.base_payload()
@@ -257,6 +261,13 @@ class ProfitCalculatorTests(TestCase):
         self.assertEqual([row["key"] for row in logistics["items"]], ["buyer_shipping_fee", "seller_shipping_cost"])
         self.assertEqual(result["revenue"], "79.90")
 
+    def test_customer_refund_reduces_transaction_fee_base_without_reducing_revenue(self):
+        result = calculate_profit(self.base_payload(customer_refund=Decimal("10.00")))
+        transaction = next(row for row in result["breakdown"] if row["key"] == "transaction_fee")
+        self.assertEqual(result["revenue"], "79.90")
+        self.assertEqual(result["customer_refund"], "10.00")
+        self.assertEqual(transaction["amount"], "2.64")
+
     def test_unrelated_actual_settlement_values_never_override_estimate(self):
         expected = calculate_profit(self.base_payload())
         payload = self.base_payload()
@@ -305,7 +316,7 @@ class ProfitCalculatorApiTests(TestCase):
         self.assertEqual(response.data["transaction_rate"], "3.78")
         self.assertEqual(response.data["platform_support_fee"], "0.54")
         self.assertEqual(response.data["lvg_rate"], "10.00")
-        self.assertEqual(response.data["default_commission_adjustment"], "1.00")
+        self.assertEqual(response.data["default_commission_adjustment"], "0.00")
         self.assertEqual(response.data["shipping_rate_version"], "MY-CB-2026-05-15")
         self.assertEqual(response.data["shipping_source_file"], "东南亚跨境物流运费价格表20260515(1).xlsx")
         self.assertEqual(response.data["shipping_max_weight_g"], "30000")

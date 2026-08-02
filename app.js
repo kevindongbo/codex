@@ -1329,7 +1329,9 @@ async function initializeTeamMode() {
     }
   } catch (error) {
     handleTeamError(error);
-    openModal('sessionModal');
+    // Do not turn a temporary network/server outage into a logout prompt.
+    // The gateway only clears persisted credentials after a confirmed 401.
+    if (error && error.status === 401) openModal('sessionModal');
   } finally {
     teamBusy = false;
     renderRuntimeState();

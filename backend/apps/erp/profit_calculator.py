@@ -200,6 +200,33 @@ def advertising_cost(item_revenue: Decimal, item: dict, usd_per_myr: Decimal) ->
     return Decimal("0.00")
 
 
+def _allocate_order_support_fee(items: list[dict], delivered: bool) -> list[Decimal]:
+    """Allocate one delivered-order fee without creating or losing a cent.
+
+    TikTok charges this fee once per order.  The calculator is SKU-oriented, so
+    the displayed line items receive a revenue-proportional allocation and the
+    highest-revenue SKU receives the rounding remainder.
+    """
+    allocations = [Decimal("0.00") for _ in items]
+    eligible = [index for index, item in enumerate(items) if not item["support_fee_exempt"]]
+    if not delivered or not eligible:
+        return allocations
+    eligible_revenue = sum((items[index]["item_price"] for index in eligible), Decimal("0"))
+    if eligible_revenue <= 0:
+        allocations[eligible[0]] = PLATFORM_SUPPORT_FEE
+        return allocations
+    remaining = PLATFORM_SUPPORT_FEE
+    # Every non-tail allocation is rounded independently; the deterministic
+    # tail keeps the order total exactly RM0.54.
+    ordered = sorted(eligible, key=lambda index: (-items[index]["item_price"], index))
+    for index in ordered[1:]:
+        allocated = money(PLATFORM_SUPPORT_FEE * items[index]["item_price"] / eligible_revenue)
+        allocations[index] = allocated
+        remaining -= allocated
+    allocations[ordered[0]] = money(remaining)
+    return allocations
+
+
 def calculate_profit(payload: dict) -> dict:
     shop_identity = payload.get("shop_identity", "marketplace")
     seller_type = payload.get("seller_type", "cross_border")
@@ -207,8 +234,18 @@ def calculate_profit(payload: dict) -> dict:
     delivered = bool(payload.get("delivered", True))
     cny_per_myr = decimal(payload.get("cny_per_myr", "1"))
     usd_per_myr = decimal(payload.get("usd_per_myr", "0.235"))
-    commission_adjustment = decimal(payload.get("commission_adjustment", "1.00"))
+    commission_adjustment = decimal(payload.get("commission_adjustment", "0.00"))
+    customer_refund = money(payload.get("customer_refund", 0))
     items = payload["items"]
+
+    support_inputs = []
+    for item in items:
+        rule = resolve_category(item["category_code"])
+        support_inputs.append({
+            "item_price": money(item["item_price"]),
+            "support_fee_exempt": rule.support_fee_exempt,
+        })
+    support_allocations = _allocate_order_support_fee(support_inputs, delivered)
 
     fee_totals = {
         "product_cost": Decimal("0"),
@@ -234,7 +271,7 @@ def calculate_profit(payload: dict) -> dict:
     has_ad_cost = False
     has_manual_commission_rate = False
 
-    for item in items:
+    for item_index, item in enumerate(items):
         item_price = money(item["item_price"])
         weight_g = decimal(item["weight_g"])
         product_cost_cny = decimal(item.get("product_cost_cny", 0))
@@ -248,6 +285,9 @@ def calculate_profit(payload: dict) -> dict:
         )
         product_tax = inclusive_lvg_tax(item_price, seller_type)
         affiliate_base = max(Decimal("0"), item_price - product_tax)
+        # A buyer-paid freight amount is not revenue and cannot offset seller
+        # logistics.  It only expands the payment-fee base, while refunds
+        # reduce that base at order level below.
         transaction_base = money(item_price + buyer_shipping_fee)
 
         rule = resolve_category(item["category_code"])
@@ -273,11 +313,7 @@ def calculate_profit(payload: dict) -> dict:
             if bxp
             else Decimal("0.00")
         )
-        support_fee = (
-            PLATFORM_SUPPORT_FEE
-            if delivered and not rule.support_fee_exempt
-            else Decimal("0.00")
-        )
+        support_fee = support_allocations[item_index]
         item_ad_cost = advertising_cost(item_price, item, usd_per_myr)
         has_ad_cost = has_ad_cost or item_ad_cost > 0
         line_fees = {
@@ -337,6 +373,11 @@ def calculate_profit(payload: dict) -> dict:
             "fees": {key: str(money(value)) for key, value in line_fees.items()},
         })
 
+    # Refunds have no SKU identity in this trial calculator.  Keep the
+    # allocation deterministic by reducing the total payment base after all
+    # SKU lines were rounded, and expose it in the returned basis.
+    bases["transaction"] = max(Decimal("0.00"), money(bases["transaction"] - customer_refund))
+    fee_totals["transaction_fee"] = rate_amount(bases["transaction"], TRANSACTION_RATE)
     sales_revenue = money(sales_revenue)
     buyer_shipping_total = money(buyer_shipping_total)
     revenue = sales_revenue
@@ -458,7 +499,7 @@ def calculate_profit(payload: dict) -> dict:
             "支付交易手续费",
             fee_totals["transaction_fee"],
             "fee",
-            "商品售价 + 买家运费",
+            "商品售价 + 买家运费 - 客户退款",
             "平台代扣",
             rate=TRANSACTION_RATE,
             source=TRANSACTION_SOURCE,
@@ -480,7 +521,7 @@ def calculate_profit(payload: dict) -> dict:
             "每件平台支持费",
             fee_totals["platform_support_fee"],
             "fee",
-            "每个 SKU 收取 RM0.54；指定基础类目自动豁免",
+            "每个已送达订单收取 RM0.54；按 SKU 商品售价比例分摊，最高售价 SKU 承担舍入尾差",
             "平台代扣",
             source=SUPPORT_FEE_SOURCE,
             effective_date="2026-02-15",
@@ -600,6 +641,7 @@ def calculate_profit(payload: dict) -> dict:
         "breakdown_groups": breakdown_groups,
         "amount_summary": amount_summary,
         "commission_adjustment": str(commission_adjustment),
+        "customer_refund": str(customer_refund),
         "shipping_rate_version": MALAYSIA_CROSS_BORDER_RATE_VERSION,
         "shipping_max_weight_g": str(MALAYSIA_CROSS_BORDER_MAX_G),
         "rule_version": RULE_VERSION,

@@ -62,11 +62,18 @@ class ProfitCalculationSerializer(serializers.Serializer):
     delivered = serializers.BooleanField(required=False, default=True)
     commission_adjustment = serializers.DecimalField(
         required=False,
-        default=Decimal("1.00"),
+        default=Decimal("0.00"),
         max_digits=6,
         decimal_places=2,
         min_value=Decimal("-100"),
         max_value=Decimal("100"),
+    )
+    customer_refund = serializers.DecimalField(
+        required=False,
+        default=Decimal("0.00"),
+        max_digits=14,
+        decimal_places=2,
+        min_value=Decimal("0"),
     )
     cny_per_myr = serializers.DecimalField(max_digits=12, decimal_places=6, min_value=Decimal("0.000001"))
     usd_per_myr = serializers.DecimalField(

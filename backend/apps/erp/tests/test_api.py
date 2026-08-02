@@ -1826,7 +1826,7 @@ class ApiTests(TestCase):
             {
                 "safety_days": "9.5", "default_lead_time_days": 21, "review_cycle_days": 5,
                 "target_days": 35, "service_level_factor": "1.96", "safety_margin_ratio": "0.25", "initial_reference_shipment_count": 4,
-                "velocity_weight_7": "0.6", "velocity_weight_15": "0.3", "velocity_weight_30": "0.1",
+                "velocity_weight_3": "0.0", "velocity_weight_7": "0.6", "velocity_weight_15": "0.3", "velocity_weight_30": "0.1",
             }, format="json", **headers,
         )
         self.assertEqual(saved.status_code, 201, saved.data)

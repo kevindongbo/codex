@@ -15,7 +15,6 @@
     ] }] }
   ];
   const RATE_STORAGE_KEY = 'dongbo-profit-rate-v1';
-  const COMMISSION_ADJUSTMENT_KEY = 'dongbo-profit-commission-adjustment-v1';
   let categoryTree = fallbackTree;
   let categories = [];
   let rowSequence = 0;
@@ -48,15 +47,6 @@
   }
   function ratePreference() {
     try { return JSON.parse(localStorage.getItem(RATE_STORAGE_KEY) || '{}'); } catch (_) { return {}; }
-  }
-  function savedCommissionAdjustment(fallback) {
-    try {
-      const saved = localStorage.getItem(COMMISSION_ADJUSTMENT_KEY);
-      return saved == null ? fallback : saved;
-    } catch (_) { return fallback; }
-  }
-  function persistCommissionAdjustment(value) {
-    try { localStorage.setItem(COMMISSION_ADJUSTMENT_KEY, value); } catch (_) { /* optional */ }
   }
 
   async function request(path, options) {
@@ -297,8 +287,10 @@
     el('profitBreakdownCurrency').textContent = '金额(' + displayCurrency + ')';
     renderBreakdown(result);
     const warnings = el('profitWarnings');
-    warnings.innerHTML = (result.warnings || []).map(function (warning) { return '<p>' + escapeHtml(warning) + '</p>'; }).join('');
-    warnings.hidden = !(result.warnings || []).length;
+    // Calculation guidance lives on the rules page; the result card must not
+    // add a second yellow notice area below the figures.
+    warnings.innerHTML = '';
+    warnings.hidden = true;
     el('profitResultPanel').hidden = false;
     el('profitResultPanel').dataset.lastResult = JSON.stringify(result);
     if (shouldScroll !== false) el('profitResultPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -363,7 +355,7 @@
       const config = await request('/profit-calculator/config/');
       categories = config.categories || [];
       categoryTree = config.category_tree || fallbackTree;
-      const adjustment = savedCommissionAdjustment(config.default_commission_adjustment || '1.00');
+      const adjustment = config.default_commission_adjustment || '0.00';
       el('profitCommissionAdjustment').value = adjustment;
       document.querySelectorAll('[data-profit-row]').forEach(function (row) {
         populateCategoryPicker(row, row.querySelector('[data-profit-field="category_code"]').value);
@@ -427,9 +419,6 @@
     el('profitRateManual').addEventListener('click', useManualRates);
     el('profitRateRefresh').addEventListener('click', function () { loadExchangeRates(true); });
 
-    document.addEventListener('input', function (event) {
-      if (event.target.id === 'profitCommissionAdjustment') persistCommissionAdjustment(event.target.value || '0');
-    });
     document.addEventListener('change', function (event) {
       if (event.target.matches('[data-profit-field="ad_cost_type"]')) {
         const input = event.target.closest('[data-profit-row]').querySelector('[data-profit-field="ad_cost_value"]');

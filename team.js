@@ -230,7 +230,10 @@
           self.persistSessionSelection();
           return self.accessToken;
         } catch (error) {
-          self.clearSession();
+          // A refresh token is cleared only when the server positively says it
+          // is no longer valid.  Network interruptions and 5xx responses must
+          // leave the saved session available for a retry after F5.
+          if (error && error.status === 401) self.clearSession();
           throw error;
         } finally {
           self.refreshPromise = null;

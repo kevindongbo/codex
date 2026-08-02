@@ -51,7 +51,7 @@ from .serializers import (
     ShipmentSerializer, ShipInputSerializer, SKUSerializer, StockBalanceSerializer,
     StockLedgerReversalInputSerializer, StockLedgerSerializer, StockTransferSerializer, SupplierSerializer,
     ManualStockMovementInputSerializer, TikTokAuthorizationStartSerializer, TikTokShopConnectionSerializer, TikTokShopSyncRunSerializer, TikTokSyncStartSerializer,
-    TransferPostInputSerializer, WarehouseSerializer,
+    TransferPostInputSerializer, TransferReceiveInputSerializer, WarehouseSerializer,
     ProductSelectionKeywordInputSerializer, ProductSelectionReportInputSerializer,
 )
 from . import alphashop, integrations
@@ -195,7 +195,7 @@ def profit_calculator_config(request):
         "categories": category_config(),
         "category_tree": category_tree(),
         "transaction_rate": str(TRANSACTION_RATE),
-        "default_commission_adjustment": "1.00",
+        "default_commission_adjustment": "0.00",
         "platform_support_fee": str(PLATFORM_SUPPORT_FEE),
         "lvg_rate": str(LVG_RATE),
         "shipping_rate_version": MALAYSIA_CROSS_BORDER_RATE_VERSION,
@@ -1540,7 +1540,7 @@ class StockTransferViewSet(OrganizationScopedViewSet):
 
     @action(detail=True, methods=["post"])
     def receive(self, request, pk=None):
-        data = TransferPostInputSerializer(data=request.data)
+        data = TransferReceiveInputSerializer(data=request.data)
         data.is_valid(raise_exception=True)
         transfer = _service_call(
             receive_stock_transfer,
