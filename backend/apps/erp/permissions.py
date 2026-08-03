@@ -14,12 +14,20 @@ PERMISSION_CATALOG = {
     "replenishment": "补货管理",
     "data": "数据导入与导出",
     "audit": "查看操作记录",
+    "store": "管理自有店铺",
+    "competitor": "编辑竞品",
+    "exchange": "刷新或修改汇率",
+    "profit_rules": "查看利润规则",
+    "product_edit": "编辑商品与 SKU",
+    "product_status": "启用或停用商品与 SKU",
+    "product_delete": "删除商品与 SKU",
+    "exchange_manual": "修改手动汇率",
 }
 
 LEGACY_ROLE_PERMISSIONS = {
     Membership.Role.ADMIN: set(PERMISSION_CATALOG),
     Membership.Role.MANAGER: set(PERMISSION_CATALOG),
-    Membership.Role.BUYER: {"catalog", "purchase", "replenishment"},
+    Membership.Role.BUYER: {"catalog", "product_edit", "purchase", "replenishment"},
     Membership.Role.WAREHOUSE: {"warehouse", "order"},
     Membership.Role.VIEWER: {"view"},
 }

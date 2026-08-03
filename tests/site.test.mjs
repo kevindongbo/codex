@@ -36,10 +36,10 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260730-profit-alignment-12/);
-  assert.match(html, /team\.js\?v=20260728-profit-calculator-server-1/);
-  assert.match(html, /profit-calculator\.js\?v=20260803-profit-completion-1/);
-  assert.match(html, /app\.js\?v=20260730-profit-alignment-12/);
+  assert.match(html, /styles\.css\?v=20260804-erp-req-1/);
+  assert.match(html, /team\.js\?v=20260804-erp-req-1/);
+  assert.match(html, /profit-calculator\.js\?v=20260804-erp-req-1/);
+  assert.match(html, /app\.js\?v=20260804-erp-req-1/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
@@ -98,6 +98,30 @@ test("keeps per-SKU profit fee editing and the single rate-share column wired", 
   assert.match(profitScript, /data-manual-commission-row/);
   assert.match(profitScript, /result\.manual_commission_rate = manualCommissionByRow\.get/);
   assert.match(profitScript, /参考 · /);
+});
+
+test("wires stores, SKU multi-store profit ranges and competitor seller grouping fields", async () => {
+  const [html, appScript, teamScript, profitScript, css] = await Promise.all([
+    (await fetchPath("/index.html")).text(), (await fetchPath("/app.js")).text(),
+    (await fetchPath("/team.js")).text(), (await fetchPath("/profit-calculator.js")).text(),
+    (await fetchPath("/styles.css")).text(),
+  ]);
+  assert.match(html, /id="storeManagementPanel"/);
+  assert.match(html, /id="storeModal"/);
+  assert.match(html, /id="productStoreList"/);
+  assert.match(html, /店铺售价<\/th><th>广告费前毛利<\/th><th>广告费前毛利率<\/th><th>保本 ROI/);
+  assert.doesNotMatch(html, /data-product-filter="direct"|data-product-filter="indirect"/);
+  assert.doesNotMatch(html, /id="replenishmentMethodNote"/);
+  assert.match(html, /id="sellerRating"/);
+  assert.match(html, /id="sellerIsStar"/);
+  assert.match(html, /id="sellerType"/);
+  assert.match(html, /id="snapshotShippingType"/);
+  assert.match(appScript, /function renderProductStoreEditor/);
+  assert.match(appScript, /toggle-profit-details/);
+  assert.match(profitScript, /if \(group\.items\.length === 1\)/);
+  assert.match(teamScript, /\/skus\/profit-summary\//);
+  assert.match(teamScript, /commission_override_percent: listing\.commission === '' \? null/);
+  assert.match(css, /\.product-media img\s*\{[^}]*object-fit:\s*contain/);
 });
 
 test("contains product, warehouse, order and monitoring workflows", async () => {

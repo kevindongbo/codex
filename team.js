@@ -415,17 +415,21 @@
         '/products/', '/suppliers/', '/purchase-orders/', '/stock-balances/', '/stock-ledger/',
         '/orders/', '/shipments/', '/returns/', '/competitors/', '/competitor-snapshots/',
         '/stock-transfers/', '/replenishment-policies/',
-        '/replenishment/recommendations/?warehouse=' + encodeURIComponent(this.warehouseId)
+        '/replenishment/recommendations/?warehouse=' + encodeURIComponent(this.warehouseId),
+        '/stores/', '/store-products/', '/skus/profit-summary/'
       ];
-      const values = await Promise.all(paths.map((path) => this.listAll(path)).concat([this.loadSyncVersion()]));
+      const values = await Promise.all(paths.map((path) => this.listAll(path)).concat([
+        this.request('/profit-calculator/config/'), this.loadSyncVersion()
+      ]));
       const raw = {
         products: values[0], suppliers: values[1], purchaseOrders: values[2],
         balances: values[3], ledger: values[4], orders: values[5], shipments: values[6],
         returns: values[7], competitors: values[8], snapshots: values[9], transfers: values[10],
-        replenishmentPolicies: values[11], replenishmentRecommendations: values[12]
+        replenishmentPolicies: values[11], replenishmentRecommendations: values[12],
+        stores: values[13], storeProducts: values[14], profitSummaries: values[15], profitConfig: values[16]
       };
       this.cache = raw;
-      this.syncRevision = values[13] || this.syncRevision;
+      this.syncRevision = values[17] || this.syncRevision;
       return this.adaptState(raw);
     }
 
@@ -444,6 +448,7 @@
 
     adaptState(raw) {
       const supplierById = new Map(raw.suppliers.map(function (item) { return [String(item.id), item]; }));
+      const profitBySku = new Map((raw.profitSummaries || []).map(function (item) { return [String(item.sku), item]; }));
       const productBySku = new Map();
       const ownViewByApiProduct = new Map();
       const own = [];
@@ -463,6 +468,10 @@
             safetyStock: sku ? number(sku.safety_stock) : 0, defaultSupplier: supplier ? supplier.name : '',
             status: item.status, productUrl: item.source_url || '', purchaseUrl: item.purchase_url || '',
             image: image ? image.url : '', monitoringEnabled: Boolean(item.monitoring_enabled),
+            categoryCode: sku ? sku.category_code : '', packedWeightG: sku ? sku.packed_weight_g : null,
+            purchaseCostCny: sku ? sku.purchase_cost_cny : null,
+            defaultCreatorCommissionPercent: sku ? sku.default_creator_commission_percent : null,
+            storeProducts: sku ? (sku.store_products || []) : [], profitSummary: sku ? profitBySku.get(String(sku.id)) || null : null,
             needsReview: !item.source_url || !image || !sku || number(sku.cost) <= 0,
             createdAt: item.created_at, updatedAt: item.updated_at
           };
@@ -484,6 +493,10 @@
           salesCurrency: item.currency || 'CNY', costCurrency: item.currency || 'CNY',
           standardCost: 0, safetyStock: 0, defaultSupplier: '', status: item.active ? 'active' : 'inactive',
           productUrl: item.url, purchaseUrl: '', image: item.image_url || '', monitoringEnabled: true,
+          sellerRating: item.seller_group_data ? item.seller_group_data.rating : null,
+          sellerIsStar: item.seller_group_data ? item.seller_group_data.is_star : false,
+          sellerType: item.seller_group_data ? item.seller_group_data.seller_type : 'normal',
+          shippingType: item.shipping_type || '', notes: item.notes || '',
           needsReview: !item.url || !item.image_url, createdAt: item.created_at, updatedAt: item.updated_at
         });
       });
@@ -507,6 +520,7 @@
           price: item.price == null ? 0 : number(item.price), sold: item.sold_count == null ? 0 : number(item.sold_count),
           rating: item.rating == null ? null : number(item.rating), reviews: item.review_count == null ? 0 : number(item.review_count),
           lowReviews: number(rawExtra.low_reviews), shopRating: rawExtra.shop_rating == null ? null : number(rawExtra.shop_rating),
+          shippingType: item.shipping_type || '',
           createdAt: item.created_at
         };
       });
@@ -625,7 +639,7 @@
       return {
         version: 6, revision: Date.now(),
         warehouses: [{ id: LOCAL_WAREHOUSE_ID, apiWarehouseId: this.warehouseId, name: (this.warehouses.find((item) => String(item.id) === this.warehouseId) || {}).name || '当前仓', active: true }],
-        products: products, snapshots: snapshots, purchaseOrders: purchaseOrders, receipts: [],
+        products: products, stores: raw.stores || [], storeProducts: raw.storeProducts || [], profitCategories: raw.profitConfig && raw.profitConfig.categories || [], snapshots: snapshots, purchaseOrders: purchaseOrders, receipts: [],
         inventoryBalances: inventoryBalances, inventoryMovements: inventoryMovements,
         salesOrders: salesOrders, reservations: [], shipments: raw.shipments, returns: returns,
         stockTransfers: stockTransfers, replenishmentPolicies: replenishmentPolicies,
@@ -671,6 +685,21 @@
     }
 
     async archiveWarehouse(warehouse) { return this.setWarehouseActive(warehouse, false); }
+
+    async saveStore(store, storeId) {
+      const path = storeId ? '/stores/' + storeId + '/' : '/stores/';
+      return this.request(path, { method: storeId ? 'PATCH' : 'POST', body: {
+        name: String(store.name || '').trim(), platform: store.platform || 'TikTok Shop',
+        market: store.market || '马来西亚', is_active: store.is_active !== false
+      }});
+    }
+
+    async deleteStore(storeId) { return this.request('/stores/' + storeId + '/', { method: 'DELETE' }); }
+
+    async saveStoreProduct(item, itemId) {
+      const path = itemId ? '/store-products/' + itemId + '/' : '/store-products/';
+      return this.request(path, { method: itemId ? 'PATCH' : 'POST', body: item });
+    }
 
     async ensureSupplier(name) {
       const trimmed = String(name || '').trim();
@@ -729,7 +758,10 @@
         const payload = {
           name: product.name, kind: product.kind, platform: 'tiktok_shop', market: product.market || '',
           url: product.productUrl, image_url: product.image, seller: product.seller || '',
-          currency: product.salesCurrency || 'CNY', active: product.status === 'active'
+          currency: product.salesCurrency || 'CNY', active: product.status === 'active',
+          seller_rating: product.sellerRating === '' ? null : product.sellerRating,
+          seller_is_star: Boolean(product.sellerIsStar), seller_type: product.sellerType || 'normal',
+          shipping_type: product.shippingType || '', notes: product.notes || ''
         };
         const saved = product.apiCompetitorId
           ? await this.request('/competitors/' + product.apiCompetitorId + '/', { method: 'PATCH', body: payload })
@@ -768,7 +800,10 @@
         const skuPayload = {
           product: raw.id, code: code, barcode: '', cost: sku.cost,
           currency: product.costCurrency || product.salesCurrency || 'CNY', safety_stock: sku.safetyStock || 0,
-          active: true, attributes: sku.attributes || {}
+          active: true, attributes: sku.attributes || {}, category_code: sku.categoryCode || null,
+          packed_weight_g: sku.packedWeightG === '' ? null : sku.packedWeightG,
+          purchase_cost_cny: sku.purchaseCostCny === '' ? null : sku.purchaseCostCny,
+          default_creator_commission_percent: sku.creatorCommission === '' ? null : sku.creatorCommission
         };
         const savedSku = currentSku
           ? await this.request('/skus/' + currentSku.id + '/', { method: 'PATCH', body: skuPayload })
@@ -782,6 +817,16 @@
         }
       }
       product.skuId = requestedSkus[0] && requestedSkus[0].id ? String(requestedSkus[0].id) : '';
+      for (const requestedSku of requestedSkus) {
+        const items = (product.storeListings || []).filter(function (listing) {
+          return listing.salePrice !== '' && ((listing.skuId && String(requestedSku.id) === String(listing.skuId)) || (!listing.skuId && requestedSku.code === listing.skuCode));
+        }).map(function (listing) {
+          return { store: listing.store, sale_price_myr: listing.salePrice, product_url: listing.productUrl || '',
+            commission_override_percent: listing.commission === '' ? null : listing.commission,
+            include_in_list_calculation: listing.include !== false };
+        });
+        await this.request('/skus/' + requestedSku.id + '/store-products/', { method: 'PUT', body: { items: items } });
+      }
       const rawImage = (raw.images || []).find(function (item) { return String(item.id) === String(product.imageId); }) || (raw.images || [])[0];
       if (product.image) {
         const imagePayload = { product: raw.id, url: product.image, alt: product.name, position: 0 };
@@ -1124,7 +1169,7 @@
         body: {
           product: competitorId, captured_at: snapshot.at, price: snapshot.price,
           sold_count: snapshot.sold, rating: snapshot.rating, review_count: snapshot.reviews,
-          availability: '', raw: { low_reviews: snapshot.lowReviews, shop_rating: snapshot.shopRating }
+          availability: '', shipping_type: snapshot.shippingType || '', raw: { low_reviews: snapshot.lowReviews, shop_rating: snapshot.shopRating }
         }
       });
     }

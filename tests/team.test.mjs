@@ -149,12 +149,16 @@ test('saving one product writes every requested SKU and retires removed SKUs saf
     ],
   });
   assert.deepEqual(calls.map((call) => call.path), [
-    '/products/product-1/', '/skus/sku-keep/', '/skus/', '/skus/sku-old/', '/product-images/', '/products/product-1/activate/',
+    '/products/product-1/', '/skus/sku-keep/', '/skus/', '/skus/sku-old/',
+    '/skus/sku-keep/store-products/', '/skus/sku-new/store-products/',
+    '/product-images/', '/products/product-1/activate/',
   ]);
   assert.equal(calls[1].options.body.code, 'KEEP');
   assert.equal(calls[2].options.body.code, 'NEW');
   assert.equal(calls[3].options.body.active, false);
-  assert.match(calls[4].options.body.url, /^data:image\/webp;base64,/);
+  assert.equal(calls[4].options.method, 'PUT');
+  assert.deepEqual(Array.from(calls[4].options.body.items), []);
+  assert.match(calls[6].options.body.url, /^data:image\/webp;base64,/);
 });
 
 test('team gateway hard-deletes an eligible product and a draft purchase', async () => {

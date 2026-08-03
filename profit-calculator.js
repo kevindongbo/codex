@@ -239,6 +239,16 @@
   function renderBreakdown(result) {
     const groups = normalizedGroups(result);
     el('profitBreakdownRows').innerHTML = groups.map(function (group) {
+      if (group.items.length === 1) {
+        const row = group.items[0];
+        const label = group.key === '收入' && row.label === '商品售价合计' ? '商品售价' : feeLabel(row);
+        const prefix = row.kind === 'income' || row.kind === 'info' || row.kind === 'reference' ? '' : '− ';
+        return '<tr class="profit-fee-row profit-single-group" data-profit-group-row="' + escapeHtml(group.key) + '"><td><b>' + escapeHtml(group.label) + '</b></td><td>' + label + '</td>' +
+          '<td data-profit-basis-column>' + escapeHtml(row.base || '—') + '</td>' +
+          '<td class="profit-rate-share">' + escapeHtml(rateShareText(row)) + '</td>' +
+          '<td class="profit-amount ' + escapeHtml(row.kind) + '">' + prefix + formatMoney(row.amount) + '</td>' +
+          '<td class="profit-source">' + sourceMarkup(row) + '</td></tr>';
+      }
       const groupPrefix = group.kind === 'income' || group.kind === 'info' ? '' : '− ';
       const total = '<tr class="profit-group-total" data-profit-group-total="' + escapeHtml(group.key) + '">' +
         '<td><button type="button" class="profit-group-toggle" data-profit-group-toggle="' + escapeHtml(group.key) + '" aria-expanded="true"><span>⌄</span><b>' + escapeHtml(group.label) + '</b></button></td>' +

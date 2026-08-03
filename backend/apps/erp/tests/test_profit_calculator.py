@@ -4,9 +4,11 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.erp.models import Membership, Organization
+from apps.erp.models import AuditLog, ExchangeRateSnapshot, Membership, Organization
+from apps.erp.exchange_rates import refresh_snapshot
 from apps.erp.profit_calculator import CATEGORY_RULES, calculate_profit, category_tree
 from apps.erp.profit_shipping_rates import malaysia_cross_border_shipping
 
@@ -31,6 +33,20 @@ class FakeRateResponse:
 
     def read(self):
         return ECB_FIXTURE
+
+
+class FakePayloadResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return self.payload
 
 
 ECB_FIXTURE = b'''<?xml version="1.0" encoding="UTF-8"?>
@@ -305,8 +321,8 @@ class ProfitCalculatorTests(TestCase):
 class ProfitCalculatorApiTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="calculator", password="test-pass-123")
-        organization = Organization.objects.create(name="东铂", slug="profit-calculator")
-        Membership.objects.create(organization=organization, user=self.user, role=Membership.Role.ADMIN)
+        self.organization = Organization.objects.create(name="东铂", slug="profit-calculator")
+        Membership.objects.create(organization=self.organization, user=self.user, role=Membership.Role.ADMIN)
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
@@ -316,7 +332,7 @@ class ProfitCalculatorApiTests(TestCase):
         self.assertEqual(response.data["transaction_rate"], "3.78")
         self.assertEqual(response.data["platform_support_fee"], "0.54")
         self.assertEqual(response.data["lvg_rate"], "10.00")
-        self.assertEqual(response.data["default_commission_adjustment"], "0.00")
+        self.assertEqual(response.data["default_commission_adjustment"], "1.00")
         self.assertEqual(response.data["shipping_rate_version"], "MY-CB-2026-05-15")
         self.assertEqual(response.data["shipping_source_file"], "东南亚跨境物流运费价格表20260515(1).xlsx")
         self.assertEqual(response.data["shipping_max_weight_g"], "30000")
@@ -357,7 +373,7 @@ class ProfitCalculatorApiTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("超过当前运费价表范围", str(response.data["items"][0]["weight_g"]))
 
-    @patch("apps.erp.views.urlopen", return_value=FakeRateResponse())
+    @patch("apps.erp.exchange_rates.urlopen", return_value=FakeRateResponse())
     def test_exchange_rates_are_derived_from_one_ecb_daily_snapshot(self, mocked_urlopen):
         response = self.client.get("/api/profit-calculator/exchange-rates/?refresh=1")
         self.assertEqual(response.status_code, 200)
@@ -368,20 +384,51 @@ class ProfitCalculatorApiTests(TestCase):
         self.assertFalse(response.data["stale"])
         mocked_urlopen.assert_called_once()
 
-    @patch("apps.erp.views.urlopen", side_effect=TimeoutError("upstream timeout"))
+    @patch("apps.erp.exchange_rates.urlopen", side_effect=TimeoutError("upstream timeout"))
     def test_exchange_rates_return_last_good_snapshot_when_refresh_fails(self, mocked_urlopen):
-        from django.core.cache import cache
-
-        cache.set("profit-calculator:exchange-rates:ecb:last-good", {
-            "date": "2026-07-28",
-            "cny_per_myr": "1.670000",
-            "usd_per_myr": "0.231000",
-            "source": "European Central Bank",
-            "source_url": "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
-            "stale": False,
-        }, 60)
+        ExchangeRateSnapshot.objects.create(
+            organization=self.organization, effective_date="2026-07-28",
+            fetched_at=timezone.now(), myr_cny="1.67000000", myr_usd="0.23100000", source="Manual",
+            source_url="", validation_status="valid", is_current=True,
+        )
         response = self.client.get("/api/profit-calculator/exchange-rates/?refresh=1")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["date"], "2026-07-28")
         self.assertTrue(response.data["stale"])
-        mocked_urlopen.assert_called_once()
+        self.assertGreaterEqual(mocked_urlopen.call_count, 3)
+
+    @patch("apps.erp.exchange_rates.urlopen", side_effect=[
+        TimeoutError("primary timeout"), TimeoutError("primary timeout"),
+        FakePayloadResponse(b'{"date":"2026-08-03","rates":{"CNY":1.690000,"USD":0.236000}}'),
+    ])
+    def test_exchange_rates_switch_to_backup_source_and_persist_failure_summary(self, mocked_urlopen):
+        ExchangeRateSnapshot.objects.create(
+            organization=self.organization, effective_date="2026-08-02", fetched_at=timezone.now(),
+            myr_cny="1.680000", myr_usd="0.235000", source="European Central Bank",
+            source_url="https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
+            validation_status="valid", is_current=True,
+        )
+        response = self.client.get("/api/profit-calculator/exchange-rates/?refresh=1")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["source"], "Frankfurter")
+        self.assertEqual(len(response.data["failures"]), 2)
+        snapshot = ExchangeRateSnapshot.objects.get(pk=response.data["id"])
+        self.assertEqual(snapshot.myr_cny, Decimal("1.690000"))
+        self.assertEqual(snapshot.myr_usd, Decimal("0.236000"))
+        self.assertIn("earlier failures", snapshot.response_summary)
+        self.assertEqual(mocked_urlopen.call_count, 3)
+        self.assertTrue(AuditLog.objects.filter(
+            organization=self.organization, object_id=str(snapshot.pk), action="exchange_rate.source_switch"
+        ).exists())
+
+    @patch("apps.erp.exchange_rates.urlopen")
+    def test_background_refresh_preserves_manual_current_snapshot(self, mocked_urlopen):
+        manual = ExchangeRateSnapshot.objects.create(
+            organization=self.organization, effective_date=timezone.localdate(), fetched_at=timezone.now(),
+            myr_cny="1.700000", myr_usd="0.240000", source="Manual",
+            validation_status="manual", is_current=True,
+        )
+        snapshot, failures = refresh_snapshot(self.organization, respect_manual=True)
+        self.assertEqual(snapshot.pk, manual.pk)
+        self.assertEqual(failures, ["manual override preserved"])
+        mocked_urlopen.assert_not_called()
