@@ -11,6 +11,7 @@ from django.contrib import admin
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -19,11 +20,11 @@ from apps.erp.apps import ErpConfig
 from apps.erp import alphashop, integrations
 from apps.erp.models import (
     AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct,
-    CompetitorSnapshot, LocalImport, Membership, Organization,
+    CompetitorSellerGroup, CompetitorSellerSnapshot, CompetitorSnapshot, ExchangeRateSnapshot, LocalImport, Membership, Organization, OwnStore,
     Product, ProductImage, PurchaseOrder, ReplenishmentPolicy, ReplenishmentSettings, ReturnOrder, SalesOrder,
     SalesOrderLine, Shipment, SKU, StockBalance, StockLedger, StockTransfer, TikTokShopConnection,
     TikTokShopOAuthState,
-    Supplier, Warehouse,
+    StoreProduct, Supplier, Warehouse,
 )
 
 
@@ -42,6 +43,170 @@ class ApiTests(TestCase):
         response = self.client.get("/api/health/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok", "database": "ok"})
+
+    def test_store_product_profit_summary_and_sku_identity_protection(self):
+        self.client.force_authenticate(self.user)
+        product = Product.objects.create(organization=self.organization, name="帆布包", status=Product.Status.ACTIVE)
+        sku = SKU.objects.create(
+            organization=self.organization, product=product, code="BAG-001", cost="18.90", currency="CNY",
+            category_code="bag-womens-womens-tote-bags", packed_weight_g="200",
+            purchase_cost_cny="18.90", default_creator_commission_percent="0.00",
+        )
+        rate = ExchangeRateSnapshot.objects.create(
+            organization=self.organization, effective_date=timezone.localdate(), fetched_at=timezone.now(),
+            myr_cny="1.680000", myr_usd="0.235000", source="Manual", validation_status="manual", is_current=True,
+        )
+        store_response = self.client.post(
+            "/api/stores/", {"name": "Dongbo MY", "platform": "TikTok Shop", "market": "马来西亚", "is_active": True},
+            format="json", HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(store_response.status_code, 201, store_response.data)
+        store_id = store_response.data["id"]
+        duplicate_store = self.client.post(
+            "/api/stores/", {"name": "Dongbo MY"}, format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(duplicate_store.status_code, 400)
+        listing = self.client.post(
+            "/api/store-products/", {"store": store_id, "sku": str(sku.pk), "sale_price_myr": "79.90",
+                                      "commission_override_percent": "0.00", "include_in_list_calculation": True},
+            format="json", HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(listing.status_code, 201, listing.data)
+        self.assertEqual(listing.data["commission_override_percent"], "0.00")
+        second_store = self.client.post(
+            "/api/stores/", {"name": "Dongbo MY 2", "is_active": True}, format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        sku.default_creator_commission_percent = None
+        sku.save(update_fields=["default_creator_commission_percent"])
+        replaced = self.client.put(
+            f"/api/skus/{sku.pk}/store-products/", {"items": [
+                {"store": store_id, "sale_price_myr": "79.90", "commission_override_percent": "0.00", "include_in_list_calculation": True},
+                {"store": second_store.data["id"], "sale_price_myr": "89.90", "commission_override_percent": None, "include_in_list_calculation": True},
+            ]}, format="json", HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(replaced.status_code, 200, replaced.data)
+        self.assertEqual(len(replaced.data), 2)
+        summary = self.client.get(
+            "/api/skus/profit-summary/", HTTP_X_ORGANIZATION_ID=str(self.organization.pk)
+        )
+        self.assertEqual(summary.status_code, 200, summary.data)
+        self.assertEqual(summary.data[0]["calculable_store_count"], 1)
+        self.assertEqual(summary.data[0]["incomplete_store_count"], 1)
+        self.assertIn("达人佣金", summary.data[0]["missing_fields"])
+        self.assertTrue(summary.data[0]["rule_version"])
+        self.assertEqual(summary.data[0]["exchange_snapshot"], str(rate.pk))
+        self.assertEqual(summary.data[0]["stores"][0]["commission_percent"], "0.00")
+
+        deactivated_store = self.client.patch(
+            f"/api/stores/{second_store.data['id']}/", {"is_active": False}, format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(deactivated_store.status_code, 200, deactivated_store.data)
+        filtered_summary = self.client.get(
+            "/api/skus/profit-summary/", HTTP_X_ORGANIZATION_ID=str(self.organization.pk)
+        )
+        self.assertEqual(len(filtered_summary.data[0]["stores"]), 1)
+        self.assertEqual(filtered_summary.data[0]["incomplete_store_count"], 0)
+        self.assertEqual(
+            AuditLog.objects.filter(organization=self.organization, action="store.update").count(), 1
+        )
+
+        disabled_sku = self.client.patch(
+            f"/api/skus/{sku.pk}/", {"active": False}, format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(disabled_sku.status_code, 200, disabled_sku.data)
+        self.assertTrue(AuditLog.objects.filter(action="sku.deactivate", object_id=str(sku.pk)).exists())
+
+        renamed = self.client.patch(
+            f"/api/skus/{sku.pk}/", {"code": "RENAMED"}, format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.organization.pk),
+        )
+        self.assertEqual(renamed.status_code, 400)
+        blocked_delete = self.client.delete(
+            f"/api/stores/{store_id}/", HTTP_X_ORGANIZATION_ID=str(self.organization.pk)
+        )
+        self.assertEqual(blocked_delete.status_code, 400)
+
+        other_organization = Organization.objects.create(name="另一组织", slug="other-org")
+        other_product = Product.objects.create(organization=other_organization, name="重复编码测试")
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            SKU.objects.create(organization=other_organization, product=other_product, code="BAG-001")
+
+    def test_product_write_permissions_are_granular(self):
+        membership = Membership.objects.get(organization=self.organization, user=self.user)
+        membership.permissions = ["catalog"]
+        membership.save(update_fields=["permissions"])
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        denied = self.client.post("/api/products/", {"name": "权限测试"}, format="json", **headers)
+        self.assertEqual(denied.status_code, 403)
+        membership.permissions = ["catalog", "product_edit"]
+        membership.save(update_fields=["permissions"])
+        created = self.client.post("/api/products/", {"name": "权限测试"}, format="json", **headers)
+        self.assertEqual(created.status_code, 201, created.data)
+        denied_status = self.client.post(f"/api/products/{created.data['id']}/deactivate/", {}, format="json", **headers)
+        self.assertEqual(denied_status.status_code, 403)
+        denied_delete = self.client.delete(f"/api/products/{created.data['id']}/", **headers)
+        self.assertEqual(denied_delete.status_code, 403)
+
+    def test_competitors_share_seller_group_and_deduplicate_unchanged_snapshots(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        first = self.client.post(
+            "/api/competitors/", {"name": "竞品 A", "url": "https://example.com/a", "seller": "Same Seller",
+                                  "seller_rating": "4.80", "seller_is_star": True, "seller_type": "brand"},
+            format="json", **headers,
+        )
+        second = self.client.post(
+            "/api/competitors/", {"name": "竞品 B", "url": "https://example.com/b", "seller": " same   seller "},
+            format="json", **headers,
+        )
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(second.status_code, 201, second.data)
+        self.assertEqual(first.data["seller_group_data"]["id"], second.data["seller_group_data"]["id"])
+        self.assertEqual(CompetitorSellerGroup.objects.filter(organization=self.organization).count(), 1)
+
+        payload = {"product": first.data["id"], "captured_at": timezone.now().isoformat(), "price": "25.00",
+                   "sold_count": 100, "rating": "4.50", "review_count": 20, "shipping_type": "cross_border"}
+        saved = self.client.post("/api/competitor-snapshots/", payload, format="json", **headers)
+        self.assertEqual(saved.status_code, 201, saved.data)
+        payload["captured_at"] = (timezone.now() + timedelta(minutes=1)).isoformat()
+        repeated = self.client.post("/api/competitor-snapshots/", payload, format="json", **headers)
+        self.assertEqual(repeated.status_code, 201, repeated.data)
+        self.assertEqual(saved.data["id"], repeated.data["id"])
+        self.assertEqual(CompetitorSnapshot.objects.filter(product_id=first.data["id"]).count(), 1)
+
+        group_id = first.data["seller_group_data"]["id"]
+        changed_group = self.client.patch(
+            f"/api/competitors/{first.data['id']}/",
+            {"seller_rating": "4.70", "seller_is_star": False, "seller_type": "normal"},
+            format="json", **headers,
+        )
+        self.assertEqual(changed_group.status_code, 200, changed_group.data)
+        linked_product = self.client.get(f"/api/competitors/{second.data['id']}/", **headers)
+        self.assertEqual(linked_product.data["seller_group_data"]["rating"], Decimal("4.70"))
+        snapshot_count = CompetitorSellerSnapshot.objects.filter(seller_group_id=group_id).count()
+        repeated_group = self.client.patch(
+            f"/api/competitors/{first.data['id']}/",
+            {"seller_rating": "4.70", "seller_is_star": False, "seller_type": "normal"},
+            format="json", **headers,
+        )
+        self.assertEqual(repeated_group.status_code, 200, repeated_group.data)
+        self.assertEqual(CompetitorSellerSnapshot.objects.filter(seller_group_id=group_id).count(), snapshot_count)
+
+        moved = self.client.patch(
+            f"/api/competitors/{first.data['id']}/", {"seller": "Other Seller"}, format="json", **headers,
+        )
+        self.assertEqual(moved.status_code, 200, moved.data)
+        self.assertNotEqual(moved.data["seller_group_data"]["id"], group_id)
+        linked_product = self.client.get(f"/api/competitors/{second.data['id']}/", **headers)
+        self.assertEqual(linked_product.data["seller_group_data"]["id"], group_id)
+        self.assertTrue(
+            AuditLog.objects.filter(organization=self.organization, action="competitor.seller_or_shipping.update").exists()
+        )
 
     def test_admin_hides_groups_and_internal_account_management(self):
         self.assertNotIn(Group, admin.site._registry)

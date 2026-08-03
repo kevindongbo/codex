@@ -7,14 +7,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
-    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, LocalImport, Membership, Organization,
+    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, CompetitorSellerGroup, CompetitorSellerSnapshot, LocalImport, Membership, Organization, OwnStore,
     Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReceiptLine,
     ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
-    SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, StockTransferLine, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
+    SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, StockTransferLine, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
 from .permissions import PERMISSION_CATALOG, request_organization
 from .secure_config import encrypt_secret
@@ -225,6 +226,16 @@ class UploadedMediaAssetSerializer(ScopedSerializer):
 
 
 class SKUSerializer(OrganizationValidationMixin, ScopedSerializer):
+    store_products = serializers.SerializerMethodField(read_only=True)
+
+    def get_store_products(self, obj):
+        return [{
+            "id": str(item.pk), "store": str(item.store_id), "store_name": item.store.name,
+            "store_active": item.store.is_active, "sale_price_myr": str(item.sale_price_myr),
+            "product_url": item.product_url,
+            "commission_override_percent": None if item.commission_override_percent is None else str(item.commission_override_percent),
+            "include_in_list_calculation": item.include_in_list_calculation,
+        } for item in obj.store_products.all()]
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.scope_relation("product", Product)
@@ -233,6 +244,13 @@ class SKUSerializer(OrganizationValidationMixin, ScopedSerializer):
         self.require_same_organization(attrs.get("product", getattr(self.instance, "product", None)), "product")
         if self.instance is None and not str(attrs.get("code", "")).strip():
             attrs["code"] = f"SKU-{uuid.uuid4().hex[:8].upper()}"
+        if self.instance is not None and "code" in attrs and attrs["code"] != self.instance.code:
+            if self.instance.store_products.exists() or self.instance.stock_ledger.exists() or self.instance.stock_balances.exists():
+                raise serializers.ValidationError({"code": "SKU 已有关联店铺、库存或业务流水，不能直接改码"})
+        for field in ("packed_weight_g", "purchase_cost_cny", "default_creator_commission_percent"):
+            value = attrs.get(field)
+            if value is not None and value < 0:
+                raise serializers.ValidationError({field: "不能小于 0"})
         return attrs
 
     class Meta(ScopedSerializer.Meta):
@@ -1191,6 +1209,10 @@ class CompetitorProductSerializer(OrganizationValidationMixin, ScopedSerializer)
     # Use a CharField rather than DRF URLField so an internal media URL such as
     # http://testserver/api/media-assets/<id>/content/ is accepted in every environment.
     image_url = serializers.CharField(required=False, allow_blank=True, max_length=4096)
+    seller_rating = serializers.DecimalField(max_digits=4, decimal_places=2, min_value=0, max_value=5, required=False, allow_null=True, write_only=True)
+    seller_is_star = serializers.BooleanField(required=False, write_only=True)
+    seller_type = serializers.ChoiceField(choices=("brand", "normal"), required=False, write_only=True)
+    seller_group_data = serializers.SerializerMethodField(read_only=True)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1203,7 +1225,86 @@ class CompetitorProductSerializer(OrganizationValidationMixin, ScopedSerializer)
         )
         if self.instance is None and not str(attrs.get("name", "")).strip():
             attrs["name"] = "待完善竞品"
+        if self.instance is None and not str(attrs.get("url", "")).strip():
+            raise serializers.ValidationError({"url": "商品链接必填"})
         return attrs
+
+    def get_seller_group_data(self, obj):
+        group = obj.seller_group
+        if group is None:
+            return None
+        return {"id": str(group.pk), "name": group.display_name, "rating": group.rating, "is_star": group.is_star, "seller_type": group.seller_type}
+
+    def _save_group(self, validated_data, instance=None):
+        seller = str(validated_data.get("seller", getattr(instance, "seller", ""))).strip()
+        group_values = {
+            "rating": validated_data.pop("seller_rating", serializers.empty),
+            "is_star": validated_data.pop("seller_is_star", serializers.empty),
+            "seller_type": validated_data.pop("seller_type", serializers.empty),
+        }
+        if not seller:
+            validated_data["seller_group"] = None
+            return None, False
+        organization = validated_data.get("organization", getattr(instance, "organization", None)) or _context_organization(self)
+        normalized = " ".join(seller.casefold().split())
+        group, _ = CompetitorSellerGroup.objects.get_or_create(
+            organization=organization, normalized_name=normalized, defaults={"display_name": seller}
+        )
+        changed = False
+        tracked_changed = False
+        if group.display_name != seller:
+            group.display_name = seller
+            changed = True
+        for field, value in group_values.items():
+            if value is not serializers.empty and getattr(group, field) != value:
+                setattr(group, field, value)
+                changed = True
+                tracked_changed = True
+        if changed:
+            group.save()
+        if tracked_changed:
+            signature = f"{group.rating}|{group.is_star}|{group.seller_type}"
+            import hashlib
+            value_hash = hashlib.sha256(signature.encode()).hexdigest()
+            CompetitorSellerSnapshot.objects.get_or_create(
+                seller_group=group, value_hash=value_hash,
+                defaults={"rating": group.rating, "is_star": group.is_star, "seller_type": group.seller_type},
+            )
+        validated_data["seller_group"] = group
+        return group, changed
+
+    @transaction.atomic
+    def create(self, validated_data):
+        self._save_group(validated_data)
+        instance = super().create(validated_data)
+        if instance.shipping_type:
+            self._record_shipping_snapshot(instance)
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        previous_shipping = instance.shipping_type
+        self._save_group(validated_data, instance)
+        instance = super().update(instance, validated_data)
+        if previous_shipping != instance.shipping_type:
+            self._record_shipping_snapshot(instance)
+        return instance
+
+    @staticmethod
+    def _record_shipping_snapshot(instance):
+        import hashlib
+        latest = instance.snapshots.order_by("-captured_at").first()
+        values = {
+            "price": latest.price if latest else None, "sold_count": latest.sold_count if latest else None,
+            "rating": latest.rating if latest else None, "review_count": latest.review_count if latest else None,
+            "availability": latest.availability if latest else "", "shipping_type": instance.shipping_type,
+        }
+        signature = "|".join(str(values[field] if values[field] is not None else "") for field in ("price", "sold_count", "rating", "review_count", "availability", "shipping_type"))
+        value_hash = hashlib.sha256(signature.encode()).hexdigest()
+        CompetitorSnapshot.objects.get_or_create(
+            product=instance, value_hash=value_hash,
+            defaults={"captured_at": timezone.now(), **values, "raw": {}},
+        )
 
     def validate_image_url(self, value):
         if value and value.lower().startswith("data:"):
@@ -1222,6 +1323,30 @@ class CompetitorProductSerializer(OrganizationValidationMixin, ScopedSerializer)
         }
 
 
+class OwnStoreSerializer(ScopedSerializer):
+    class Meta(ScopedSerializer.Meta):
+        model = OwnStore
+        fields = "__all__"
+
+
+class StoreProductSerializer(OrganizationValidationMixin, ScopedSerializer):
+    store_name = serializers.CharField(source="store.name", read_only=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.scope_relation("store", OwnStore)
+        self.scope_relation("sku", SKU)
+
+    def validate(self, attrs):
+        self.require_same_organization(attrs.get("store", getattr(self.instance, "store", None)), "store")
+        self.require_same_organization(attrs.get("sku", getattr(self.instance, "sku", None)), "sku")
+        return attrs
+
+    class Meta(ScopedSerializer.Meta):
+        model = StoreProduct
+        fields = "__all__"
+
+
 class CompetitorSnapshotSerializer(OrganizationValidationMixin, serializers.ModelSerializer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1230,6 +1355,17 @@ class CompetitorSnapshotSerializer(OrganizationValidationMixin, serializers.Mode
     def validate(self, attrs):
         self.require_same_organization(attrs.get("product", getattr(self.instance, "product", None)), "product")
         return attrs
+
+    def create(self, validated_data):
+        import hashlib
+        signature = "|".join(str(validated_data.get(field, "")) for field in ("price", "sold_count", "rating", "review_count", "availability", "shipping_type"))
+        value_hash = hashlib.sha256(signature.encode()).hexdigest()
+        product = validated_data["product"]
+        existing = CompetitorSnapshot.objects.filter(product=product, value_hash=value_hash).first()
+        if existing:
+            return existing
+        validated_data["value_hash"] = value_hash
+        return super().create(validated_data)
 
     class Meta:
         model = CompetitorSnapshot

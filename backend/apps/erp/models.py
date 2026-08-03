@@ -169,19 +169,23 @@ class Product(OrganizationScopedModel):
 
 class SKU(OrganizationScopedModel):
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="skus", verbose_name="商品")
-    code = models.CharField("库存单位编码（SKU）", max_length=80)
+    code = models.CharField("库存单位编码（SKU）", max_length=80, unique=True)
     barcode = models.CharField("条形码", max_length=80, blank=True)
     cost = models.DecimalField("成本", max_digits=14, decimal_places=4, default=Decimal("0"))
     currency = models.CharField("成本币种", max_length=3, default="CNY")
     safety_stock = models.DecimalField("安全库存", max_digits=14, decimal_places=3, default=Decimal("0"))
     attributes = models.JSONField("规格属性", default=dict, blank=True)
     active = models.BooleanField("启用", default=True)
+    category_code = models.CharField(max_length=160, null=True, blank=True)
+    packed_weight_g = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    purchase_cost_cny = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    default_creator_commission_percent = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    image_url = models.URLField(max_length=4096, blank=True)
 
     class Meta:
         verbose_name = "库存单位（SKU）"
         verbose_name_plural = "库存单位（SKU）"
         constraints = [
-            models.UniqueConstraint(fields=["organization", "code"], name="uniq_org_sku_code"),
             models.UniqueConstraint(fields=["organization", "barcode"], condition=~Q(barcode=""), name="uniq_org_sku_barcode"),
             models.CheckConstraint(condition=Q(cost__gte=0), name="sku_cost_nonnegative"),
             models.CheckConstraint(condition=Q(safety_stock__gte=0), name="sku_safety_nonnegative"),
@@ -189,6 +193,31 @@ class SKU(OrganizationScopedModel):
 
     def __str__(self):
         return self.code
+
+
+class OwnStore(OrganizationScopedModel):
+    name = models.CharField(max_length=160, unique=True)
+    platform = models.CharField(max_length=80, default="TikTok Shop")
+    market = models.CharField(max_length=80, default="马来西亚")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+
+
+class StoreProduct(OrganizationScopedModel):
+    store = models.ForeignKey(OwnStore, on_delete=models.PROTECT, related_name="store_products")
+    sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="store_products")
+    sale_price_myr = models.DecimalField(max_digits=14, decimal_places=2)
+    product_url = models.URLField(max_length=2000, blank=True)
+    commission_override_percent = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    include_in_list_calculation = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["store", "sku"], name="uniq_store_sku_product"),
+            models.CheckConstraint(condition=Q(sale_price_myr__gte=0), name="store_product_price_nonnegative"),
+        ]
 
 
 class ProductImage(TimeStampedModel):
@@ -877,6 +906,28 @@ class ReturnReceiptLine(TimeStampedModel):
         ]
 
 
+class CompetitorSellerGroup(OrganizationScopedModel):
+    normalized_name = models.CharField(max_length=160)
+    display_name = models.CharField(max_length=160)
+    rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
+    is_star = models.BooleanField(default=False)
+    seller_type = models.CharField(max_length=20, choices=(("brand", "品牌卖家"), ("normal", "普通卖家")), default="normal")
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["organization", "normalized_name"], name="uniq_org_competitor_seller_name")]
+
+
+class CompetitorSellerSnapshot(TimeStampedModel):
+    seller_group = models.ForeignKey(CompetitorSellerGroup, on_delete=models.CASCADE, related_name="snapshots")
+    rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
+    is_star = models.BooleanField(default=False)
+    seller_type = models.CharField(max_length=20)
+    value_hash = models.CharField(max_length=64)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["seller_group", "value_hash"], name="uniq_competitor_seller_snapshot_hash")]
+
+
 class CompetitorProduct(OrganizationScopedModel):
     class Kind(models.TextChoices):
         DIRECT = "direct", "直接竞品"
@@ -896,8 +947,11 @@ class CompetitorProduct(OrganizationScopedModel):
     url = models.URLField(max_length=2000, blank=True)
     image_url = models.URLField(max_length=4096, blank=True)
     seller = models.CharField(max_length=160, blank=True)
+    seller_group = models.ForeignKey(CompetitorSellerGroup, null=True, blank=True, on_delete=models.SET_NULL, related_name="products")
     currency = models.CharField(max_length=3, default="CNY")
     active = models.BooleanField(default=True)
+    shipping_type = models.CharField(max_length=20, choices=(("local", "本土发货"), ("cross_border", "跨境发货")), blank=True)
+    notes = models.TextField(blank=True)
 
 
 class CompetitorSnapshot(TimeStampedModel):
@@ -908,6 +962,8 @@ class CompetitorSnapshot(TimeStampedModel):
     rating = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
     review_count = models.BigIntegerField(null=True, blank=True)
     availability = models.CharField(max_length=40, blank=True)
+    shipping_type = models.CharField(max_length=20, blank=True)
+    value_hash = models.CharField(max_length=64, blank=True)
     raw = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -928,6 +984,26 @@ class CompetitorSnapshot(TimeStampedModel):
                 condition=Q(review_count__isnull=True) | Q(review_count__gte=0),
                 name="competitor_reviews_nonnegative",
             ),
+        ]
+
+
+class ExchangeRateSnapshot(OrganizationScopedModel):
+    effective_date = models.DateField()
+    fetched_at = models.DateTimeField()
+    myr_cny = models.DecimalField(max_digits=14, decimal_places=6)
+    myr_usd = models.DecimalField(max_digits=14, decimal_places=6)
+    source = models.CharField(max_length=80)
+    source_url = models.URLField(max_length=1000, blank=True)
+    used_history_fallback = models.BooleanField(default=False)
+    validation_status = models.CharField(max_length=32, default="valid")
+    response_summary = models.CharField(max_length=500, blank=True)
+    is_current = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-fetched_at", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["organization"], condition=Q(is_current=True), name="uniq_org_current_exchange_snapshot"),
+            models.CheckConstraint(condition=Q(myr_cny__gt=0) & Q(myr_usd__gt=0), name="exchange_rates_positive"),
         ]
 
 

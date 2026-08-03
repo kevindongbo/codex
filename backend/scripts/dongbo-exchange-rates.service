@@ -1,0 +1,10 @@
+[Unit]
+Description=Dongbo ERP daily exchange-rate refresh
+After=network-online.target dongbo-erp.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/dongbo/app/backend
+EnvironmentFile=/opt/dongbo/app/.env
+ExecStart=/opt/dongbo/venv/bin/python manage.py refresh_exchange_rates
+

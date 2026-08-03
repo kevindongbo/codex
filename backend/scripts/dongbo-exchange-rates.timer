@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Dongbo ERP exchange rates every day
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

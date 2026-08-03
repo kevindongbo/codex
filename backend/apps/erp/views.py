@@ -26,10 +26,10 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge,
+    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, ExchangeRateSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge, OwnStore,
     LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
-    SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
+    SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
 from .owner_security import consume_challenge, create_challenge, email_verification_enabled
 from .permissions import (
@@ -42,7 +42,7 @@ from .permissions import (
 from .serializers import (
     AIInvocationLogSerializer, AIProviderConfigSerializer, AIRecommendationConfirmationSerializer, AIRecommendationInputSerializer, AIRecommendationSerializer, AlphaShopConfigSerializer,
     AdjustmentInputSerializer, AllocateInputSerializer, AuditLogSerializer,
-    CompetitorProductSerializer, CompetitorSnapshotSerializer, InternalAccountSerializer, MembershipSerializer,
+    CompetitorProductSerializer, CompetitorSnapshotSerializer, InternalAccountSerializer, MembershipSerializer, OwnStoreSerializer, StoreProductSerializer,
     ConfirmAndShipInputSerializer, LocalImportSerializer, OrganizationSerializer,
     ProductImageSerializer, ProductSerializer, QuickSalesSnapshotInputSerializer, UploadedMediaAssetSerializer,
     PurchaseOrderEditInputSerializer, PurchaseOrderSerializer, ReceiptSerializer, ReceiveInputSerializer,
@@ -90,6 +90,7 @@ from .profit_shipping_rates import (
     MALAYSIA_CROSS_BORDER_RATE_VERSION,
     MALAYSIA_CROSS_BORDER_SOURCE_FILE,
 )
+from .exchange_rates import record_refresh_failure, refresh_snapshot, save_snapshot, snapshot_payload
 from .single_tenant import active_internal_membership, ensure_internal_organization, internal_organization
 from .sync import bump_sync_revision
 
@@ -152,6 +153,14 @@ def _service_call(function, **kwargs):
         raise DataConflict() from exc
 
 
+def _require_capability(request, capability, message="当前账号没有执行此操作的权限"):
+    if is_owner(request.user):
+        return
+    membership = active_internal_membership(request.user)
+    if membership is None or capability not in membership_permissions(membership):
+        raise PermissionDenied(message)
+
+
 def _require_warehouse_access(request, organization, *warehouses):
     """Reject writes outside the member's explicit warehouse authorization."""
     membership = active_internal_membership(request.user)
@@ -186,6 +195,7 @@ def health(request):
 @api_view(["GET"])
 def profit_calculator_config(request):
     """Expose versioned fee rules without relying on another calculator site."""
+    _require_capability(request, "profit_rules", "当前账号没有查看利润规则权限")
     return Response({
         "countries": [{"code": "MY", "label": "马来西亚", "currency": "MYR"}],
         "shop_identities": [
@@ -195,7 +205,7 @@ def profit_calculator_config(request):
         "categories": category_config(),
         "category_tree": category_tree(),
         "transaction_rate": str(TRANSACTION_RATE),
-        "default_commission_adjustment": "0.00",
+        "default_commission_adjustment": "1.00",
         "platform_support_fee": str(PLATFORM_SUPPORT_FEE),
         "lvg_rate": str(LVG_RATE),
         "shipping_rate_version": MALAYSIA_CROSS_BORDER_RATE_VERSION,
@@ -215,34 +225,45 @@ def profit_calculator_config(request):
     })
 
 
-@api_view(["GET"])
+@api_view(["GET", "POST"])
 def profit_exchange_rates(request):
-    """Return one daily MYR conversion snapshot derived from ECB reference rates."""
+    """Return or refresh one durable, atomic MYR/CNY+MYR/USD snapshot."""
+    organization = request_organization(request)
+    if request.method == "POST":
+        _require_capability(request, "exchange_manual", "当前账号没有修改手动汇率权限")
+        try:
+            snapshot = save_snapshot(
+                organization=organization, effective_date=timezone.localdate(),
+                cny=Decimal(str(request.data["cny_per_myr"])), usd=Decimal(str(request.data["usd_per_myr"])),
+                source="Manual", source_url="", summary="owner supplied rates", manual=True,
+            )
+        except (KeyError, ValueError, InvalidOperation) as exc:
+            raise ValidationError("请填写有效的 MYR/CNY 与 MYR/USD 汇率") from exc
+        write_audit(organization=organization, actor=request.user, action="exchange_rate.manual", instance=snapshot, after={"snapshot_id": str(snapshot.pk)})
+        return Response(snapshot_payload(snapshot))
     force_refresh = request.query_params.get("refresh") == "1"
-    if not force_refresh:
-        cached = cache.get(ECB_DAILY_RATES_CACHE_KEY)
-        if cached:
-            return Response(cached)
-
-    try:
-        upstream_request = Request(
-            ECB_DAILY_RATES_URL,
-            headers={"Accept": "application/xml", "User-Agent": "DongboERP/1.0"},
+    if force_refresh:
+        _require_capability(request, "exchange", "当前账号没有刷新汇率权限")
+    current = ExchangeRateSnapshot.objects.filter(organization=organization, is_current=True).first()
+    if current and not force_refresh:
+        return Response(snapshot_payload(current))
+    snapshot, failures = refresh_snapshot(organization)
+    if snapshot:
+        source_changed = current is not None and current.source != snapshot.source
+        write_audit(
+            organization=organization, actor=request.user,
+            action="exchange_rate.source_switch" if source_changed else "exchange_rate.refresh",
+            instance=snapshot,
+            before={"source": current.source, "snapshot_id": str(current.pk)} if current else {},
+            after={"source": snapshot.source, "snapshot_id": str(snapshot.pk), "failures": failures},
         )
-        with urlopen(upstream_request, timeout=6) as response:
-            result = _parse_ecb_daily_rates(response.read())
-        cache.set(ECB_DAILY_RATES_CACHE_KEY, result, timeout=60 * 60 * 24)
-        cache.set(ECB_LAST_GOOD_RATES_CACHE_KEY, result, timeout=60 * 60 * 24 * 30)
-        return Response(result)
-    except Exception:
-        logger.exception("Unable to refresh ECB exchange rates")
-        fallback = cache.get(ECB_LAST_GOOD_RATES_CACHE_KEY)
-        if fallback:
-            return Response({**fallback, "stale": True})
-        return Response(
-            {"detail": "Daily exchange rates are temporarily unavailable; use the manual rate mode."},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
+        return Response(snapshot_payload(snapshot, failures=failures))
+    fallback = ExchangeRateSnapshot.objects.filter(organization=organization, validation_status__in=("valid", "manual")).first()
+    if fallback:
+        record_refresh_failure(fallback, failures)
+        write_audit(organization=organization, actor=request.user, action="exchange_rate.history_fallback", instance=fallback, after={"failures": failures})
+        return Response(snapshot_payload(fallback, fallback=True, failures=failures))
+    return Response({"detail": "汇率来源暂时不可用，数据库中也没有历史有效快照", "failures": failures}, status=503)
 
 
 @api_view(["POST"])
@@ -1005,13 +1026,65 @@ class WarehouseViewSet(OrganizationScopedViewSet):
     capability = "warehouse"
 
 
-class ProductViewSet(OrganizationScopedViewSet):
-    queryset = Product.objects.select_related("default_supplier").prefetch_related("images", "skus").order_by("name", "id")
-    serializer_class = ProductSerializer
-    capability = "catalog"
+class OwnStoreViewSet(OrganizationScopedViewSet):
+    queryset = OwnStore.objects.order_by("name", "id")
+    serializer_class = OwnStoreSerializer
+    capability = "store"
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        store = _save_serializer(serializer, organization=self.get_organization())
+        write_audit(organization=store.organization, actor=self.request.user, action="store.create", instance=store, after={"name": store.name, "is_active": store.is_active})
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        before = {"name": serializer.instance.name, "is_active": serializer.instance.is_active}
+        store = _save_serializer(serializer)
+        write_audit(organization=store.organization, actor=self.request.user, action="store.update", instance=store, before=before, after={"name": store.name, "is_active": store.is_active})
 
     @transaction.atomic
     def perform_destroy(self, instance):
+        if instance.store_products.exists():
+            raise ValidationError("店铺已关联 SKU，只能停用，不能删除")
+        write_audit(organization=instance.organization, actor=self.request.user, action="store.delete", instance=instance, before={"name": instance.name})
+        instance.delete()
+
+
+class StoreProductViewSet(OrganizationScopedViewSet):
+    queryset = StoreProduct.objects.select_related("store", "sku", "sku__product").order_by("store__name", "id")
+    serializer_class = StoreProductSerializer
+    capability = "store"
+
+    def perform_create(self, serializer):
+        item = _save_serializer(serializer, organization=self.get_organization())
+        write_audit(organization=item.organization, actor=self.request.user, action="store_product.create", instance=item, after={"store": str(item.store_id), "sku": str(item.sku_id)})
+
+    def perform_update(self, serializer):
+        before = {"store": str(serializer.instance.store_id), "sku": str(serializer.instance.sku_id), "include": serializer.instance.include_in_list_calculation}
+        item = _save_serializer(serializer)
+        write_audit(organization=item.organization, actor=self.request.user, action="store_product.update", instance=item, before=before, after={"store": str(item.store_id), "sku": str(item.sku_id), "include": item.include_in_list_calculation})
+
+    def perform_destroy(self, instance):
+        write_audit(organization=instance.organization, actor=self.request.user, action="store_product.delete", instance=instance, before={"store": str(instance.store_id), "sku": str(instance.sku_id)})
+        instance.delete()
+
+
+class ProductViewSet(OrganizationScopedViewSet):
+    queryset = Product.objects.select_related("default_supplier").prefetch_related("images", "skus__store_products__store").order_by("name", "id")
+    serializer_class = ProductSerializer
+    capability = "catalog"
+
+    def perform_create(self, serializer):
+        _require_capability(self.request, "product_edit", "当前账号没有新增商品权限")
+        return super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        _require_capability(self.request, "product_edit", "当前账号没有编辑商品权限")
+        return super().perform_update(serializer)
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        _require_capability(self.request, "product_delete", "当前账号没有删除商品权限")
         skus = list(instance.skus.select_for_update())
         sku_ids = [sku.pk for sku in skus]
         if sku_ids:
@@ -1053,6 +1126,7 @@ class ProductViewSet(OrganizationScopedViewSet):
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def activate(self, request, pk=None):
+        _require_capability(request, "product_status", "当前账号没有启用或停用商品权限")
         product = self.get_object()
         missing = []
         if not product.source_url:
@@ -1080,6 +1154,7 @@ class ProductViewSet(OrganizationScopedViewSet):
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def deactivate(self, request, pk=None):
+        _require_capability(request, "product_status", "当前账号没有启用或停用商品权限")
         product = self.get_object()
         if product.status == Product.Status.DRAFT:
             raise ValidationError("草稿商品无需停用")
@@ -1138,6 +1213,7 @@ class ProductViewSet(OrganizationScopedViewSet):
 
     @action(detail=True, methods=["delete"], url_path="force-delete")
     def force_delete(self, request, pk=None):
+        _require_capability(request, "product_delete", "当前账号没有删除商品权限")
         instance = self.get_object()
         if instance.status != Product.Status.INACTIVE:
             raise ValidationError("Only an inactive product can be force deleted.")
@@ -1146,12 +1222,13 @@ class ProductViewSet(OrganizationScopedViewSet):
 
 
 class SKUViewSet(OrganizationScopedViewSet):
-    queryset = SKU.objects.select_related("product").order_by("code", "id")
+    queryset = SKU.objects.select_related("product").prefetch_related("store_products__store").order_by("code", "id")
     serializer_class = SKUSerializer
     capability = "catalog"
 
     @transaction.atomic
     def perform_create(self, serializer):
+        _require_capability(self.request, "product_edit", "当前账号没有新增 SKU 权限")
         sku = _save_serializer(serializer, organization=self.get_organization())
         write_audit(
             organization=sku.organization, actor=self.request.user,
@@ -1161,14 +1238,136 @@ class SKUViewSet(OrganizationScopedViewSet):
 
     @transaction.atomic
     def perform_update(self, serializer):
-        before_cost = str(serializer.instance.cost)
+        requested_active = serializer.validated_data.get("active", serializer.instance.active)
+        capability = "product_status" if requested_active != serializer.instance.active else "product_edit"
+        _require_capability(self.request, capability, "当前账号没有修改该 SKU 的权限")
+        before = {"cost": str(serializer.instance.cost), "active": serializer.instance.active, "code": serializer.instance.code}
         sku = _save_serializer(serializer)
-        if before_cost != str(sku.cost):
+        if before["cost"] != str(sku.cost):
             write_audit(
                 organization=sku.organization, actor=self.request.user,
                 action="sku.cost.update", instance=sku,
-                before={"cost": before_cost}, after={"cost": str(sku.cost)},
+                before={"cost": before["cost"]}, after={"cost": str(sku.cost)},
             )
+        if before["active"] != sku.active:
+            write_audit(
+                organization=sku.organization, actor=self.request.user,
+                action="sku.activate" if sku.active else "sku.deactivate", instance=sku,
+                before={"active": before["active"]}, after={"active": sku.active},
+            )
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        _require_capability(self.request, "product_delete", "当前账号没有删除 SKU 权限")
+        if instance.store_products.exists():
+            raise ValidationError("SKU 已关联店铺商品，只能停用，不能删除")
+        write_audit(
+            organization=instance.organization, actor=self.request.user, action="sku.delete", instance=instance,
+            before={"code": instance.code, "active": instance.active},
+        )
+        try:
+            instance.delete()
+        except ProtectedError as exc:
+            raise ValidationError("SKU 已有库存、出入库或业务记录，只能停用，不能删除") from exc
+
+    @action(detail=True, methods=["put"], url_path="store-products")
+    @transaction.atomic
+    def replace_store_products(self, request, pk=None):
+        _require_capability(request, "product_edit", "当前账号没有编辑 SKU 店铺资料权限")
+        sku = SKU.objects.select_for_update().get(pk=self.get_object().pk)
+        rows = request.data.get("items") if isinstance(request.data, dict) else None
+        if not isinstance(rows, list):
+            raise ValidationError({"items": "请提交店铺商品列表"})
+        seen = set()
+        saved = []
+        for row in rows:
+            data = dict(row)
+            data["sku"] = str(sku.pk)
+            store_id = str(data.get("store", ""))
+            if not store_id or store_id in seen:
+                raise ValidationError({"items": "同一店铺只能配置一次"})
+            seen.add(store_id)
+            existing = sku.store_products.filter(store_id=store_id).first()
+            serializer = StoreProductSerializer(
+                existing, data=data, context={"request": request}, partial=existing is not None
+            )
+            serializer.is_valid(raise_exception=True)
+            item = _save_serializer(serializer, organization=sku.organization) if existing is None else _save_serializer(serializer)
+            saved.append(item)
+        removed = list(sku.store_products.exclude(store_id__in=seen))
+        for item in removed:
+            write_audit(organization=item.organization, actor=request.user, action="store_product.delete", instance=item, before={"store": str(item.store_id), "sku": str(item.sku_id)})
+            item.delete()
+        write_audit(
+            organization=sku.organization, actor=request.user, action="sku.store_products.replace", instance=sku,
+            after={"store_ids": sorted(seen), "count": len(saved)},
+        )
+        return Response(StoreProductSerializer(saved, many=True, context={"request": request}).data)
+
+    def _profit_detail(self, sku, item, snapshot):
+        commission = item.commission_override_percent
+        if commission is None:
+            commission = sku.default_creator_commission_percent
+        cost = sku.purchase_cost_cny
+        if cost is None and sku.currency == "CNY" and sku.cost > 0:
+            cost = sku.cost
+        required = {
+            "类目": sku.category_code,
+            "包装重量": sku.packed_weight_g,
+            "采购成本": cost,
+            "达人佣金": commission,
+            "商品售价": item.sale_price_myr,
+            "汇率": snapshot,
+        }
+        missing = [label for label, value in required.items() if value is None or value == ""]
+        if missing:
+            return {"store": str(item.store_id), "store_name": item.store.name, "missing": missing, "calculable": False}
+        payload = {
+            "country": "MY", "seller_type": "cross_border", "shop_identity": "marketplace", "bxp": False,
+            "delivered": True, "commission_adjustment": Decimal("1.00"), "cny_per_myr": snapshot.myr_cny,
+            "usd_per_myr": snapshot.myr_usd,
+            "items": [{"sku_name": sku.code, "category_code": sku.category_code, "weight_g": sku.packed_weight_g,
+                       "item_price": item.sale_price_myr, "product_cost_cny": cost, "affiliate_rate": commission}],
+        }
+        try:
+            result = calculate_profit(payload)
+        except (KeyError, ValueError):
+            return {"store": str(item.store_id), "store_name": item.store.name, "missing": ["有效类目规则"], "calculable": False}
+        return {
+            "store": str(item.store_id), "store_name": item.store.name, "sale_price": str(item.sale_price_myr),
+            "commission_percent": str(commission), "gross_profit": result["gross_profit"],
+            "gross_margin": result["gross_margin"], "break_even_roi": result["break_even_roi"],
+            "missing": [], "calculable": True, "breakdown": result["breakdown"], "rule_version": result["rule_version"],
+        }
+
+    @action(detail=False, methods=["get"], url_path="profit-summary")
+    def profit_summary(self, request):
+        organization = self.get_organization()
+        snapshot = ExchangeRateSnapshot.objects.filter(organization=organization, is_current=True).first()
+        response = []
+        for sku in self.get_queryset():
+            items = [item for item in sku.store_products.all() if item.store.is_active and item.include_in_list_calculation]
+            details = [self._profit_detail(sku, item, snapshot) for item in items]
+            calculated = [item for item in details if item["calculable"]]
+            def bounds(field):
+                values = [Decimal(item[field]) for item in calculated if item[field] is not None]
+                return {"min": str(min(values)), "max": str(max(values))} if values else None
+            response.append({"sku": str(sku.pk), "code": sku.code, "stores": details, "calculable_store_count": len(calculated),
+                             "incomplete_store_count": len(details) - len(calculated), "sale_price": bounds("sale_price"),
+                             "gross_profit": bounds("gross_profit"), "gross_margin": bounds("gross_margin"),
+                             "break_even_roi": bounds("break_even_roi"), "exchange_snapshot": str(snapshot.pk) if snapshot else None,
+                             "rule_version": calculated[0]["rule_version"] if calculated else None,
+                             "missing_fields": sorted({field for item in details for field in item.get("missing", [])})})
+        return Response(response)
+
+    @action(detail=True, methods=["get"], url_path="profit-comparison")
+    def profit_comparison(self, request, pk=None):
+        sku = self.get_object()
+        snapshot = ExchangeRateSnapshot.objects.filter(organization=sku.organization, is_current=True).first()
+        items = sku.store_products.select_related("store").filter(store__is_active=True, include_in_list_calculation=True)
+        stores = [self._profit_detail(sku, item, snapshot) for item in items]
+        return Response({"sku": str(sku.pk), "exchange_snapshot": str(snapshot.pk) if snapshot else None,
+                         "rule_version": next((item["rule_version"] for item in stores if item["calculable"]), None), "stores": stores})
 
 
 class ProductImageViewSet(viewsets.ModelViewSet):
@@ -1720,7 +1919,36 @@ class ReturnOrderViewSet(OrganizationScopedViewSet):
 class CompetitorProductViewSet(OrganizationScopedViewSet):
     queryset = CompetitorProduct.objects.order_by("name", "id")
     serializer_class = CompetitorProductSerializer
-    capability = "catalog"
+    capability = "competitor"
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        item = _save_serializer(serializer, organization=self.get_organization())
+        write_audit(organization=item.organization, actor=self.request.user, action="competitor.create", instance=item, after={"url": item.url, "kind": item.kind, "seller_group": str(item.seller_group_id or "")})
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        previous_group = serializer.instance.seller_group
+        before = {
+            "seller": serializer.instance.seller,
+            "seller_group": str(serializer.instance.seller_group_id or ""),
+            "shipping_type": serializer.instance.shipping_type,
+            "seller_rating": str(previous_group.rating) if previous_group and previous_group.rating is not None else None,
+            "seller_is_star": previous_group.is_star if previous_group else None,
+            "seller_type": previous_group.seller_type if previous_group else None,
+        }
+        item = _save_serializer(serializer)
+        current_group = item.seller_group
+        after = {
+            "seller": item.seller,
+            "seller_group": str(item.seller_group_id or ""),
+            "shipping_type": item.shipping_type,
+            "seller_rating": str(current_group.rating) if current_group and current_group.rating is not None else None,
+            "seller_is_star": current_group.is_star if current_group else None,
+            "seller_type": current_group.seller_type if current_group else None,
+        }
+        if before != after:
+            write_audit(organization=item.organization, actor=self.request.user, action="competitor.seller_or_shipping.update", instance=item, before=before, after=after)
 
     @action(detail=False, methods=["post"], url_path="add-own-products")
     @transaction.atomic
@@ -1834,7 +2062,7 @@ class CompetitorProductViewSet(OrganizationScopedViewSet):
 class CompetitorSnapshotViewSet(viewsets.ModelViewSet):
     serializer_class = CompetitorSnapshotSerializer
     permission_classes = [OrganizationRolePermission]
-    capability = "catalog"
+    capability = "competitor"
 
     def get_queryset(self):
         return CompetitorSnapshot.objects.filter(product__organization=request_organization(self.request))
