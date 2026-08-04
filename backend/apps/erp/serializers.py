@@ -12,7 +12,7 @@ from rest_framework import serializers
 
 from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, CompetitorSellerGroup, CompetitorSellerSnapshot, LocalImport, Membership, Organization, OwnStore,
-    Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReceiptLine,
+    Product, ProductImage, ProfitCalculationStrategy, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReceiptLine,
     ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, StockTransferLine, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
@@ -144,6 +144,29 @@ class InternalAccountSerializer(serializers.Serializer):
 class ScopedSerializer(serializers.ModelSerializer):
     class Meta:
         read_only_fields = ["id", "organization", "created_at", "updated_at"]
+
+
+class ProfitCalculationStrategyConfigSerializer(serializers.Serializer):
+    country = serializers.ChoiceField(choices=("MY",), default="MY")
+    seller_type = serializers.ChoiceField(choices=("cross_border", "local"), default="cross_border")
+    shop_identity = serializers.ChoiceField(choices=("marketplace", "mall"), default="marketplace")
+    bxp = serializers.BooleanField(default=False)
+    commission_adjustment = serializers.DecimalField(max_digits=6, decimal_places=2, default=Decimal("1.00"), min_value=Decimal("-100"), max_value=Decimal("100"))
+    buyer_pays_shipping = serializers.BooleanField(default=False)
+    buyer_shipping_region = serializers.ChoiceField(choices=("west_malaysia", "east_malaysia"), default="west_malaysia")
+    transaction_fee_adjustment = serializers.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"), min_value=Decimal("-100"), max_value=Decimal("100"))
+    display_currency = serializers.ChoiceField(choices=("MYR", "CNY"), default="MYR")
+
+
+class ProfitCalculationStrategySerializer(ScopedSerializer):
+    config = ProfitCalculationStrategyConfigSerializer()
+    created_by_name = serializers.CharField(source="created_by.username", read_only=True, default=None)
+    updated_by_name = serializers.CharField(source="updated_by.username", read_only=True, default=None)
+
+    class Meta(ScopedSerializer.Meta):
+        model = ProfitCalculationStrategy
+        fields = ["id", "name", "config", "is_default", "created_by_name", "updated_by_name", "created_at", "updated_at"]
+        read_only_fields = ["id", "is_default", "created_by_name", "updated_by_name", "created_at", "updated_at"]
 
 
 class WarehouseSerializer(ScopedSerializer):

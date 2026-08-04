@@ -15,6 +15,7 @@
     competitor: 'catalog',
     selection: 'catalog',
     replenishment: 'replenishment',
+    profit_rules: 'profit_rules',
     migration: 'data'
   };
 

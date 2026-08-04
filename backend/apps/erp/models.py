@@ -1007,6 +1007,29 @@ class ExchangeRateSnapshot(OrganizationScopedModel):
         ]
 
 
+class ProfitCalculationStrategy(OrganizationScopedModel):
+    """A named, shared starting point for a profit calculation trial."""
+
+    name = models.CharField(max_length=120)
+    config = models.JSONField(default=dict)
+    is_default = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="created_profit_calculation_strategies",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="updated_profit_calculation_strategies",
+    )
+
+    class Meta:
+        ordering = ["-is_default", "name", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "name"], name="uniq_org_profit_strategy_name"),
+            models.UniqueConstraint(fields=["organization"], condition=Q(is_default=True), name="uniq_org_default_profit_strategy"),
+        ]
+
+
 class TikTokShopOAuthState(TimeStampedModel):
     """Stores a single-use hash only; the raw OAuth state never reaches the database."""
 

@@ -15,14 +15,18 @@ from .profit_shipping_rates import (
     MALAYSIA_CROSS_BORDER_MAX_G,
     MALAYSIA_CROSS_BORDER_RATE_VERSION,
     MALAYSIA_CROSS_BORDER_SOURCE,
+    MALAYSIA_STANDARD_BUYER_SHIPPING_EFFECTIVE_DATE,
+    MALAYSIA_STANDARD_BUYER_SHIPPING_RATE_VERSION,
+    MALAYSIA_STANDARD_BUYER_SHIPPING_SOURCE,
     malaysia_cross_border_shipping,
+    malaysia_standard_buyer_shipping,
 )
 
 
 MONEY = Decimal("0.01")
 PERCENT = Decimal("100")
 RULE_EFFECTIVE_DATE = date(2026, 8, 2)
-RULE_VERSION = "MY-TTS-2026-08-02-v5"
+RULE_VERSION = "MY-TTS-2026-08-05-v6"
 COMMISSION_SOURCE = (
     "https://seller-my.tiktok.com/university/essay?"
     "knowledge_id=6907739532281602&lang=en"
@@ -128,7 +132,6 @@ BXP_FEE_CAP = Decimal("54.00")
 PLATFORM_SUPPORT_FEE = Decimal("0.54")
 LVG_RATE = Decimal("10.00")
 LVG_LIMIT = Decimal("500.00")
-LVG_TAX_INCLUSIVE_LIMIT = money(LVG_LIMIT * (PERCENT + LVG_RATE) / PERCENT)
 
 
 def resolve_category(code: str) -> CategoryRule:
@@ -179,8 +182,7 @@ def shipping_estimate(weight_g: Decimal) -> tuple[int, Decimal]:
 
 def inclusive_lvg_tax(item_price: Decimal, seller_type: str) -> Decimal:
     """Return the tax component already included in a tax-inclusive price."""
-    tax_exclusive_value = item_price * PERCENT / (PERCENT + LVG_RATE)
-    if seller_type != "cross_border" or tax_exclusive_value > LVG_LIMIT:
+    if seller_type != "cross_border" or item_price > LVG_LIMIT:
         return Decimal("0.00")
     return money(item_price * LVG_RATE / (PERCENT + LVG_RATE))
 
@@ -227,7 +229,7 @@ def _allocate_order_support_fee(items: list[dict], delivered: bool) -> list[Deci
     return allocations
 
 
-def calculate_profit(payload: dict) -> dict:
+def _calculate_profit_v5(payload: dict) -> dict:
     shop_identity = payload.get("shop_identity", "marketplace")
     seller_type = payload.get("seller_type", "cross_border")
     bxp = bool(payload.get("bxp", False))
@@ -647,4 +649,179 @@ def calculate_profit(payload: dict) -> dict:
         "rule_version": RULE_VERSION,
         "rule_effective_date": str(RULE_EFFECTIVE_DATE),
         "warnings": warnings,
+    }
+
+
+def calculate_profit(payload: dict) -> dict:
+    """Calculate a Malaysia profit trial using one server-side settlement model.
+
+    The browser submits inputs only.  This function is the single authority for
+    freight, tax, fees, settlement and profit totals.
+    """
+    shop_identity = payload.get("shop_identity", "marketplace")
+    seller_type = payload.get("seller_type", "cross_border")
+    bxp = bool(payload.get("bxp", False))
+    delivered = bool(payload.get("delivered", True))
+    cny_per_myr = decimal(payload.get("cny_per_myr", "1"))
+    usd_per_myr = decimal(payload.get("usd_per_myr", "0.235"))
+    commission_adjustment = decimal(payload.get("commission_adjustment", "0"))
+    transaction_fee_adjustment = decimal(payload.get("transaction_fee_adjustment", "0"))
+    official_transaction_rate = TRANSACTION_RATE
+    applied_transaction_rate = max(Decimal("0"), official_transaction_rate + transaction_fee_adjustment)
+    customer_refund = money(payload.get("customer_refund", 0))
+    buyer_pays_shipping = bool(payload.get("buyer_pays_shipping", False))
+    buyer_shipping_region = payload.get("buyer_shipping_region", "west_malaysia")
+    buyer_shipping_total = (
+        money(malaysia_standard_buyer_shipping(buyer_shipping_region))
+        if buyer_pays_shipping and seller_type == "cross_border"
+        else Decimal("0.00")
+    )
+    items = payload["items"]
+
+    support_inputs = []
+    for item in items:
+        rule = resolve_category(item["category_code"])
+        support_inputs.append({"item_price": money(item["item_price"]), "support_fee_exempt": rule.support_fee_exempt})
+    support_allocations = _allocate_order_support_fee(support_inputs, delivered)
+
+    fee_totals = {key: Decimal("0") for key in (
+        "product_cost", "seller_shipping_cost", "platform_commission", "transaction_fee",
+        "affiliate_commission", "bxp_fee", "platform_support_fee", "lvg_product_tax",
+        "other_platform_settlement_fee", "advertising_cost",
+    )}
+    bases = {"commission": Decimal("0"), "commission_weighted_rate": Decimal("0"), "affiliate": Decimal("0"), "affiliate_weighted_rate": Decimal("0")}
+    sales_revenue = Decimal("0")
+    item_results = []
+    has_ad_cost = False
+    has_manual_commission_rate = False
+
+    for index, item in enumerate(items):
+        item_price = money(item["item_price"])
+        weight_g = decimal(item["weight_g"])
+        rounded_weight_g, estimated_shipping = malaysia_cross_border_shipping(weight_g)
+        seller_shipping = money(estimated_shipping) if seller_type == "cross_border" else Decimal("0.00")
+        product_tax = inclusive_lvg_tax(item_price, seller_type)
+        affiliate_base = max(Decimal("0"), item_price - product_tax)
+        rule = resolve_category(item["category_code"])
+        official_rate = rule.rate(shop_identity, bxp)
+        manual_rate = item.get("manual_commission_rate")
+        if manual_rate is not None:
+            manual_rate = decimal(manual_rate)
+            has_manual_commission_rate = True
+        if official_rate is None and manual_rate is None:
+            raise ValueError("所选三级类目没有官方佣金率，请在费用明细中手动填写类目佣金率。")
+        system_rate = min(PERCENT, max(Decimal("0"), official_rate + commission_adjustment)) if official_rate is not None else None
+        commission_rate = manual_rate if manual_rate is not None else system_rate
+        ad_cost = advertising_cost(item_price, item, usd_per_myr)
+        has_ad_cost = has_ad_cost or ad_cost > 0
+        line_fees = {
+            "product_cost": money(decimal(item.get("product_cost_cny", 0)) / cny_per_myr),
+            "seller_shipping_cost": seller_shipping,
+            "platform_commission": rate_amount(item_price, commission_rate),
+            # The order-level fee is assigned after its one shared basis is known.
+            "transaction_fee": Decimal("0.00"),
+            "affiliate_commission": rate_amount(affiliate_base, decimal(item.get("affiliate_rate", 0))),
+            "bxp_fee": min(rate_amount(item_price, BXP_RATE), BXP_FEE_CAP) if bxp else Decimal("0.00"),
+            "platform_support_fee": support_allocations[index],
+            "lvg_product_tax": product_tax,
+            "other_platform_settlement_fee": Decimal("0.00"),
+            "advertising_cost": ad_cost,
+        }
+        sales_revenue += item_price
+        bases["commission"] += item_price
+        bases["commission_weighted_rate"] += item_price * commission_rate
+        bases["affiliate"] += affiliate_base
+        bases["affiliate_weighted_rate"] += affiliate_base * decimal(item.get("affiliate_rate", 0))
+        for key, value in line_fees.items():
+            fee_totals[key] += value
+        item_results.append({
+            "sku_name": item.get("sku_name") or "SKU", "category": rule.label, "category_code": rule.code,
+            "weight_g": str(weight_g), "rounded_weight_g": rounded_weight_g, "shipping_tier_g": rounded_weight_g,
+            "buyer_shipping_fee": str(buyer_shipping_total if index == 0 else Decimal("0.00")),
+            "transaction_base": str(money(item_price + (buyer_shipping_total if index == 0 else Decimal("0.00")))),
+            "seller_shipping_cost": str(seller_shipping), "shipping_estimate": str(money(estimated_shipping)),
+            "product_tax": str(product_tax),
+            "lvg_status": "applied" if product_tax else ("outside_range" if seller_type == "cross_border" and item_price > LVG_LIMIT else "not_applicable"),
+            "revenue": str(item_price), "commission_base": str(item_price),
+            "affiliate_base": str(money(affiliate_base)),
+            "official_commission_rate": str(official_rate) if official_rate is not None else None,
+            "system_commission_rate": str(system_rate) if system_rate is not None else None,
+            "commission_rate": str(commission_rate),
+            "commission_rate_source": "manual" if manual_rate is not None else "official_adjusted",
+            "affiliate_rate": str(decimal(item.get("affiliate_rate", 0))),
+            "ad_cost_type": item.get("ad_cost_type", "none"), "ad_cost_value": str(decimal(item.get("ad_cost_value"))),
+            "fees": {key: str(money(value)) for key, value in line_fees.items()},
+        })
+
+    sales_revenue = money(sales_revenue)
+    transaction_base = max(Decimal("0"), money(sales_revenue + buyer_shipping_total - customer_refund))
+    fee_totals["transaction_fee"] = rate_amount(transaction_base, applied_transaction_rate)
+    # Transaction fees are priced at order level.  Keep the per-SKU response
+    # reconcilable without multiplying the charge: show the full order fee on
+    # the deterministic first row.
+    if item_results:
+        item_results[0]["fees"]["transaction_fee"] = str(fee_totals["transaction_fee"])
+    fee_totals = {key: money(value) for key, value in fee_totals.items()}
+    platform_fee_total = money(sum((fee_totals[key] for key in ("platform_commission", "transaction_fee", "bxp_fee", "platform_support_fee", "other_platform_settlement_fee")), Decimal("0")))
+    total_fees = money(platform_fee_total + fee_totals["affiliate_commission"] + fee_totals["lvg_product_tax"] + fee_totals["seller_shipping_cost"])
+    settlement_amount = money(sales_revenue - total_fees)
+    costs_before_ads = money(total_fees + fee_totals["product_cost"])
+    gross_profit = money(sales_revenue - costs_before_ads)
+    gross_margin = percentage(gross_profit, sales_revenue)
+    advertising_cost_total = fee_totals["advertising_cost"]
+    costs_after_ads = money(costs_before_ads + advertising_cost_total) if has_ad_cost else None
+    net_profit = money(sales_revenue - costs_after_ads) if costs_after_ads is not None else None
+    net_margin = percentage(net_profit, sales_revenue) if net_profit is not None else None
+    weighted_commission_rate = bases["commission_weighted_rate"] / bases["commission"] if bases["commission"] else None
+    weighted_affiliate_rate = bases["affiliate_weighted_rate"] / bases["affiliate"] if bases["affiliate"] else None
+
+    def row(key, label, amount, kind, base, group, *, rate=None, **extra):
+        value = money(amount)
+        result = {"key": key, "label": label, "amount": str(value), "kind": kind, "base": base, "group": group,
+                  "share": str(percentage(value, sales_revenue)), "rate": str(money(rate)) if rate is not None else None}
+        result.update(extra)
+        return result
+
+    rows = [
+        row("sales_revenue", "商品售价合计", sales_revenue, "income", "所有 SKU 商品售价合计；买家运费不计入收入", "收入"),
+        row("product_cost", "商品采购成本", fee_totals["product_cost"], "cost", "人民币采购成本 ÷ MYR/CNY 汇率", "商品"),
+        row("seller_shipping_cost", "商家运费（系统估算）", fee_totals["seller_shipping_cost"], "cost", "跨境按每个 SKU 包装重量向上取整至 10g；本土为 RM0", "物流", source=MALAYSIA_CROSS_BORDER_SOURCE, source_detail="包装后重量向上取整至10g", effective_date=MALAYSIA_CROSS_BORDER_EFFECTIVE_DATE),
+        row("buyer_shipping_fee", "买家运费（订单 Standard）", buyer_shipping_total, "reference", "按订单只计算一次；不计入收入或物流小计，只加入交易手续费基数", "物流", exclude_from_group_total=True, source=MALAYSIA_STANDARD_BUYER_SHIPPING_SOURCE, effective_date=MALAYSIA_STANDARD_BUYER_SHIPPING_EFFECTIVE_DATE),
+        row("platform_commission", "类目佣金", fee_totals["platform_commission"], "fee", "商品售价", "平台代扣", rate=weighted_commission_rate, editable=True, rate_source="manual" if has_manual_commission_rate else "official_adjusted", source=COMMISSION_SOURCE),
+        row("transaction_fee", "支付交易手续费", fee_totals["transaction_fee"], "fee", "商品售价 + 买家运费 - 客户退款", "平台代扣", rate=applied_transaction_rate, official_rate=str(official_transaction_rate), adjustment=str(transaction_fee_adjustment), source=TRANSACTION_SOURCE),
+        row("bxp_fee", "BXP 增值服务费", fee_totals["bxp_fee"], "fee", "商品售价；每件最高 RM54", "平台代扣", rate=BXP_RATE if bxp else Decimal("0"), source=COMMISSION_SOURCE),
+        row("platform_support_fee", "每单平台支持费", fee_totals["platform_support_fee"], "fee", "每个已送达订单收取 RM0.54，按 SKU 分摊", "平台代扣", source=SUPPORT_FEE_SOURCE),
+        row("affiliate_commission", "达人推广佣金", fee_totals["affiliate_commission"], "fee", "含税售价 − 自动拆分的 LVG 商品税", "推广代扣", rate=weighted_affiliate_rate, source=AFFILIATE_SOURCE),
+        row("lvg_product_tax", "LVG 商品税（售价内含）", fee_totals["lvg_product_tax"], "fee", "跨境且单件原始售价 ≤ RM500：售价 × 10/110；已在售价内含但作为结算扣费计入一次", "税费", rate=LVG_RATE if seller_type == "cross_border" else Decimal("0"), source=LVG_TAX_SOURCE),
+        row("advertising_cost", "实际广告投入", advertising_cost_total, "cost", "仅在填写有效 ROI、CPA 或广告占比后计入", "广告投放"),
+    ]
+    business_order = {"收入": 0, "商品": 1, "物流": 2, "平台代扣": 3, "推广代扣": 4, "税费": 5, "广告投放": 6}
+    item_order = {item["key"]: index for index, item in enumerate(rows)}
+    groups = []
+    for group_name, order in business_order.items():
+        group_items = [item for item in rows if item["group"] == group_name]
+        included = [item for item in group_items if not item.get("exclude_from_group_total")]
+        amount = money(sum((decimal(item["amount"]) for item in included), Decimal("0")))
+        group_items.sort(key=lambda item: (decimal(item["amount"]) == 0, -abs(decimal(item["amount"])), item_order[item["key"]]))
+        groups.append({"key": group_name, "label": group_name, "kind": "income" if group_name == "收入" else "cost", "amount": str(amount), "share": str(percentage(amount, sales_revenue)), "items": group_items, "business_order": order})
+    income, *remaining = groups
+    remaining.sort(key=lambda group: (decimal(group["amount"]) == 0, -abs(decimal(group["share"])), group["business_order"]))
+    breakdown_groups = [income, *remaining]
+    for group in breakdown_groups:
+        group.pop("business_order", None)
+
+    return {
+        "currency": "MYR", "revenue": str(sales_revenue), "total_fees": str(total_fees), "settlement_amount": str(settlement_amount),
+        "total_costs": str(costs_after_ads) if costs_after_ads is not None else str(costs_before_ads), "costs_before_ads": str(costs_before_ads),
+        "costs_after_ads": str(costs_after_ads) if costs_after_ads is not None else None, "advertising_cost": str(advertising_cost_total),
+        "gross_profit": str(gross_profit), "gross_margin": str(gross_margin), "net_profit": str(net_profit) if net_profit is not None else None,
+        "net_margin": str(net_margin) if net_margin is not None else None, "has_ad_cost": has_ad_cost, "profit": str(gross_profit), "profit_rate": str(gross_margin),
+        "break_even_cpa": str(gross_profit), "break_even_cpa_usd": str(money(gross_profit * usd_per_myr)), "break_even_roi": str(money(sales_revenue / gross_profit)) if gross_profit > 0 else None,
+        "items": item_results, "breakdown_groups": breakdown_groups, "breakdown": [item for group in breakdown_groups for item in group["items"]],
+        "amount_summary": {"total_revenue": str(sales_revenue), "total_fees": str(total_fees), "settlement_amount": str(settlement_amount), "costs_before_ads": str(costs_before_ads), "gross_profit": str(gross_profit), "gross_margin": str(gross_margin), "costs_after_ads": str(costs_after_ads) if costs_after_ads is not None else None, "net_profit": str(net_profit) if net_profit is not None else None, "net_margin": str(net_margin) if net_margin is not None else None},
+        "shipping": {"buyer_pays_shipping": buyer_pays_shipping, "buyer_shipping_region": buyer_shipping_region, "buyer_shipping_amount": str(buyer_shipping_total), "buyer_shipping_rate_version": MALAYSIA_STANDARD_BUYER_SHIPPING_RATE_VERSION},
+        "transaction_fee": {"official_rate": str(money(official_transaction_rate)), "adjustment": str(money(transaction_fee_adjustment)), "applied_rate": str(money(applied_transaction_rate)), "base": str(transaction_base), "amount": str(fee_totals["transaction_fee"])},
+        "commission_adjustment": str(commission_adjustment), "customer_refund": str(customer_refund),
+        "shipping_rate_version": MALAYSIA_CROSS_BORDER_RATE_VERSION, "shipping_max_weight_g": str(MALAYSIA_CROSS_BORDER_MAX_G), "rule_version": RULE_VERSION, "rule_effective_date": str(RULE_EFFECTIVE_DATE),
+        "warnings": [],
     }

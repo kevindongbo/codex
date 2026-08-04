@@ -19,6 +19,22 @@ MALAYSIA_CROSS_BORDER_STEP_G = Decimal("10")
 MALAYSIA_CROSS_BORDER_STEP_PRICE = Decimal("0.15")
 MALAYSIA_CROSS_BORDER_MAX_G = Decimal("30000")
 
+# Buyer-paid Standard delivery is configured independently from the merchant
+# cross-border leg.  It is calculated once per order and never offsets the
+# merchant's cross-border shipping estimate.
+MALAYSIA_STANDARD_BUYER_SHIPPING_RATE_VERSION = "MY-STD-2026-08-05"
+MALAYSIA_STANDARD_BUYER_SHIPPING_EFFECTIVE_DATE = "2026-08-05"
+MALAYSIA_STANDARD_BUYER_SHIPPING_SOURCE = "TikTok Shop Malaysia Standard 运费配置"
+MALAYSIA_STANDARD_BUYER_SHIPPING = {
+    "west_malaysia": Decimal("2.90"),
+    "east_malaysia": Decimal("8.00"),
+}
+
+
+def malaysia_standard_buyer_shipping(region: str) -> Decimal:
+    """Return the configured one-per-order Standard buyer shipping amount."""
+    return MALAYSIA_STANDARD_BUYER_SHIPPING[region]
+
 
 def malaysia_cross_border_shipping(weight_g: Decimal) -> tuple[int, Decimal]:
     """Return rounded packaged weight and merchant-paid shipping in MYR."""

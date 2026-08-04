@@ -19,13 +19,10 @@ class ProfitItemSerializer(serializers.Serializer):
     item_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"))
     product_cost_cny = serializers.DecimalField(required=False, default=Decimal("0"), max_digits=14, decimal_places=2, min_value=Decimal("0"))
     affiliate_rate = serializers.DecimalField(required=False, default=Decimal("0"), max_digits=6, decimal_places=2, min_value=Decimal("0"), max_value=Decimal("100"))
-    buyer_shipping_fee = serializers.DecimalField(
-        required=False,
-        default=Decimal("0"),
-        max_digits=14,
-        decimal_places=2,
-        min_value=Decimal("0"),
-    )
+    # Kept as an ignored compatibility field for old browser tabs.  Current
+    # trials use the order-level buyer_pays_shipping + region configuration.
+    buyer_shipping_fee = serializers.DecimalField(required=False, write_only=True,
+        max_digits=14, decimal_places=2, min_value=Decimal("0"))
     ad_cost_type = serializers.ChoiceField(
         choices=("none", "roi", "cpa_usd", "ratio"),
         required=False,
@@ -67,6 +64,15 @@ class ProfitCalculationSerializer(serializers.Serializer):
         decimal_places=2,
         min_value=Decimal("-100"),
         max_value=Decimal("100"),
+    )
+    transaction_fee_adjustment = serializers.DecimalField(
+        required=False, default=Decimal("0.00"), max_digits=6, decimal_places=2,
+        min_value=Decimal("-100"), max_value=Decimal("100"),
+    )
+    buyer_pays_shipping = serializers.BooleanField(required=False, default=False)
+    buyer_shipping_region = serializers.ChoiceField(
+        choices=("west_malaysia", "east_malaysia"), required=False,
+        default="west_malaysia",
     )
     customer_refund = serializers.DecimalField(
         required=False,

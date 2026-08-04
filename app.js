@@ -1761,7 +1761,7 @@ function renderPurchases() {
     });
     const lines = purchaseLineLabels.length > 1
       ? '<details class="purchase-detail-list"><summary>' + purchaseLineLabels[0] + '<span>共 ' + purchaseLineLabels.length + ' 项</span></summary><div>' + purchaseLineLabels.map(function (label) { return '<p>' + label + '</p>'; }).join('') + '</div></details>'
-      : (purchaseLineLabels[0] || '<span class="muted">无商品明细</span>');
+      : (purchaseLineLabels[0] ? '<span class="purchase-single-line">' + purchaseLineLabels[0] + '</span>' : '<span class="muted">无商品明细</span>');
     const overdue = purchaseIsOverdue(order);
     const shipments = order.shipments || [];
     const tracking = shipments.length ? ('<button class="link-button" data-toggle-purchase-shipments="' + escapeHtml(order.id) + '">' + escapeHtml(shipments[0].trackingNumber) + (shipments.length > 1 ? ' +' + (shipments.length - 1) : '') + '</button>' +
