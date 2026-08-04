@@ -7,7 +7,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.erp.models import AuditLog, ExchangeRateSnapshot, Membership, Organization
+from apps.erp.models import AuditLog, ExchangeRateSnapshot, Membership, Organization, ProfitCalculationStrategy
 from apps.erp.exchange_rates import refresh_snapshot
 from apps.erp.profit_calculator import CATEGORY_RULES, calculate_profit, category_tree
 from apps.erp.profit_shipping_rates import malaysia_cross_border_shipping
@@ -111,27 +111,18 @@ class ProfitCalculatorTests(TestCase):
         self.assertEqual(item["fees"]["affiliate_commission"], "10.90")
         self.assertEqual(item["fees"]["product_cost"], "11.25")
         self.assertEqual(result["revenue"], "79.90")
-        self.assertEqual(result["profit"], "38.74")
-        self.assertEqual(result["profit_rate"], "48.49")
-        self.assertEqual(result["break_even_cpa_usd"], "9.10")
-        self.assertEqual(result["break_even_roi"], "2.06")
-        self.assertEqual(result["gross_profit"], "38.74")
+        self.assertEqual(result["total_fees"], "37.17")
+        self.assertEqual(result["settlement_amount"], "42.73")
+        self.assertEqual(result["profit"], "31.48")
+        self.assertEqual(result["profit_rate"], "39.40")
+        self.assertEqual(result["break_even_cpa_usd"], "7.40")
+        self.assertEqual(result["break_even_roi"], "2.54")
+        self.assertEqual(result["gross_profit"], "31.48")
         self.assertIsNone(result["net_profit"])
         self.assertFalse(result["has_ad_cost"])
-        self.assertEqual(result["amount_summary"], {
-            "sales_revenue": "79.90",
-            "buyer_shipping_revenue": "0.00",
-            "settlement_revenue": "79.90",
-            "platform_fees": "16.01",
-            "affiliate_commission": "10.90",
-            "logistics_cost": "3.00",
-            "estimated_platform_payout": "49.99",
-            "product_cost": "11.25",
-            "gross_profit": "38.74",
-            "advertising_cost": "0.00",
-            "net_profit": None,
-            "net_margin": None,
-        })
+        self.assertEqual(result["amount_summary"]["total_revenue"], "79.90")
+        self.assertEqual(result["amount_summary"]["total_fees"], "37.17")
+        self.assertEqual(result["amount_summary"]["costs_before_ads"], "48.42")
 
     def test_weight_rounds_up_to_the_next_ten_gram_tier(self):
         payload = self.base_payload()
@@ -170,9 +161,9 @@ class ProfitCalculatorTests(TestCase):
         payload["items"][0]["ad_cost_value"] = Decimal("4")
         result = calculate_profit(payload)
         self.assertEqual(result["advertising_cost"], "19.98")
-        self.assertEqual(result["gross_profit"], "38.74")
-        self.assertEqual(result["net_profit"], "18.76")
-        self.assertEqual(result["net_margin"], "23.48")
+        self.assertEqual(result["gross_profit"], "31.48")
+        self.assertEqual(result["net_profit"], "11.50")
+        self.assertEqual(result["net_margin"], "14.39")
         self.assertTrue(result["has_ad_cost"])
 
     def test_actual_cpa_usd_converts_to_myr(self):
@@ -181,12 +172,12 @@ class ProfitCalculatorTests(TestCase):
         payload["items"][0]["ad_cost_value"] = Decimal("5")
         result = calculate_profit(payload)
         self.assertEqual(result["advertising_cost"], "21.28")
-        self.assertEqual(result["net_profit"], "17.46")
+        self.assertEqual(result["net_profit"], "10.20")
 
-    def test_lvg_threshold_uses_tax_exclusive_rm500_value(self):
+    def test_lvg_threshold_uses_original_single_item_price(self):
         payload = self.base_payload()
-        payload["items"][0]["item_price"] = Decimal("550.00")
-        self.assertEqual(calculate_profit(payload)["items"][0]["product_tax"], "50.00")
+        payload["items"][0]["item_price"] = Decimal("500.00")
+        self.assertEqual(calculate_profit(payload)["items"][0]["product_tax"], "45.45")
         payload["items"][0]["item_price"] = Decimal("550.01")
         self.assertEqual(calculate_profit(payload)["items"][0]["product_tax"], "0.00")
 
@@ -256,25 +247,26 @@ class ProfitCalculatorTests(TestCase):
         payload["items"][0]["manual_commission_rate"] = Decimal("10")
         self.assertEqual(calculate_profit(payload)["items"][0]["commission_rate"], "10")
 
-    def test_buyer_shipping_only_changes_transaction_fee_base(self):
+    def test_buyer_shipping_is_order_level_and_only_changes_transaction_fee_base(self):
         payload = self.base_payload()
-        payload["items"][0]["buyer_shipping_fee"] = Decimal("2.00")
+        payload["buyer_pays_shipping"] = True
+        payload["buyer_shipping_region"] = "west_malaysia"
         result = calculate_profit(payload)
         item = result["items"][0]
         self.assertEqual(result["revenue"], "79.90")
-        self.assertEqual(item["transaction_base"], "81.90")
-        self.assertEqual(item["fees"]["transaction_fee"], "3.10")
-        self.assertEqual(result["amount_summary"]["buyer_shipping_revenue"], "2.00")
+        self.assertEqual(item["transaction_base"], "82.80")
+        self.assertEqual(result["transaction_fee"]["amount"], "3.13")
+        self.assertEqual(result["shipping"]["buyer_shipping_amount"], "2.90")
         buyer_shipping = next(row for row in result["breakdown"] if row["key"] == "buyer_shipping_fee")
         self.assertTrue(buyer_shipping["exclude_from_group_total"])
 
     def test_buyer_shipping_is_reference_only_and_follows_logistics_sorting(self):
         payload = self.base_payload()
-        payload["items"][0]["buyer_shipping_fee"] = Decimal("5.00")
+        payload["buyer_pays_shipping"] = True
         result = calculate_profit(payload)
         logistics = next(group for group in result["breakdown_groups"] if group["key"] == "物流")
         self.assertEqual(logistics["amount"], "3.00")
-        self.assertEqual([row["key"] for row in logistics["items"]], ["buyer_shipping_fee", "seller_shipping_cost"])
+        self.assertEqual([row["key"] for row in logistics["items"]], ["seller_shipping_cost", "buyer_shipping_fee"])
         self.assertEqual(result["revenue"], "79.90")
 
     def test_customer_refund_reduces_transaction_fee_base_without_reducing_revenue(self):
@@ -283,6 +275,25 @@ class ProfitCalculatorTests(TestCase):
         self.assertEqual(result["revenue"], "79.90")
         self.assertEqual(result["customer_refund"], "10.00")
         self.assertEqual(transaction["amount"], "2.64")
+
+    def test_east_malaysia_buyer_shipping_is_charged_once_for_multiple_skus(self):
+        payload = self.base_payload(buyer_pays_shipping=True, buyer_shipping_region="east_malaysia")
+        payload["items"].append(dict(payload["items"][0], sku_name="第二件"))
+        result = calculate_profit(payload)
+        self.assertEqual(result["shipping"]["buyer_shipping_amount"], "8.00")
+        self.assertEqual(result["transaction_fee"]["base"], "167.80")
+        self.assertEqual([item["buyer_shipping_fee"] for item in result["items"]], ["8.00", "0.00"])
+        logistics = next(group for group in result["breakdown_groups"] if group["key"] == "物流")
+        self.assertEqual(logistics["amount"], "6.00")
+
+    def test_transaction_fee_adjustment_is_percentage_points_and_never_negative(self):
+        result = calculate_profit(self.base_payload(transaction_fee_adjustment=Decimal("1.22")))
+        self.assertEqual(result["transaction_fee"]["official_rate"], "3.78")
+        self.assertEqual(result["transaction_fee"]["applied_rate"], "5.00")
+        self.assertEqual(result["transaction_fee"]["amount"], "4.00")
+        zero = calculate_profit(self.base_payload(transaction_fee_adjustment=Decimal("-9")))
+        self.assertEqual(zero["transaction_fee"]["applied_rate"], "0.00")
+        self.assertEqual(zero["transaction_fee"]["amount"], "0.00")
 
     def test_unrelated_actual_settlement_values_never_override_estimate(self):
         expected = calculate_profit(self.base_payload())
@@ -343,6 +354,28 @@ class ProfitCalculatorApiTests(TestCase):
         )
         self.assertEqual(len(response.data["categories"][0]["path"]), 3)
         self.assertTrue(response.data["sources"]["lvg_tax"].startswith("https://mysst.customs.gov.my/"))
+
+    def test_strategy_create_and_update_atomically_promote_the_default(self):
+        config = {
+            "country": "MY", "seller_type": "cross_border", "shop_identity": "marketplace", "bxp": False,
+            "commission_adjustment": "1.00", "buyer_pays_shipping": True, "buyer_shipping_region": "west_malaysia",
+            "transaction_fee_adjustment": "0.00", "display_currency": "MYR",
+        }
+        first = self.client.post("/api/profit-calculator/strategies/", {"name": "默认西马", "config": config}, format="json")
+        self.assertEqual(first.status_code, 201, first.data)
+        second = self.client.post("/api/profit-calculator/strategies/", {"name": "东马策略", "config": {**config, "buyer_shipping_region": "east_malaysia"}}, format="json")
+        self.assertEqual(second.status_code, 201, second.data)
+        self.assertEqual(ProfitCalculationStrategy.objects.filter(organization=self.organization, is_default=True).count(), 1)
+        self.assertEqual(ProfitCalculationStrategy.objects.get(is_default=True).name, "东马策略")
+        update = self.client.patch("/api/profit-calculator/strategies/%s/" % first.data["id"], {"name": "西马已覆盖", "config": config}, format="json")
+        self.assertEqual(update.status_code, 200, update.data)
+        self.assertEqual(ProfitCalculationStrategy.objects.get(is_default=True).name, "西马已覆盖")
+        self.assertTrue(AuditLog.objects.filter(organization=self.organization, action="profit_strategy.update").exists())
+
+    def test_strategy_name_is_unique_inside_an_organization(self):
+        config = {"country": "MY", "seller_type": "cross_border", "shop_identity": "marketplace", "bxp": False, "commission_adjustment": "1", "buyer_pays_shipping": False, "buyer_shipping_region": "west_malaysia", "transaction_fee_adjustment": "0", "display_currency": "MYR"}
+        self.assertEqual(self.client.post("/api/profit-calculator/strategies/", {"name": "唯一名称", "config": config}, format="json").status_code, 201)
+        self.assertEqual(self.client.post("/api/profit-calculator/strategies/", {"name": "唯一名称", "config": config}, format="json").status_code, 409)
 
     def test_calculate_requires_weight(self):
         response = self.client.post("/api/profit-calculator/calculate/", {

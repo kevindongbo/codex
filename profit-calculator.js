@@ -21,7 +21,6 @@
   let displayCurrency = 'MYR';
   let openCategoryRow = null;
   let rateMode = 'auto';
-  const buyerShippingByRow = new Map();
   const manualCommissionByRow = new Map();
 
   function el(id) { return document.getElementById(id); }
@@ -42,6 +41,18 @@
     return prefix + amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
   function formatCost(value) { return '− ' + formatMoney(value); }
+  function formatMoneyInCurrency(value, currency) {
+    const amount = currency === 'CNY' ? number(value) * number(el('profitExchangeRate').value) : number(value);
+    const prefix = currency === 'CNY' ? '¥ ' : 'RM ';
+    return prefix + amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function formatDualMoney(value, primaryCurrency) {
+    const primary = primaryCurrency || displayCurrency;
+    const secondary = primary === 'MYR' ? 'CNY' : 'MYR';
+    return formatMoneyInCurrency(value, primary) + ' ／ ' + formatMoneyInCurrency(value, secondary);
+  }
+  function formatMoney(value, currency) { return formatDualMoney(value, currency); }
+
   function saveRatePreference(payload) {
     try { localStorage.setItem(RATE_STORAGE_KEY, JSON.stringify(payload)); } catch (_) { /* optional */ }
   }
@@ -167,7 +178,6 @@
       category_code: 'bag-womens-womens-tote-bags',
       weight_g: '200', product_cost_cny: '18.90', item_price: '79.90', affiliate_rate: '15.00', ad_cost_type: 'none', ad_cost_value: '', buyer_shipping_fee: '0.00'
     }, seed || {});
-    buyerShippingByRow.set(rowId, fixed(item.buyer_shipping_fee));
     manualCommissionByRow.set(rowId, item.manual_commission_rate == null ? '' : fixed(item.manual_commission_rate));
     const tr = document.createElement('tr');
     tr.dataset.profitRow = rowId;
@@ -188,7 +198,6 @@
   function collectRow(row) {
     const result = {};
     row.querySelectorAll('[data-profit-field]').forEach(function (field) { result[field.dataset.profitField] = field.value; });
-    result.buyer_shipping_fee = buyerShippingByRow.get(row.dataset.profitRow) || '0.00';
     result.manual_commission_rate = manualCommissionByRow.get(row.dataset.profitRow) || null;
     if (result.ad_cost_type === 'none' || result.ad_cost_value === '') result.ad_cost_value = null;
     return result;
@@ -219,7 +228,7 @@
     return '费率 ' + rate.toFixed(2) + '% · 占比 ' + share.toFixed(2) + '%';
   }
   function feeLabel(row) {
-    if (row.key !== 'platform_commission' && row.key !== 'buyer_shipping_fee') return '<strong>' + escapeHtml(row.label) + '</strong>';
+    if (row.key !== 'platform_commission') return '<strong>' + escapeHtml(row.label) + '</strong>';
     return '<button type="button" class="profit-fee-edit" data-profit-fee-edit="' + escapeHtml(row.key) + '"><strong>' + escapeHtml(row.label) + '</strong><span>编辑</span></button>';
   }
   function normalizedGroups(result) {
@@ -250,7 +259,7 @@
           '<td class="profit-source">' + sourceMarkup(row) + '</td></tr>';
       }
       const groupPrefix = group.kind === 'income' || group.kind === 'info' ? '' : '− ';
-      const total = '<tr class="profit-group-total" data-profit-group-total="' + escapeHtml(group.key) + '">' +
+      const total = '<tr class="profit-group-total" data-profit-group-total="' + escapeHtml(group.key) + '" data-profit-group-toggle="' + escapeHtml(group.key) + '" tabindex="0" role="button" aria-expanded="true">' +
         '<td><button type="button" class="profit-group-toggle" data-profit-group-toggle="' + escapeHtml(group.key) + '" aria-expanded="true"><span>⌄</span><b>' + escapeHtml(group.label) + '</b></button></td>' +
         '<td><strong>' + escapeHtml(group.label) + '合计</strong></td>' +
         '<td data-profit-basis-column>' + (group.key === '物流' ? '买家运费不计入物流合计' : '组内费用汇总') + '</td>' +
@@ -293,7 +302,18 @@
     el('profitAdCost').textContent = result.has_ad_cost ? formatMoney(result.advertising_cost) : '未填写';
     el('profitFormulaNet').textContent = result.has_ad_cost ? formatMoney(result.net_profit) : '未计算';
     el('profitFormulaNetMargin').textContent = result.has_ad_cost ? fixed(result.net_margin) + '%' : '未计算';
-    el('profitResultVersion').textContent = '规则版本 ' + result.rule_version + ' · 运费 ' + (result.shipping_rate_version || '') + ' · 当前显示 ' + displayCurrency;
+    el('profitNetCny').textContent = '';
+    function settlement(id) { return document.querySelector('.profit-settlement-summary #' + id); }
+    settlement('profitTotalRevenue').textContent = formatDualMoney(summary.total_revenue == null ? result.revenue : summary.total_revenue);
+    settlement('profitTotalFees').textContent = formatDualMoney(summary.total_fees == null ? result.total_fees : summary.total_fees);
+    settlement('profitSettlementAmount').textContent = formatDualMoney(summary.settlement_amount == null ? result.settlement_amount : summary.settlement_amount);
+    settlement('profitSettlementCostsBeforeAds').textContent = formatDualMoney(summary.costs_before_ads == null ? result.costs_before_ads : summary.costs_before_ads);
+    settlement('profitSettlementGross').textContent = formatDualMoney(summary.gross_profit == null ? result.gross_profit : summary.gross_profit);
+    settlement('profitGrossMargin').textContent = fixed(summary.gross_margin == null ? result.gross_margin : summary.gross_margin) + '%';
+    settlement('profitCostsAfterAds').textContent = result.has_ad_cost ? formatDualMoney(summary.costs_after_ads) : '未填写广告';
+    settlement('profitSettlementNet').textContent = result.has_ad_cost ? formatDualMoney(summary.net_profit) : '未填写广告';
+    settlement('profitSettlementNetMargin').textContent = result.has_ad_cost ? fixed(summary.net_margin) + '%' : '未填写广告';
+    el('profitResultVersion').textContent = '规则版本 ' + result.rule_version + ' · 商家运费 ' + (result.shipping_rate_version || '') + ' · 当前显示 ' + displayCurrency;
     el('profitBreakdownCurrency').textContent = '金额(' + displayCurrency + ')';
     renderBreakdown(result);
     const warnings = el('profitWarnings');
@@ -351,13 +371,59 @@
       modal.querySelectorAll('[data-manual-commission-row]').forEach(function (input) {
         manualCommissionByRow.set(input.dataset.manualCommissionRow, input.value.trim() === '' ? '' : fixed(input.value));
       });
-    } else {
-      modal.querySelectorAll('[data-buyer-shipping-row]').forEach(function (input) {
-        buyerShippingByRow.set(input.dataset.buyerShippingRow, fixed(Math.max(0, number(input.value))));
-      });
     }
     closeFeeModal();
     if (!el('profitResultPanel').hidden) await calculate(false);
+  }
+
+  let loadedStrategyId = '';
+  function strategyConfig() {
+    return {
+      country: el('profitCountry').value, seller_type: el('profitSellerType').value,
+      shop_identity: el('profitShopIdentity').value, bxp: el('profitBxp').checked,
+      commission_adjustment: el('profitCommissionAdjustment').value || '0',
+      buyer_pays_shipping: el('profitBuyerPaysShipping').checked,
+      buyer_shipping_region: el('profitBuyerShippingRegion').value,
+      transaction_fee_adjustment: el('profitTransactionFeeAdjustment').value || '0',
+      display_currency: displayCurrency
+    };
+  }
+  function applyStrategy(strategy) {
+    const config = strategy.config || {};
+    ['country', 'seller_type', 'shop_identity', 'commission_adjustment', 'buyer_shipping_region', 'transaction_fee_adjustment'].forEach(function (key) {
+      const field = el('profit' + key.split('_').map(function (part) { return part.charAt(0).toUpperCase() + part.slice(1); }).join(''));
+      if (field && config[key] != null) field.value = config[key];
+    });
+    el('profitBxp').checked = Boolean(config.bxp);
+    el('profitBuyerPaysShipping').checked = Boolean(config.buyer_pays_shipping);
+    displayCurrency = config.display_currency || 'MYR';
+    document.querySelectorAll('[data-profit-currency]').forEach(function (button) { button.classList.toggle('active', button.dataset.profitCurrency === displayCurrency); });
+    loadedStrategyId = strategy.id;
+    el('profitStrategySelect').value = strategy.id;
+    el('profitStrategyName').value = strategy.name;
+    updateBuyerShippingUi();
+  }
+  async function loadStrategies() {
+    const payload = await request('/profit-calculator/strategies/');
+    const strategies = Array.isArray(payload) ? payload : (payload.results || []);
+    el('profitStrategySelect').innerHTML = '<option value="">临时策略（未保存）</option>' + strategies.map(function (item) { return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name) + (item.is_default ? '（默认）' : '') + '</option>'; }).join('');
+    const initial = strategies.find(function (item) { return item.is_default; });
+    if (initial) applyStrategy(initial);
+  }
+  async function saveStrategy() {
+    let name = el('profitStrategyName').value.trim();
+    const overwrite = loadedStrategyId && window.confirm('覆盖当前策略，还是选择“取消”后另存为新策略？\n确定：覆盖当前策略；取消：另存为新策略。');
+    if (!overwrite && !name) name = window.prompt('请输入新策略名称：', '');
+    if (!name) return setStatus('请填写策略名称。', true);
+    const path = overwrite ? '/profit-calculator/strategies/' + loadedStrategyId + '/' : '/profit-calculator/strategies/';
+    const strategy = await request(path, { method: overwrite ? 'PATCH' : 'POST', body: { name: name, config: strategyConfig() } });
+    await loadStrategies();
+    applyStrategy(strategy);
+    setStatus('策略已保存并设为默认策略。');
+  }
+  function updateBuyerShippingUi() {
+    const local = el('profitSellerType').value === 'local';
+    el('profitBuyerShippingRegion').disabled = local || !el('profitBuyerPaysShipping').checked;
   }
 
   async function loadConfig() {
@@ -373,6 +439,7 @@
       const groupCount = categoryTree.reduce(function (total, item) { return total + item.children.length; }, 0);
       const leafCount = categoryTree.reduce(function (total, item) { return total + item.children.reduce(function (subtotal, group) { return subtotal + group.children.length; }, 0); }, 0);
       setStatus('已加载箱包、美妆个护完整三级类目（' + groupCount + ' 个二级、' + leafCount + ' 个三级）及马来西亚跨境运费配置。');
+      await loadStrategies();
     } catch (_) {
       setStatus('费率配置暂时无法读取，请确认已登录团队服务器后重试。', true);
     }
@@ -393,6 +460,9 @@
           bxp: el('profitBxp').checked,
           delivered: true,
           commission_adjustment: el('profitCommissionAdjustment').value || '0',
+          transaction_fee_adjustment: el('profitTransactionFeeAdjustment').value || '0',
+          buyer_pays_shipping: el('profitBuyerPaysShipping').checked,
+          buyer_shipping_region: el('profitBuyerShippingRegion').value,
           cny_per_myr: el('profitExchangeRate').value,
           usd_per_myr: el('profitUsdRate').value,
           items: rows.map(collectRow)
@@ -428,6 +498,14 @@
     el('profitRateAuto').addEventListener('click', function () { rateMode = 'auto'; saveRatePreference({ mode: 'auto' }); loadExchangeRates(true); });
     el('profitRateManual').addEventListener('click', useManualRates);
     el('profitRateRefresh').addEventListener('click', function () { loadExchangeRates(true); });
+    el('profitStrategySave').addEventListener('click', function () { saveStrategy().catch(function (error) { setStatus(error.message || '策略保存失败', true); }); });
+    el('profitStrategySelect').addEventListener('change', function () {
+      const id = this.value;
+      if (!id) { loadedStrategyId = ''; return; }
+      request('/profit-calculator/strategies/' + id + '/').then(applyStrategy).catch(function (error) { setStatus(error.message || '策略读取失败', true); });
+    });
+    el('profitBuyerPaysShipping').addEventListener('change', updateBuyerShippingUi);
+    el('profitSellerType').addEventListener('change', updateBuyerShippingUi);
 
     document.addEventListener('change', function (event) {
       if (event.target.matches('[data-profit-field="ad_cost_type"]')) {
@@ -451,7 +529,7 @@
         return;
       }
       const feeEdit = event.target.closest('[data-profit-fee-edit]');
-      if (feeEdit) return feeEdit.dataset.profitFeeEdit === 'platform_commission' ? openCommissionEditor() : openBuyerShippingEditor();
+      if (feeEdit) return openCommissionEditor();
       const groupToggle = event.target.closest('[data-profit-group-toggle]');
       if (groupToggle) {
         const group = groupToggle.dataset.profitGroupToggle;
@@ -489,13 +567,13 @@
         const rows = document.querySelectorAll('[data-profit-row]');
         if (rows.length === 1) return setStatus('至少保留一个 SKU。', true);
         const row = remove.closest('[data-profit-row]');
-        buyerShippingByRow.delete(row.dataset.profitRow);
         manualCommissionByRow.delete(row.dataset.profitRow);
         row.remove();
       }
     });
     document.addEventListener('keydown', function (event) { if (event.key === 'Escape' && !el('profitFeeModal').hidden) closeFeeModal(); });
     loadConfig();
+    updateBuyerShippingUi();
     loadExchangeRates(false);
   }
 

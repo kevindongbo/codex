@@ -26,7 +26,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, ExchangeRateSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge, OwnStore,
+    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, ExchangeRateSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge, OwnStore, ProfitCalculationStrategy,
     LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
@@ -52,7 +52,7 @@ from .serializers import (
     StockLedgerReversalInputSerializer, StockLedgerSerializer, StockTransferSerializer, SupplierSerializer,
     ManualStockMovementInputSerializer, TikTokAuthorizationStartSerializer, TikTokShopConnectionSerializer, TikTokShopSyncRunSerializer, TikTokSyncStartSerializer,
     TransferPostInputSerializer, TransferReceiveInputSerializer, WarehouseSerializer,
-    ProductSelectionKeywordInputSerializer, ProductSelectionReportInputSerializer,
+    ProductSelectionKeywordInputSerializer, ProductSelectionReportInputSerializer, ProfitCalculationStrategySerializer,
 )
 from . import alphashop, integrations
 from .services import (
@@ -89,6 +89,9 @@ from .profit_shipping_rates import (
     MALAYSIA_CROSS_BORDER_MAX_G,
     MALAYSIA_CROSS_BORDER_RATE_VERSION,
     MALAYSIA_CROSS_BORDER_SOURCE_FILE,
+    MALAYSIA_STANDARD_BUYER_SHIPPING,
+    MALAYSIA_STANDARD_BUYER_SHIPPING_EFFECTIVE_DATE,
+    MALAYSIA_STANDARD_BUYER_SHIPPING_RATE_VERSION,
 )
 from .exchange_rates import record_refresh_failure, refresh_snapshot, save_snapshot, snapshot_payload
 from .single_tenant import active_internal_membership, ensure_internal_organization, internal_organization
@@ -205,6 +208,13 @@ def profit_calculator_config(request):
         "categories": category_config(),
         "category_tree": category_tree(),
         "transaction_rate": str(TRANSACTION_RATE),
+        "transaction_fee_adjustment_default": "0.00",
+        "buyer_shipping": {
+            "rate_version": MALAYSIA_STANDARD_BUYER_SHIPPING_RATE_VERSION,
+            "effective_date": MALAYSIA_STANDARD_BUYER_SHIPPING_EFFECTIVE_DATE,
+            "default_region": "west_malaysia",
+            "standard_rates": {key: str(value) for key, value in MALAYSIA_STANDARD_BUYER_SHIPPING.items()},
+        },
         "default_commission_adjustment": "1.00",
         "platform_support_fee": str(PLATFORM_SUPPORT_FEE),
         "lvg_rate": str(LVG_RATE),
@@ -958,6 +968,43 @@ class OrganizationScopedViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         _require_serializer_warehouse_access(self.request, self.get_organization(), serializer)
         _save_serializer(serializer)
+
+
+def _profit_strategy_config(values):
+    return {key: str(value) if isinstance(value, Decimal) else value for key, value in values.items()}
+
+
+class ProfitCalculationStrategyViewSet(OrganizationScopedViewSet):
+    queryset = ProfitCalculationStrategy.objects.select_related("created_by", "updated_by").order_by("-is_default", "name", "id")
+    serializer_class = ProfitCalculationStrategySerializer
+    capability = "profit_rules"
+    http_method_names = ["get", "post", "patch", "head", "options"]
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        _require_capability(request, "profit_rules", "当前账号没有维护利润策略权限")
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        organization = self.get_organization()
+        ProfitCalculationStrategy.objects.select_for_update().filter(organization=organization, is_default=True).update(is_default=False)
+        instance = serializer.save(
+            organization=organization, is_default=True, created_by=self.request.user, updated_by=self.request.user,
+            config=_profit_strategy_config(serializer.validated_data["config"]),
+        )
+        write_audit(organization=organization, actor=self.request.user, action="profit_strategy.create", instance=instance, after={"name": instance.name, "is_default": True})
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        instance = ProfitCalculationStrategy.objects.select_for_update().get(pk=serializer.instance.pk)
+        organization = self.get_organization()
+        ProfitCalculationStrategy.objects.select_for_update().filter(organization=organization, is_default=True).exclude(pk=instance.pk).update(is_default=False)
+        before = {"name": instance.name, "config": instance.config, "is_default": instance.is_default}
+        instance = serializer.save(
+            is_default=True, updated_by=self.request.user,
+            config=_profit_strategy_config(serializer.validated_data.get("config", instance.config)),
+        )
+        write_audit(organization=organization, actor=self.request.user, action="profit_strategy.update", instance=instance, before=before, after={"name": instance.name, "config": instance.config, "is_default": True})
 
 
 class MembershipViewSet(OrganizationScopedViewSet):

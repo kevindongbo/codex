@@ -260,8 +260,12 @@ body:has(.primary-nav-item[data-module="profit"].active) .sidebar-module[data-si
 .profit-breakdown-panel table.show-basis .profit-source-col { width: 21%; }
 .profit-breakdown-panel th { font-size: 11px; }
 .profit-breakdown-panel td { font-size: 11px; line-height: 1.55; }
+.profit-page .profit-breakdown-panel th { font-size: 12px; }
+.profit-page .profit-breakdown-panel td { font-size: 12px; }
 .profit-breakdown-panel td { vertical-align: middle; }
 .profit-group-total { background: #f4f8f9; }
+.profit-group-total { cursor: pointer; }
+.profit-group-total:focus { outline: 2px solid rgba(15,139,141,.42); outline-offset: -2px; }
 .profit-group-total td { border-top: 1px solid #dbe7ea; font-weight: 800; }
 .profit-group-total:first-child td { border-top: 0; }
 .profit-group-toggle { width: 100%; padding: 0; border: 0; color: #0d6265; background: transparent; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; text-align: left; }
@@ -295,6 +299,9 @@ body:has(.primary-nav-item[data-module="profit"].active) .sidebar-module[data-si
 .profit-fee-modal-actions { margin-top: 20px; display: flex; justify-content: flex-end; gap: 9px; }
 .profit-formula-card { margin-top: 0 !important; padding: 20px; position: static; box-shadow: 0 5px 18px rgba(22,50,79,.045); }
 .profit-formula-card h2 { margin-bottom: 13px; font-size: 19px; }
+.profit-settlement-summary dd { font-size: 14px; font-weight: 850; white-space: nowrap; }
+.profit-strategy-actions { display: grid; align-content: end; gap: 5px; }
+.profit-strategy-actions small { color: #718296; font-size: 10px; line-height: 1.45; }
 .profit-formula-card > strong { padding: 13px; border-radius: 8px; color: #315e8e; background: var(--blue-soft); display: block; font-size: 12px; line-height: 1.65; }
 .profit-formula-lines span { display: block; }
 .profit-formula-lines span + span { margin-top: 4px; }
@@ -744,6 +751,7 @@ body.team-readonly [data-team-write] { opacity: .5; pointer-events: none; }
 .purchase-detail-list > div { margin-top: 7px; padding: 7px 9px; border: 1px solid #dfe7ee; border-radius: 8px; background: #f8fafc; }
 .purchase-detail-list p { margin: 0; color: #596d82; font-size: 11px; line-height: 1.55; }
 .purchase-detail-list p + p { margin-top: 4px; }
+.purchase-single-line { color: var(--navy); font-size: inherit; font-weight: 750; white-space: normal; }
 .replenishment-velocity-detail, .replenishment-qty-detail { margin-top: 4px; min-width: 128px; text-align: left; white-space: normal; }
 .replenishment-velocity-detail summary, .replenishment-qty-detail summary { color: var(--teal-dark); cursor: pointer; font-size: 11px; font-weight: 750; }
 .replenishment-velocity-detail span, .replenishment-qty-detail span { margin-top: 4px; color: #66788d; display: block; font-size: 11px; line-height: 1.55; }

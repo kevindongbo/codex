@@ -36,10 +36,10 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260804-erp-req-1/);
-  assert.match(html, /team\.js\?v=20260804-erp-req-1/);
-  assert.match(html, /profit-calculator\.js\?v=20260804-erp-req-1/);
-  assert.match(html, /app\.js\?v=20260804-erp-req-1/);
+  assert.match(html, /styles\.css\?v=20260805-profit-req-1/);
+  assert.match(html, /team\.js\?v=20260805-profit-req-1/);
+  assert.match(html, /profit-calculator\.js\?v=20260805-profit-req-1/);
+  assert.match(html, /app\.js\?v=20260805-profit-req-1/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
@@ -98,6 +98,20 @@ test("keeps per-SKU profit fee editing and the single rate-share column wired", 
   assert.match(profitScript, /data-manual-commission-row/);
   assert.match(profitScript, /result\.manual_commission_rate = manualCommissionByRow\.get/);
   assert.match(profitScript, /参考 · /);
+});
+
+test("keeps settlement strategies, order-level buyer shipping, and dual money presentation wired", async () => {
+  const [html, profitScript] = await Promise.all([
+    (await fetchPath("/index.html")).text(),
+    (await fetchPath("/profit-calculator.js")).text(),
+  ]);
+  ["profitBuyerPaysShipping", "profitBuyerShippingRegion", "profitTransactionFeeAdjustment", "profitStrategySelect", "profitStrategySave", "profitTotalRevenue", "profitTotalFees", "profitSettlementAmount"].forEach((id) => assert.match(html, new RegExp(`id="${id}"`)));
+  assert.doesNotMatch(html, /profit-settlement-summary[\s\S]*profit-formula-lines/);
+  assert.match(profitScript, /function formatDualMoney/);
+  assert.match(profitScript, / ／ /);
+  assert.match(profitScript, /buyer_pays_shipping/);
+  assert.match(profitScript, /transaction_fee_adjustment/);
+  assert.match(profitScript, /profit-calculator\/strategies/);
 });
 
 test("wires stores, SKU multi-store profit ranges and competitor seller grouping fields", async () => {
