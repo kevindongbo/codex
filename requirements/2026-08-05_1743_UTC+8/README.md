@@ -1,11 +1,13 @@
 # ERP 利润策略界面修正需求包
 
 - 需求编号：`ERP-PROFIT-UI-REQ-20260805-01`
-- 确认时间：2026-08-05 17:43（UTC+8）
+- 需求确认时间：2026-08-05 17:43（UTC+8）
+- GitHub 上传完成时间：2026-08-05 17:57（UTC+8）
 - 审计仓库：`kevindongbo/codex`
 - 审计基线分支：`codex/implement-profit-settlement-strategies-20260805`
 - 审计基线 SHA：`807f207b35a7ea0b5b0b7448627146af4a58f852`
 - 文档分支：`docs/profit-strategy-ui-fixes-20260805-1743`
+- 文档目录：`requirements/2026-08-05_1743_UTC+8/`
 - 建议实施分支：`codex/implement-profit-strategy-ui-fixes-20260805`
 
 ## 文件
