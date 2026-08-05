@@ -157,6 +157,14 @@ class ProfitCalculationStrategyConfigSerializer(serializers.Serializer):
     transaction_fee_adjustment = serializers.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"), min_value=Decimal("-100"), max_value=Decimal("100"))
     display_currency = serializers.ChoiceField(choices=("MYR", "CNY"), default="MYR")
 
+    def validate(self, attrs):
+        # A disabled buyer-shipping switch makes the delivery region irrelevant.
+        # Store one canonical value so a later activation cannot revive stale east-MY
+        # delivery settings by accident.
+        if not attrs.get("buyer_pays_shipping", False):
+            attrs["buyer_shipping_region"] = "west_malaysia"
+        return attrs
+
 
 class ProfitCalculationStrategySerializer(ScopedSerializer):
     config = ProfitCalculationStrategyConfigSerializer()

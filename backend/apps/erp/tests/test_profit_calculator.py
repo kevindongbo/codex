@@ -372,10 +372,51 @@ class ProfitCalculatorApiTests(TestCase):
         self.assertEqual(ProfitCalculationStrategy.objects.get(is_default=True).name, "西马已覆盖")
         self.assertTrue(AuditLog.objects.filter(organization=self.organization, action="profit_strategy.update").exists())
 
-    def test_strategy_name_is_unique_inside_an_organization(self):
+    def test_same_name_create_overwrites_inside_a_transaction_and_becomes_default(self):
         config = {"country": "MY", "seller_type": "cross_border", "shop_identity": "marketplace", "bxp": False, "commission_adjustment": "1", "buyer_pays_shipping": False, "buyer_shipping_region": "west_malaysia", "transaction_fee_adjustment": "0", "display_currency": "MYR"}
-        self.assertEqual(self.client.post("/api/profit-calculator/strategies/", {"name": "唯一名称", "config": config}, format="json").status_code, 201)
-        self.assertEqual(self.client.post("/api/profit-calculator/strategies/", {"name": "唯一名称", "config": config}, format="json").status_code, 409)
+        first = self.client.post("/api/profit-calculator/strategies/", {"name": "唯一名称", "config": config}, format="json")
+        self.assertEqual(first.status_code, 201, first.data)
+        second = self.client.post("/api/profit-calculator/strategies/", {"name": "唯一名称", "config": {**config, "transaction_fee_adjustment": "2.00"}}, format="json")
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(second.data["id"], first.data["id"])
+        self.assertEqual(ProfitCalculationStrategy.objects.filter(organization=self.organization).count(), 1)
+        self.assertEqual(second.data["config"]["transaction_fee_adjustment"], "2.00")
+        self.assertTrue(second.data["is_default"])
+        self.assertTrue(AuditLog.objects.filter(organization=self.organization, action="profit_strategy.overwrite").exists())
+
+    def test_strategy_activate_and_delete_keep_one_default_then_allow_empty_list(self):
+        config = {"country": "MY", "seller_type": "cross_border", "shop_identity": "marketplace", "bxp": False, "commission_adjustment": "1", "buyer_pays_shipping": True, "buyer_shipping_region": "west_malaysia", "transaction_fee_adjustment": "0", "display_currency": "MYR"}
+        first = self.client.post("/api/profit-calculator/strategies/", {"name": "A 西马", "config": config}, format="json")
+        second = self.client.post("/api/profit-calculator/strategies/", {"name": "B 东马", "config": {**config, "buyer_shipping_region": "east_malaysia"}}, format="json")
+        activated = self.client.post("/api/profit-calculator/strategies/%s/activate/" % first.data["id"], format="json")
+        self.assertEqual(activated.status_code, 200, activated.data)
+        self.assertEqual(ProfitCalculationStrategy.objects.filter(organization=self.organization, is_default=True).count(), 1)
+        self.assertEqual(str(ProfitCalculationStrategy.objects.get(organization=self.organization, is_default=True).pk), str(first.data["id"]))
+        self.assertTrue(AuditLog.objects.filter(organization=self.organization, action="profit_strategy.activate").exists())
+        deleted = self.client.delete("/api/profit-calculator/strategies/%s/" % first.data["id"])
+        self.assertEqual(deleted.status_code, 204)
+        self.assertEqual(str(ProfitCalculationStrategy.objects.get(organization=self.organization, is_default=True).pk), str(second.data["id"]))
+        self.assertEqual(self.client.delete("/api/profit-calculator/strategies/%s/" % second.data["id"]).status_code, 204)
+        self.assertFalse(ProfitCalculationStrategy.objects.filter(organization=self.organization).exists())
+        self.assertTrue(AuditLog.objects.filter(organization=self.organization, action="profit_strategy.delete").exists())
+
+    def test_strategy_writes_are_organization_scoped_and_disabled_shipping_uses_west_malaysia(self):
+        config = {"country": "MY", "seller_type": "cross_border", "shop_identity": "marketplace", "bxp": False, "commission_adjustment": "1", "buyer_pays_shipping": False, "buyer_shipping_region": "east_malaysia", "transaction_fee_adjustment": "0", "display_currency": "MYR"}
+        created = self.client.post("/api/profit-calculator/strategies/", {"name": "本组织策略", "config": config}, format="json")
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["config"]["buyer_shipping_region"], "west_malaysia")
+        other_user = get_user_model().objects.create_user(username="other-calculator", password="test-pass-123")
+        other_organization = Organization.objects.create(name="其他组织", slug="other-profit-calculator")
+        Membership.objects.create(organization=other_organization, user=other_user, role=Membership.Role.ADMIN, permissions=["profit_rules"])
+        other_client = APIClient()
+        other_client.force_authenticate(other_user)
+        path = "/api/profit-calculator/strategies/%s/" % created.data["id"]
+        # The role permission guard may reject before lookup (403); either way a
+        # different organization cannot read or mutate this strategy.
+        self.assertEqual(other_client.get(path).status_code, 403)
+        self.assertEqual(other_client.post(path + "activate/", format="json").status_code, 403)
+        self.assertEqual(other_client.patch(path, {"name": "越权", "config": config}, format="json").status_code, 403)
+        self.assertEqual(other_client.delete(path).status_code, 403)
 
     def test_calculate_requires_weight(self):
         response = self.client.post("/api/profit-calculator/calculate/", {

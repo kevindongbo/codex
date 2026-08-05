@@ -21,6 +21,9 @@
   let displayCurrency = 'MYR';
   let openCategoryRow = null;
   let rateMode = 'auto';
+  let buyerShippingRegion = 'west_malaysia';
+  let loadedStrategies = [];
+  let strategyModalMode = 'create';
   const manualCommissionByRow = new Map();
 
   function el(id) { return document.getElementById(id); }
@@ -34,24 +37,18 @@
     return Number.isFinite(parsed) ? parsed : 0;
   }
   function fixed(value) { return number(value).toFixed(2); }
-  function formatMoney(value, currency) {
+  function formatSingleMoney(value, currency) {
     const target = currency || displayCurrency;
     const amount = target === 'CNY' ? number(value) * number(el('profitExchangeRate').value) : number(value);
     const prefix = target === 'CNY' ? '¥ ' : 'RM ';
     return prefix + amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
-  function formatCost(value) { return '− ' + formatMoney(value); }
-  function formatMoneyInCurrency(value, currency) {
-    const amount = currency === 'CNY' ? number(value) * number(el('profitExchangeRate').value) : number(value);
-    const prefix = currency === 'CNY' ? '¥ ' : 'RM ';
-    return prefix + amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
+  function formatCost(value) { return '− ' + formatSingleMoney(value); }
   function formatDualMoney(value, primaryCurrency) {
     const primary = primaryCurrency || displayCurrency;
     const secondary = primary === 'MYR' ? 'CNY' : 'MYR';
-    return formatMoneyInCurrency(value, primary) + ' ／ ' + formatMoneyInCurrency(value, secondary);
+    return formatSingleMoney(value, primary) + ' ／ ' + formatSingleMoney(value, secondary);
   }
-  function formatMoney(value, currency) { return formatDualMoney(value, currency); }
 
   function saveRatePreference(payload) {
     try { localStorage.setItem(RATE_STORAGE_KEY, JSON.stringify(payload)); } catch (_) { /* optional */ }
@@ -255,26 +252,34 @@
         return '<tr class="profit-fee-row profit-single-group" data-profit-group-row="' + escapeHtml(group.key) + '"><td><b>' + escapeHtml(group.label) + '</b></td><td>' + label + '</td>' +
           '<td data-profit-basis-column>' + escapeHtml(row.base || '—') + '</td>' +
           '<td class="profit-rate-share">' + escapeHtml(rateShareText(row)) + '</td>' +
-          '<td class="profit-amount ' + escapeHtml(row.kind) + '">' + prefix + formatMoney(row.amount) + '</td>' +
+          '<td class="profit-amount ' + escapeHtml(row.kind) + '">' + prefix + formatSingleMoney(row.amount) + '</td>' +
           '<td class="profit-source">' + sourceMarkup(row) + '</td></tr>';
       }
       const groupPrefix = group.kind === 'income' || group.kind === 'info' ? '' : '− ';
-      const total = '<tr class="profit-group-total" data-profit-group-total="' + escapeHtml(group.key) + '" data-profit-group-toggle="' + escapeHtml(group.key) + '" tabindex="0" role="button" aria-expanded="true">' +
-        '<td><button type="button" class="profit-group-toggle" data-profit-group-toggle="' + escapeHtml(group.key) + '" aria-expanded="true"><span>⌄</span><b>' + escapeHtml(group.label) + '</b></button></td>' +
+      const total = '<tr class="profit-group-total" data-profit-group-total="' + escapeHtml(group.key) + '" data-profit-group-toggle="' + escapeHtml(group.key) + '" tabindex="0" role="button" aria-expanded="false">' +
+        '<td><button type="button" class="profit-group-toggle" data-profit-group-toggle="' + escapeHtml(group.key) + '" aria-expanded="false"><span class="profit-group-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m8 4 8 8-8 8"></path></svg></span><b>' + escapeHtml(group.label) + '</b></button></td>' +
         '<td><strong>' + escapeHtml(group.label) + '合计</strong></td>' +
         '<td data-profit-basis-column>' + (group.key === '物流' ? '买家运费不计入物流合计' : '组内费用汇总') + '</td>' +
         '<td class="profit-rate-share">占比 ' + fixed(group.share) + '%</td>' +
-        '<td class="profit-amount ' + escapeHtml(group.kind) + '">' + groupPrefix + formatMoney(group.amount) + '</td><td><span>分组汇总</span></td></tr>';
+        '<td class="profit-amount ' + escapeHtml(group.kind) + '">' + groupPrefix + formatSingleMoney(group.amount) + '</td><td><span>分组汇总</span></td></tr>';
       const items = group.items.map(function (row) {
         const prefix = row.kind === 'income' || row.kind === 'info' || row.kind === 'reference' ? '' : '− ';
-        return '<tr class="profit-fee-row" data-profit-group-row="' + escapeHtml(group.key) + '"><td></td><td>' + feeLabel(row) + '</td>' +
+        return '<tr class="profit-fee-row" data-profit-group-row="' + escapeHtml(group.key) + '" hidden><td></td><td>' + feeLabel(row) + '</td>' +
           '<td data-profit-basis-column>' + escapeHtml(row.base || '—') + '</td>' +
           '<td class="profit-rate-share">' + escapeHtml(rateShareText(row)) + '</td>' +
-          '<td class="profit-amount ' + escapeHtml(row.kind) + '">' + prefix + formatMoney(row.amount) + '</td>' +
+          '<td class="profit-amount ' + escapeHtml(row.kind) + '">' + prefix + formatSingleMoney(row.amount) + '</td>' +
           '<td class="profit-source">' + sourceMarkup(row) + '</td></tr>';
       }).join('');
       return total + items;
     }).join('');
+  }
+  function setGroupExpanded(group, expanded) {
+    const total = document.querySelector('[data-profit-group-total="' + CSS.escape(group) + '"]');
+    if (!total) return;
+    total.setAttribute('aria-expanded', String(expanded));
+    const button = total.querySelector('[data-profit-group-toggle]');
+    if (button) button.setAttribute('aria-expanded', String(expanded));
+    document.querySelectorAll('[data-profit-group-row="' + CSS.escape(group) + '"]').forEach(function (row) { row.hidden = !expanded; });
   }
 
   function renderResult(result, shouldScroll) {
@@ -284,25 +289,24 @@
     el('profitPrimaryLabel').textContent = result.has_ad_cost ? '净利润' : '广告前毛利';
     el('profitMarginLabel').textContent = result.has_ad_cost ? '净利率' : '毛利率';
     el('profitMarginHint').textContent = (result.has_ad_cost ? '净利润' : '广告前毛利') + ' ÷ 商品售价';
-    el('profitNet').textContent = formatMoney(primaryProfit);
-    el('profitNetCny').textContent = displayCurrency === 'MYR' ? '≈ ' + formatMoney(primaryProfit, 'CNY') : '≈ ' + formatMoney(primaryProfit, 'MYR');
+    el('profitNet').textContent = formatSingleMoney(primaryProfit);
+    el('profitNetCny').textContent = displayCurrency === 'MYR' ? '≈ ' + formatSingleMoney(primaryProfit, 'CNY') : '≈ ' + formatSingleMoney(primaryProfit, 'MYR');
     el('profitMargin').textContent = fixed(primaryMargin) + '%';
     el('profitCpa').textContent = '$ ' + number(result.break_even_cpa_usd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     el('profitRoas').textContent = result.break_even_roi == null ? '不可盈利' : fixed(result.break_even_roi);
-    el('profitSalesRevenue').textContent = formatMoney(summary.sales_revenue == null ? result.revenue : summary.sales_revenue);
-    el('profitBuyerShippingRevenue').textContent = formatMoney(summary.buyer_shipping_revenue || 0);
-    el('profitRevenue').textContent = formatMoney(summary.settlement_revenue == null ? result.revenue : summary.settlement_revenue);
+    el('profitSalesRevenue').textContent = formatSingleMoney(summary.sales_revenue == null ? result.revenue : summary.sales_revenue);
+    el('profitBuyerShippingRevenue').textContent = formatSingleMoney(summary.buyer_shipping_revenue || 0);
+    el('profitRevenue').textContent = formatSingleMoney(summary.settlement_revenue == null ? result.revenue : summary.settlement_revenue);
     el('profitPlatformFees').textContent = formatCost(summary.platform_fees || 0);
     el('profitAffiliateFees').textContent = formatCost(summary.affiliate_commission || 0);
     el('profitLogisticsCost').textContent = formatCost(summary.logistics_cost || 0);
-    el('profitPlatformPayout').textContent = formatMoney(summary.estimated_platform_payout == null ? result.gross_profit : summary.estimated_platform_payout);
+    el('profitPlatformPayout').textContent = formatSingleMoney(summary.estimated_platform_payout == null ? result.gross_profit : summary.estimated_platform_payout);
     el('profitProductCost').textContent = formatCost(summary.product_cost || 0);
-    el('profitCostsBeforeAds').textContent = formatMoney(result.costs_before_ads);
-    el('profitGross').textContent = formatMoney(result.gross_profit);
-    el('profitAdCost').textContent = result.has_ad_cost ? formatMoney(result.advertising_cost) : '未填写';
-    el('profitFormulaNet').textContent = result.has_ad_cost ? formatMoney(result.net_profit) : '未计算';
+    el('profitCostsBeforeAds').textContent = formatSingleMoney(result.costs_before_ads);
+    el('profitGross').textContent = formatSingleMoney(result.gross_profit);
+    el('profitAdCost').textContent = result.has_ad_cost ? formatSingleMoney(result.advertising_cost) : '未填写';
+    el('profitFormulaNet').textContent = result.has_ad_cost ? formatSingleMoney(result.net_profit) : '未计算';
     el('profitFormulaNetMargin').textContent = result.has_ad_cost ? fixed(result.net_margin) + '%' : '未计算';
-    el('profitNetCny').textContent = '';
     function settlement(id) { return document.querySelector('.profit-settlement-summary #' + id); }
     settlement('profitTotalRevenue').textContent = formatDualMoney(summary.total_revenue == null ? result.revenue : summary.total_revenue);
     settlement('profitTotalFees').textContent = formatDualMoney(summary.total_fees == null ? result.total_fees : summary.total_fees);
@@ -383,47 +387,127 @@
       shop_identity: el('profitShopIdentity').value, bxp: el('profitBxp').checked,
       commission_adjustment: el('profitCommissionAdjustment').value || '0',
       buyer_pays_shipping: el('profitBuyerPaysShipping').checked,
-      buyer_shipping_region: el('profitBuyerShippingRegion').value,
+      buyer_shipping_region: el('profitBuyerPaysShipping').checked ? buyerShippingRegion : 'west_malaysia',
       transaction_fee_adjustment: el('profitTransactionFeeAdjustment').value || '0',
       display_currency: displayCurrency
     };
   }
-  function applyStrategy(strategy) {
-    const config = strategy.config || {};
-    ['country', 'seller_type', 'shop_identity', 'commission_adjustment', 'buyer_shipping_region', 'transaction_fee_adjustment'].forEach(function (key) {
+  function systemStrategyConfig() {
+    return {
+      country: 'MY', seller_type: 'cross_border', shop_identity: 'marketplace', bxp: false,
+      commission_adjustment: '1.00', buyer_pays_shipping: false,
+      buyer_shipping_region: 'west_malaysia', transaction_fee_adjustment: '0.00', display_currency: 'MYR'
+    };
+  }
+  function applyStrategyConfig(config) {
+    ['country', 'seller_type', 'shop_identity', 'commission_adjustment', 'transaction_fee_adjustment'].forEach(function (key) {
       const field = el('profit' + key.split('_').map(function (part) { return part.charAt(0).toUpperCase() + part.slice(1); }).join(''));
       if (field && config[key] != null) field.value = config[key];
     });
     el('profitBxp').checked = Boolean(config.bxp);
     el('profitBuyerPaysShipping').checked = Boolean(config.buyer_pays_shipping);
+    buyerShippingRegion = config.buyer_shipping_region || 'west_malaysia';
     displayCurrency = config.display_currency || 'MYR';
     document.querySelectorAll('[data-profit-currency]').forEach(function (button) { button.classList.toggle('active', button.dataset.profitCurrency === displayCurrency); });
-    loadedStrategyId = strategy.id;
-    el('profitStrategySelect').value = strategy.id;
-    el('profitStrategyName').value = strategy.name;
     updateBuyerShippingUi();
+  }
+  function applyStrategy(strategy) {
+    applyStrategyConfig(strategy.config || {});
+    loadedStrategyId = strategy.id;
+    renderStrategyBar();
+  }
+  function applySystemStrategy() {
+    loadedStrategyId = '';
+    applyStrategyConfig(systemStrategyConfig());
+    renderStrategyBar();
+  }
+  function renderStrategyBar() {
+    const hasCurrent = Boolean(loadedStrategyId);
+    el('profitStrategyList').innerHTML = loadedStrategies.map(function (item) {
+      return '<button type="button" class="profit-strategy-chip' + (item.id === loadedStrategyId ? ' active' : '') + '" data-profit-strategy-id="' + escapeHtml(item.id) + '" aria-pressed="' + String(item.id === loadedStrategyId) + '">' + escapeHtml(item.name) + '</button>';
+    }).join('');
+    el('profitStrategySaveCurrent').disabled = !hasCurrent;
+    el('profitStrategyDelete').disabled = !hasCurrent;
   }
   async function loadStrategies() {
     const payload = await request('/profit-calculator/strategies/');
-    const strategies = Array.isArray(payload) ? payload : (payload.results || []);
-    el('profitStrategySelect').innerHTML = '<option value="">临时策略（未保存）</option>' + strategies.map(function (item) { return '<option value="' + escapeHtml(item.id) + '">' + escapeHtml(item.name) + (item.is_default ? '（默认）' : '') + '</option>'; }).join('');
-    const initial = strategies.find(function (item) { return item.is_default; });
-    if (initial) applyStrategy(initial);
+    loadedStrategies = Array.isArray(payload) ? payload : (payload.results || []);
+    const initial = loadedStrategies.find(function (item) { return item.is_default; });
+    if (initial) applyStrategy(initial); else applySystemStrategy();
   }
-  async function saveStrategy() {
-    let name = el('profitStrategyName').value.trim();
-    const overwrite = loadedStrategyId && window.confirm('覆盖当前策略，还是选择“取消”后另存为新策略？\n确定：覆盖当前策略；取消：另存为新策略。');
-    if (!overwrite && !name) name = window.prompt('请输入新策略名称：', '');
+  function openStrategyModal(mode) {
+    strategyModalMode = mode;
+    const overwrite = mode === 'overwrite';
+    const current = loadedStrategies.find(function (item) { return item.id === loadedStrategyId; });
+    el('profitStrategyModalTitle').textContent = overwrite ? '覆盖当前策略' : (mode === 'save_as' ? '另存为新策略' : '新建计算策略');
+    el('profitStrategyModalDescription').textContent = overwrite
+      ? '将使用当前页面配置覆盖此策略，并立即设为默认策略。'
+      : '其余配置将读取当前页面内容；SKU、广告和本次计算结果不会保存。';
+    el('profitStrategyModalName').value = overwrite && current ? current.name : '';
+    el('profitStrategyModalName').readOnly = overwrite;
+    const inactiveBuyerShipping = !el('profitBuyerPaysShipping').checked;
+    const region = inactiveBuyerShipping ? 'west_malaysia' : buyerShippingRegion;
+    el('profitStrategyModalRegion').value = region;
+    el('profitStrategyModalRegion').disabled = inactiveBuyerShipping;
+    el('profitStrategyModalRegionHint').hidden = !inactiveBuyerShipping;
+    el('profitStrategyModal').hidden = false;
+    el('profitStrategyModal').setAttribute('aria-hidden', 'false');
+    el('profitStrategyModalName').focus();
+  }
+  function closeStrategyModal(id) {
+    const modal = el(id);
+    modal.hidden = true;
+    modal.setAttribute('aria-hidden', 'true');
+  }
+  function openSaveChoice() {
+    el('profitStrategySaveChoiceModal').hidden = false;
+    el('profitStrategySaveChoiceModal').setAttribute('aria-hidden', 'false');
+  }
+  function openDeleteStrategy() {
+    const current = loadedStrategies.find(function (item) { return item.id === loadedStrategyId; });
+    if (!current) return;
+    el('profitStrategyDeleteDescription').textContent = '确定删除策略“' + current.name + '”吗？删除后无法恢复。';
+    el('profitStrategyDeleteModal').hidden = false;
+    el('profitStrategyDeleteModal').setAttribute('aria-hidden', 'false');
+  }
+  async function saveStrategyFromModal() {
+    const overwrite = strategyModalMode === 'overwrite';
+    const name = el('profitStrategyModalName').value.trim();
     if (!name) return setStatus('请填写策略名称。', true);
+    buyerShippingRegion = el('profitBuyerPaysShipping').checked ? el('profitStrategyModalRegion').value : 'west_malaysia';
     const path = overwrite ? '/profit-calculator/strategies/' + loadedStrategyId + '/' : '/profit-calculator/strategies/';
     const strategy = await request(path, { method: overwrite ? 'PATCH' : 'POST', body: { name: name, config: strategyConfig() } });
+    loadedStrategyId = strategy.id;
     await loadStrategies();
     applyStrategy(strategy);
+    closeStrategyModal('profitStrategyModal');
     setStatus('策略已保存并设为默认策略。');
   }
+  async function activateStrategy(id) {
+    const strategy = await request('/profit-calculator/strategies/' + id + '/activate/', { method: 'POST' });
+    loadedStrategyId = strategy.id;
+    await loadStrategies();
+    applyStrategy(strategy);
+    setStatus('已加载并设为默认策略：' + strategy.name + '。');
+  }
+  async function deleteStrategy() {
+    const id = loadedStrategyId;
+    if (!id) return;
+    await request('/profit-calculator/strategies/' + id + '/', { method: 'DELETE' });
+    closeStrategyModal('profitStrategyDeleteModal');
+    loadedStrategyId = '';
+    await loadStrategies();
+    setStatus(loadedStrategyId ? '策略已删除，已加载新的默认策略。' : '策略已删除，当前使用系统默认配置。');
+  }
   function updateBuyerShippingUi() {
-    const local = el('profitSellerType').value === 'local';
-    el('profitBuyerShippingRegion').disabled = local || !el('profitBuyerPaysShipping').checked;
+    if (!el('profitBuyerPaysShipping').checked) buyerShippingRegion = 'west_malaysia';
+    const modal = el('profitStrategyModal');
+    if (!modal.hidden) {
+      const disabled = !el('profitBuyerPaysShipping').checked;
+      el('profitStrategyModalRegion').disabled = disabled;
+      if (disabled) el('profitStrategyModalRegion').value = 'west_malaysia';
+      el('profitStrategyModalRegionHint').hidden = !disabled;
+    }
   }
 
   async function loadConfig() {
@@ -462,7 +546,7 @@
           commission_adjustment: el('profitCommissionAdjustment').value || '0',
           transaction_fee_adjustment: el('profitTransactionFeeAdjustment').value || '0',
           buyer_pays_shipping: el('profitBuyerPaysShipping').checked,
-          buyer_shipping_region: el('profitBuyerShippingRegion').value,
+          buyer_shipping_region: el('profitBuyerPaysShipping').checked ? buyerShippingRegion : 'west_malaysia',
           cny_per_myr: el('profitExchangeRate').value,
           usd_per_myr: el('profitUsdRate').value,
           items: rows.map(collectRow)
@@ -498,12 +582,16 @@
     el('profitRateAuto').addEventListener('click', function () { rateMode = 'auto'; saveRatePreference({ mode: 'auto' }); loadExchangeRates(true); });
     el('profitRateManual').addEventListener('click', useManualRates);
     el('profitRateRefresh').addEventListener('click', function () { loadExchangeRates(true); });
-    el('profitStrategySave').addEventListener('click', function () { saveStrategy().catch(function (error) { setStatus(error.message || '策略保存失败', true); }); });
-    el('profitStrategySelect').addEventListener('change', function () {
-      const id = this.value;
-      if (!id) { loadedStrategyId = ''; return; }
-      request('/profit-calculator/strategies/' + id + '/').then(applyStrategy).catch(function (error) { setStatus(error.message || '策略读取失败', true); });
-    });
+    el('profitStrategyCreate').addEventListener('click', function () { openStrategyModal('create'); });
+    el('profitStrategySaveCurrent').addEventListener('click', openSaveChoice);
+    el('profitStrategyDelete').addEventListener('click', openDeleteStrategy);
+    el('profitStrategyModalSave').addEventListener('click', function () { saveStrategyFromModal().catch(function (error) { setStatus(error.message || '策略保存失败', true); }); });
+    el('profitStrategyOverwrite').addEventListener('click', function () { closeStrategyModal('profitStrategySaveChoiceModal'); openStrategyModal('overwrite'); });
+    el('profitStrategySaveAs').addEventListener('click', function () { closeStrategyModal('profitStrategySaveChoiceModal'); openStrategyModal('save_as'); });
+    el('profitStrategyDeleteConfirm').addEventListener('click', function () { deleteStrategy().catch(function (error) { setStatus(error.message || '策略删除失败', true); }); });
+    ['profitStrategyModalClose', 'profitStrategyModalCancel'].forEach(function (id) { el(id).addEventListener('click', function () { closeStrategyModal('profitStrategyModal'); }); });
+    ['profitStrategySaveChoiceClose', 'profitStrategySaveChoiceCancel'].forEach(function (id) { el(id).addEventListener('click', function () { closeStrategyModal('profitStrategySaveChoiceModal'); }); });
+    ['profitStrategyDeleteClose', 'profitStrategyDeleteCancel'].forEach(function (id) { el(id).addEventListener('click', function () { closeStrategyModal('profitStrategyDeleteModal'); }); });
     el('profitBuyerPaysShipping').addEventListener('change', updateBuyerShippingUi);
     el('profitSellerType').addEventListener('change', updateBuyerShippingUi);
 
@@ -530,13 +618,14 @@
       }
       const feeEdit = event.target.closest('[data-profit-fee-edit]');
       if (feeEdit) return openCommissionEditor();
+      const strategyChip = event.target.closest('[data-profit-strategy-id]');
+      if (strategyChip) return activateStrategy(strategyChip.dataset.profitStrategyId).catch(function (error) { setStatus(error.message || '策略切换失败', true); });
       const groupToggle = event.target.closest('[data-profit-group-toggle]');
-      if (groupToggle) {
+      if (groupToggle && !event.target.closest('a, [data-profit-fee-edit]')) {
         const group = groupToggle.dataset.profitGroupToggle;
-        const expanded = groupToggle.getAttribute('aria-expanded') === 'true';
-        groupToggle.setAttribute('aria-expanded', String(!expanded));
-        groupToggle.querySelector('span').textContent = expanded ? '›' : '⌄';
-        document.querySelectorAll('[data-profit-group-row="' + CSS.escape(group) + '"]').forEach(function (row) { row.hidden = expanded; });
+        const total = document.querySelector('[data-profit-group-total="' + CSS.escape(group) + '"]');
+        const expanded = total && total.getAttribute('aria-expanded') === 'true';
+        setGroupExpanded(group, !expanded);
         return;
       }
       const categoryOption = event.target.closest('[data-category-option]');
@@ -571,7 +660,18 @@
         row.remove();
       }
     });
-    document.addEventListener('keydown', function (event) { if (event.key === 'Escape' && !el('profitFeeModal').hidden) closeFeeModal(); });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') {
+        if (!el('profitFeeModal').hidden) closeFeeModal();
+        ['profitStrategyModal', 'profitStrategySaveChoiceModal', 'profitStrategyDeleteModal'].forEach(function (id) { if (!el(id).hidden) closeStrategyModal(id); });
+      }
+      const total = event.target.closest && event.target.closest('[data-profit-group-total]');
+      if (total && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        const group = total.dataset.profitGroupTotal;
+        setGroupExpanded(group, total.getAttribute('aria-expanded') !== 'true');
+      }
+    });
     loadConfig();
     updateBuyerShippingUi();
     loadExchangeRates(false);

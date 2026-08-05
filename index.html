@@ -20,7 +20,7 @@
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260805-profit-req-1" />
+  <link rel="stylesheet" href="styles.css?v=20260805-profit-ui-req-1" />
 </head>
 <body>
   <header class="app-header">
@@ -460,21 +460,24 @@
       <form id="profitCalculatorForm">
         <section class="panel profit-config-panel">
           <div class="panel-title"><div><h2>计算配置</h2><p>选择店铺信息后，系统将自动匹配已核验的马来西亚费率规则。</p></div></div>
+          <div class="profit-strategy-bar" id="profitStrategyBar" aria-label="计算策略">
+            <div class="profit-strategy-list" id="profitStrategyList" role="list" aria-label="已保存计算策略"></div>
+            <div class="profit-strategy-bar-actions">
+              <button class="button secondary" id="profitStrategyCreate" type="button">＋ 新建计算策略</button>
+              <button class="button secondary" id="profitStrategySaveCurrent" type="button" disabled>保存当前策略</button>
+              <button class="button danger" id="profitStrategyDelete" type="button" disabled>删除策略</button>
+            </div>
+          </div>
           <div class="profit-config-grid">
             <label>销售国家<select id="profitCountry"><option value="MY">马来西亚 MY</option></select></label>
             <label>发货方式<select id="profitSellerType"><option value="cross_border">跨境发货</option><option value="local">本土发货</option></select></label>
             <label>店铺身份<select id="profitShopIdentity"><option value="marketplace">Marketplace</option><option value="mall">Mall</option></select></label>
-            <label>计算币种<select disabled><option>MYR · RM（结果可切换人民币）</option></select></label>
             <label class="profit-adjustment-field">类目佣金调试（按百分点临时调整）<div class="profit-adjustment-input"><input id="profitCommissionAdjustment" type="number" min="-100" max="100" step="0.01" value="1.00" inputmode="decimal" /><span>百分点</span></div></label>
-            <label class="profit-switch"><input id="profitBxp" type="checkbox" /><span><strong>参加 BXP</strong><small>将增加 4.86% BXP 服务费，并使用 BXP 佣金档</small></span></label>
-          </div>
-          <div class="profit-config-grid">
             <label>交易手续费调整（百分点）<div class="profit-adjustment-input"><input id="profitTransactionFeeAdjustment" type="number" min="-100" max="100" step="0.01" value="0.00" inputmode="decimal" /><span>百分点</span></div></label>
+          </div>
+          <div class="profit-config-grid profit-config-grid-switches">
+            <label class="profit-switch"><input id="profitBxp" type="checkbox" /><span><strong>参加 BXP</strong><small>将增加 4.86% BXP 服务费，并使用 BXP 佣金档</small></span></label>
             <label class="profit-switch"><input id="profitBuyerPaysShipping" type="checkbox" /><span><strong>买家是否支付运费</strong><small>Standard 按订单只计算一次，不计入商品收入。</small></span></label>
-            <label>买家收货地区<select id="profitBuyerShippingRegion"><option value="west_malaysia" selected>西马 · RM2.90</option><option value="east_malaysia">东马 · RM8.00</option></select></label>
-            <label>计算策略<select id="profitStrategySelect"><option value="">临时策略（未保存）</option></select></label>
-            <label>策略名称<input id="profitStrategyName" maxlength="120" placeholder="例如：跨境西马标准" /></label>
-            <div class="profit-strategy-actions"><button class="button secondary" id="profitStrategySave" type="button">保存为默认策略</button><small>保存后立即成为本组织默认策略；SKU、广告与手动佣金不保存。</small></div>
           </div>
         </section>
 
@@ -642,6 +645,35 @@
           <p id="profitFeeModalDescription"></p>
           <div class="profit-fee-modal-body" id="profitFeeModalBody"></div>
           <div class="profit-fee-modal-actions"><button class="button secondary" id="profitFeeModalCancel" type="button">取消</button><button class="button primary" id="profitFeeModalSave" type="button">应用并重新计算</button></div>
+        </div>
+      </div>
+      <div class="profit-fee-modal profit-strategy-modal" id="profitStrategyModal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="profitStrategyModalTitle">
+        <div class="profit-fee-modal-card">
+          <button class="profit-fee-modal-close" id="profitStrategyModalClose" type="button" aria-label="关闭">×</button>
+          <h2 id="profitStrategyModalTitle">新建计算策略</h2>
+          <p id="profitStrategyModalDescription">其余配置将读取当前页面内容；SKU、广告和本次计算结果不会保存。</p>
+          <div class="profit-fee-modal-body">
+            <label>策略名称<input id="profitStrategyModalName" maxlength="120" placeholder="例如：跨境西马标准" /></label>
+            <label>买家收货地区<select id="profitStrategyModalRegion"><option value="west_malaysia" selected>西马 · RM2.90</option><option value="east_malaysia">东马 · RM8.00</option></select></label>
+            <small id="profitStrategyModalRegionHint" class="profit-strategy-region-hint" hidden>关闭买家支付运费时，收货地区不参与计算。</small>
+          </div>
+          <div class="profit-fee-modal-actions"><button class="button secondary" id="profitStrategyModalCancel" type="button">取消</button><button class="button primary" id="profitStrategyModalSave" type="button">保存策略</button></div>
+        </div>
+      </div>
+      <div class="profit-fee-modal profit-strategy-modal" id="profitStrategySaveChoiceModal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="profitStrategySaveChoiceTitle">
+        <div class="profit-fee-modal-card">
+          <button class="profit-fee-modal-close" id="profitStrategySaveChoiceClose" type="button" aria-label="关闭">×</button>
+          <h2 id="profitStrategySaveChoiceTitle">保存当前策略</h2>
+          <p>请选择保存方式。</p>
+          <div class="profit-fee-modal-actions"><button class="button secondary" id="profitStrategySaveChoiceCancel" type="button">取消</button><button class="button secondary" id="profitStrategySaveAs" type="button">另存为新策略</button><button class="button primary" id="profitStrategyOverwrite" type="button">覆盖当前策略</button></div>
+        </div>
+      </div>
+      <div class="profit-fee-modal profit-strategy-modal" id="profitStrategyDeleteModal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="profitStrategyDeleteTitle">
+        <div class="profit-fee-modal-card">
+          <button class="profit-fee-modal-close" id="profitStrategyDeleteClose" type="button" aria-label="关闭">×</button>
+          <h2 id="profitStrategyDeleteTitle">删除策略</h2>
+          <p id="profitStrategyDeleteDescription"></p>
+          <div class="profit-fee-modal-actions"><button class="button secondary" id="profitStrategyDeleteCancel" type="button">取消</button><button class="button danger" id="profitStrategyDeleteConfirm" type="button">确认删除</button></div>
         </div>
       </div>
     </section>
@@ -1097,8 +1129,8 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js?v=20260728-profit-calculator-server-1"></script>
-  <script src="team.js?v=20260805-profit-req-1"></script>
-  <script src="profit-calculator.js?v=20260805-profit-req-1"></script>
-  <script src="app.js?v=20260805-profit-req-1"></script>
+  <script src="team.js?v=20260805-profit-ui-req-1"></script>
+  <script src="profit-calculator.js?v=20260805-profit-ui-req-1"></script>
+  <script src="app.js?v=20260805-profit-ui-req-1"></script>
 </body>
 </html>
