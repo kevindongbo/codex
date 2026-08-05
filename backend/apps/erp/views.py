@@ -978,33 +978,100 @@ class ProfitCalculationStrategyViewSet(OrganizationScopedViewSet):
     queryset = ProfitCalculationStrategy.objects.select_related("created_by", "updated_by").order_by("-is_default", "name", "id")
     serializer_class = ProfitCalculationStrategySerializer
     capability = "profit_rules"
-    http_method_names = ["get", "post", "patch", "head", "options"]
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
         _require_capability(request, "profit_rules", "当前账号没有维护利润策略权限")
 
+    def _lock_organization(self, organization):
+        # Locking the parent row also serializes an empty strategy list, which a
+        # filtered strategy-row lock alone cannot protect from concurrent creates.
+        return Organization.objects.select_for_update().get(pk=organization.pk)
+
+    def _make_default(self, organization, instance):
+        ProfitCalculationStrategy.objects.filter(organization=organization, is_default=True).exclude(pk=instance.pk).update(is_default=False)
+        if not instance.is_default:
+            instance.is_default = True
+            instance.save(update_fields=["is_default", "updated_at"])
+
     @transaction.atomic
-    def perform_create(self, serializer):
-        organization = self.get_organization()
-        ProfitCalculationStrategy.objects.select_for_update().filter(organization=organization, is_default=True).update(is_default=False)
-        instance = serializer.save(
-            organization=organization, is_default=True, created_by=self.request.user, updated_by=self.request.user,
-            config=_profit_strategy_config(serializer.validated_data["config"]),
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        organization = self._lock_organization(self.get_organization())
+        name = serializer.validated_data["name"]
+        config = _profit_strategy_config(serializer.validated_data["config"])
+        instance = ProfitCalculationStrategy.objects.select_for_update().filter(
+            organization=organization, name=name,
+        ).first()
+        created = instance is None
+        if created:
+            ProfitCalculationStrategy.objects.filter(organization=organization, is_default=True).update(is_default=False)
+            instance = ProfitCalculationStrategy.objects.create(
+                organization=organization, name=name, config=config, is_default=True,
+                created_by=request.user, updated_by=request.user,
+            )
+            action = "profit_strategy.create"
+            before = None
+        else:
+            before = {"name": instance.name, "config": instance.config, "is_default": instance.is_default}
+            instance.config = config
+            instance.updated_by = request.user
+            self._make_default(organization, instance)
+            instance.save(update_fields=["config", "updated_by", "updated_at"])
+            action = "profit_strategy.overwrite"
+        write_audit(
+            organization=organization, actor=request.user, action=action, instance=instance,
+            before=before, after={"name": instance.name, "config": instance.config, "is_default": True},
         )
-        write_audit(organization=organization, actor=self.request.user, action="profit_strategy.create", instance=instance, after={"name": instance.name, "is_default": True})
+        response_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return Response(self.get_serializer(instance).data, status=response_status)
 
     @transaction.atomic
     def perform_update(self, serializer):
-        instance = ProfitCalculationStrategy.objects.select_for_update().get(pk=serializer.instance.pk)
-        organization = self.get_organization()
-        ProfitCalculationStrategy.objects.select_for_update().filter(organization=organization, is_default=True).exclude(pk=instance.pk).update(is_default=False)
+        organization = self._lock_organization(self.get_organization())
+        instance = ProfitCalculationStrategy.objects.select_for_update().get(pk=serializer.instance.pk, organization=organization)
         before = {"name": instance.name, "config": instance.config, "is_default": instance.is_default}
+        self._make_default(organization, instance)
         instance = serializer.save(
             is_default=True, updated_by=self.request.user,
             config=_profit_strategy_config(serializer.validated_data.get("config", instance.config)),
         )
         write_audit(organization=organization, actor=self.request.user, action="profit_strategy.update", instance=instance, before=before, after={"name": instance.name, "config": instance.config, "is_default": True})
+
+    @action(detail=True, methods=["post"])
+    @transaction.atomic
+    def activate(self, request, pk=None):
+        organization = self._lock_organization(self.get_organization())
+        instance = ProfitCalculationStrategy.objects.select_for_update().get(pk=pk, organization=organization)
+        before = {"is_default": instance.is_default}
+        self._make_default(organization, instance)
+        instance.updated_by = request.user
+        instance.save(update_fields=["updated_by", "updated_at"])
+        write_audit(
+            organization=organization, actor=request.user, action="profit_strategy.activate", instance=instance,
+            before=before, after={"is_default": True},
+        )
+        return Response(self.get_serializer(instance).data)
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        organization = self._lock_organization(self.get_organization())
+        instance = ProfitCalculationStrategy.objects.select_for_update().get(pk=instance.pk, organization=organization)
+        was_default = instance.is_default
+        before = {"name": instance.name, "config": instance.config, "is_default": was_default}
+        write_audit(
+            organization=organization, actor=self.request.user, action="profit_strategy.delete", instance=instance,
+            before=before, after={"deleted": True},
+        )
+        instance.delete()
+        if was_default:
+            replacement = ProfitCalculationStrategy.objects.select_for_update().filter(
+                organization=organization,
+            ).order_by("name", "id").first()
+            if replacement is not None:
+                self._make_default(organization, replacement)
 
 
 class MembershipViewSet(OrganizationScopedViewSet):

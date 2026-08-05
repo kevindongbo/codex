@@ -1,8 +1,9 @@
 # ERP-PROFIT-REQ-20260805-01 阿里云部署、验证与回滚
 
-已测试代码提交：`f5baf64555c34df11c82ac604283016afc6d749a`，实施分支：
-`codex/implement-profit-settlement-strategies-20260805`。本次迁移为
-`0027_profitcalculationstrategy`，新增组织级利润计算策略表及同组织唯一名称、唯一默认策略约束。
+已测试代码提交：`00d319a9f0f3f57521c2619dcf988d751be13e4b`，实施分支：
+`codex/implement-profit-strategy-ui-fixes-20260805`。本次为利润策略界面和 API
+行为修正，不新增数据库迁移；部署前仍校验既有策略表迁移
+`0027_profitcalculationstrategy` 已应用。
 
 以下命令依据仓库现有运维配置编写：应用目录 `/opt/dongbo/app`、虚拟环境
 `/opt/dongbo/venv`、服务 `dongbo-erp`、数据库 `dongbo_erp`。命令不会打印
@@ -14,8 +15,8 @@
 set -euo pipefail
 APP=/opt/dongbo/app
 VENV=/opt/dongbo/venv
-BRANCH=codex/implement-profit-settlement-strategies-20260805
-SHA=f5baf64555c34df11c82ac604283016afc6d749a
+BRANCH=codex/implement-profit-strategy-ui-fixes-20260805
+SHA=00d319a9f0f3f57521c2619dcf988d751be13e4b
 DB_NAME=dongbo_erp
 APP_SERVICE=dongbo-erp
 cd "$APP"
@@ -36,7 +37,17 @@ sudo mv "/tmp/${DB_NAME}-${STAMP}.dump" "$BACKUP_DIR/${DB_NAME}.dump"
 git checkout --detach "$SHA"
 test "$(git rev-parse HEAD)" = "$SHA"
 "$VENV/bin/pip" install -r "$APP/backend/requirements.txt"
-if command -v npm >/dev/null 2>&1; then npm run build; elif command -v pnpm >/dev/null 2>&1; then pnpm run build; else node scripts/build-site.mjs; fi
+NODE_MAJOR=0
+if command -v node >/dev/null 2>&1; then NODE_MAJOR=$(node -p "process.versions.node.split('.')[0]"); fi
+if [ "$NODE_MAJOR" -lt 18 ]; then
+  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+  sudo apt-get remove -y libnode-dev
+  sudo apt-get -f install -y
+  sudo dpkg --configure -a
+  sudo apt-get install -y nodejs
+fi
+node -e "const major=Number(process.versions.node.split('.')[0]); if (major < 18) { throw new Error('Node.js 18+ is required'); }"
+npm run build
 set -a
 . "$APP/.env"
 set +a
@@ -58,7 +69,7 @@ printf '\nDEPLOY_SUCCESS SHA=%s\nBACKUP_DIR=%s\n' "$SHA" "$BACKUP_DIR"
 set -euo pipefail
 APP=/opt/dongbo/app
 VENV=/opt/dongbo/venv
-SHA=f5baf64555c34df11c82ac604283016afc6d749a
+SHA=00d319a9f0f3f57521c2619dcf988d751be13e4b
 APP_SERVICE=dongbo-erp
 test "$(git -C "$APP" rev-parse HEAD)" = "$SHA"
 test -z "$(git -C "$APP" status --porcelain)"
@@ -76,7 +87,7 @@ sudo tail -n 100 /var/log/nginx/error.log
 printf 'VERIFY_SUCCESS SHA=%s\n' "$SHA"
 ```
 
-页面验收：登录后在“利润试算”确认默认西马、买家运费开关及东马 RM8.00、手续费百分点调整、策略保存/覆盖/另存为、9 项金额明细和 MYR/CNY 同行展示；确认单商品采购订单字号变化而多商品 `<details>` 展示不变。
+页面验收：登录后在“利润试算”确认策略名称标签栏、点击策略后默认策略持久化、新建/覆盖/另存/删除策略弹窗、买家收货地区仅在策略弹窗内出现；确认 BXP 与买家运费同一行、手续费调整位于第一行、顶部利润卡主币/≈辅助币、左侧费用单币、右侧九项双币，以及多项费用默认折叠和 SVG 箭头。SKU 输入、九项汇总和利润公式应保持原口径。
 
 ## 3. 一键回滚
 
