@@ -302,14 +302,16 @@ body:has(.primary-nav-item[data-module="profit"].active) .sidebar-module[data-si
 .profit-settlement-summary dd { font-size: 14px; font-weight: 850; white-space: nowrap; }
 .profit-strategy-actions { display: grid; align-content: end; gap: 5px; }
 .profit-strategy-actions small { color: #718296; font-size: 10px; line-height: 1.45; }
-.profit-page .profit-strategy-bar { margin: 0 17px; padding: 12px 0; border-bottom: 1px solid #e6ecf2; display: flex; align-items: center; gap: 10px; }
-.profit-page .profit-strategy-list { min-width: 0; flex: 1; display: flex; gap: 7px; overflow-x: auto; scrollbar-width: thin; }
+.profit-page .profit-config-titlebar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.profit-page .profit-config-titlebar h2 { margin: 0; }
+.profit-page .profit-config-actions { min-width: 0; margin-left: auto; display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: 7px; }
+.profit-page .profit-config-actions .button { min-height: 34px; padding: 7px 10px; font-size: 11px; white-space: nowrap; }
+.profit-page .profit-config-actions .button:disabled { cursor: not-allowed; opacity: .48; }
+.profit-page .profit-strategy-list { min-width: 0; margin: 10px 17px 0; display: flex; gap: 7px; overflow-x: auto; scrollbar-width: thin; }
+.profit-page .profit-strategy-list:empty { display: none; }
 .profit-page .profit-strategy-chip { flex: none; min-height: 34px; padding: 7px 11px; border: 1px solid #d7e2ea; border-radius: 8px; color: #52677d; background: #fff; cursor: pointer; font-size: 11px; font-weight: 760; white-space: nowrap; }
 .profit-page .profit-strategy-chip:hover { border-color: #8bc8c4; color: #0d6265; background: #f4fbfa; }
 .profit-page .profit-strategy-chip.active { border-color: #0f8b8d; color: #0a6467; background: #e8f6f4; box-shadow: inset 0 0 0 1px rgba(15,139,141,.14); }
-.profit-page .profit-strategy-bar-actions { flex: none; display: flex; gap: 7px; }
-.profit-page .profit-strategy-bar-actions .button { min-height: 34px; padding: 7px 10px; font-size: 11px; white-space: nowrap; }
-.profit-page .profit-strategy-bar-actions .button:disabled { cursor: not-allowed; opacity: .48; }
 .profit-page .profit-config-grid-switches { padding-top: 0; grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .profit-page .profit-config-grid-switches .profit-switch { grid-column: auto; width: 100%; box-sizing: border-box; }
 .profit-page .profit-strategy-region-hint { color: #748397; font-size: 11px; line-height: 1.5; }
@@ -823,8 +825,6 @@ body.team-readonly [data-team-write] { opacity: .5; pointer-events: none; }
 @media (max-width: 1240px) {
   .profit-config-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .profit-page .profit-config-grid-switches { grid-template-columns: repeat(2, minmax(0,1fr)); }
-  .profit-page .profit-strategy-bar { align-items: flex-start; flex-wrap: wrap; }
-  .profit-page .profit-strategy-list { width: 100%; flex-basis: 100%; }
   .profit-result-grid { grid-template-columns: 1fr; }
   .profit-rules-grid { grid-template-columns: 1fr; }
   .profit-flow-list { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px 0; }
@@ -883,9 +883,11 @@ body.team-readonly [data-team-write] { opacity: .5; pointer-events: none; }
   .profit-rule-notice { flex-direction: column; gap: 3px; }
   .profit-config-grid { padding: 12px; grid-template-columns: 1fr; }
   .profit-page .profit-config-grid-switches { grid-template-columns: 1fr; }
-  .profit-page .profit-strategy-bar { margin-inline: 12px; }
-  .profit-page .profit-strategy-bar-actions { width: 100%; flex-wrap: wrap; }
-  .profit-page .profit-strategy-bar-actions .button { flex: 1 1 auto; }
+  .profit-page .profit-config-titlebar { align-items: center; flex-direction: row; flex-wrap: wrap; }
+  .profit-page .profit-config-titlebar h2 { flex: 1 1 auto; }
+  .profit-page .profit-config-actions { width: 100%; margin-left: 0; flex: 1 1 100%; flex-wrap: wrap; }
+  .profit-page .profit-config-actions .button { flex: 1 1 150px; }
+  .profit-page .profit-strategy-list { margin: 10px 12px 0; }
   .profit-switch { width: 100%; }
   .profit-switch strong, .profit-switch small { display: block; }
   .profit-switch small { margin-left: 0; }

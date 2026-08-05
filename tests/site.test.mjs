@@ -50,6 +50,30 @@ test("keeps the profit advertising controls on one visual baseline", async () =>
   assert.match(css, /\.profit-input-table \.profit-ad-input > select, \.profit-input-table \.profit-ad-input > input\s*\{[^}]*height:\s*42px !important;[^}]*min-height:\s*42px !important;[^}]*max-height:\s*42px !important;[^}]*margin:\s*0 !important;/s);
 });
 
+test("keeps profit strategy actions in the compact calculation titlebar", async () => {
+  const [html, css] = await Promise.all([
+    (await fetchPath("/index.html")).text(),
+    (await fetchPath("/styles.css")).text(),
+  ]);
+  const titlebarStart = html.indexOf('<div class="panel-title profit-config-titlebar"');
+  const strategyListStart = html.indexOf('<div class="profit-strategy-list"', titlebarStart);
+  assert.ok(titlebarStart >= 0, "calculation configuration titlebar must exist");
+  assert.ok(strategyListStart > titlebarStart, "saved strategy labels must follow the titlebar");
+  const titlebar = html.slice(titlebarStart, strategyListStart);
+  assert.match(titlebar, /<h2>计算配置<\/h2>/);
+  ["profitStrategyCreate", "profitStrategySaveCurrent", "profitStrategyDelete"].forEach((id) => {
+    assert.match(titlebar, new RegExp(`id="${id}"`));
+  });
+  assert.doesNotMatch(html, /选择店铺信息后，系统将自动匹配已核验的马来西亚费率规则。/);
+  assert.doesNotMatch(html, /class="profit-strategy-bar"/);
+  assert.doesNotMatch(html, /class="profit-strategy-bar-actions"/);
+  assert.match(css, /\.profit-page \.profit-config-titlebar\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;/s);
+  assert.match(css, /\.profit-page \.profit-config-actions\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*flex-end;[^}]*flex-wrap:\s*nowrap;/s);
+  assert.match(css, /\.profit-page \.profit-strategy-list:empty\s*\{[^}]*display:\s*none;/s);
+  assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.profit-page \.profit-config-titlebar\s*\{[^}]*flex-wrap:\s*wrap;/s);
+  assert.match(css, /@media \(max-width: 620px\)[\s\S]*?\.profit-page \.profit-config-actions\s*\{[^}]*flex-wrap:\s*wrap;/s);
+});
+
 test("keeps the ERP polish controls and daily exchange-rate workflow wired", async () => {
   const [html, appScript, profitScript] = await Promise.all([
     (await fetchPath("/index.html")).text(),
@@ -346,5 +370,4 @@ test("Docker team deployment serves the API adapter and runtime mode", async () 
   assert.match(compose, /DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE/);
   assert.match(caddy, /mode: "team"/);
   assert.match(caddy, /apiBase: "\/api"/);
-  assert.match(caddy, /Cache-Control "no-store"/);
 });

@@ -459,15 +459,15 @@
 
       <form id="profitCalculatorForm">
         <section class="panel profit-config-panel">
-          <div class="panel-title"><div><h2>计算配置</h2><p>选择店铺信息后，系统将自动匹配已核验的马来西亚费率规则。</p></div></div>
-          <div class="profit-strategy-bar" id="profitStrategyBar" aria-label="计算策略">
-            <div class="profit-strategy-list" id="profitStrategyList" role="list" aria-label="已保存计算策略"></div>
-            <div class="profit-strategy-bar-actions">
+          <div class="panel-title profit-config-titlebar" id="profitStrategyBar" aria-label="计算配置与策略操作">
+            <h2>计算配置</h2>
+            <div class="profit-config-actions" aria-label="计算策略操作">
               <button class="button secondary" id="profitStrategyCreate" type="button">＋ 新建计算策略</button>
               <button class="button secondary" id="profitStrategySaveCurrent" type="button" disabled>保存当前策略</button>
               <button class="button danger" id="profitStrategyDelete" type="button" disabled>删除策略</button>
             </div>
           </div>
+          <div class="profit-strategy-list" id="profitStrategyList" role="list" aria-label="已保存计算策略"></div>
           <div class="profit-config-grid">
             <label>销售国家<select id="profitCountry"><option value="MY">马来西亚 MY</option></select></label>
             <label>发货方式<select id="profitSellerType"><option value="cross_border">跨境发货</option><option value="local">本土发货</option></select></label>
