@@ -16,12 +16,13 @@ from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from statistics import median
 from typing import Callable, Iterable, Sequence
 
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 from .models import (
     PurchaseOrder,
     PurchaseOrderLine,
+    PurchaseShipmentLine,
     Receipt,
     ReceiptLine,
     StockLedger,
@@ -159,6 +160,7 @@ def estimate_lead_time(
     as_of: datetime | None = None,
     lookback_days: int = 730,
     max_valid_days: Decimal | int = 365,
+    manual_is_final: bool = False,
 ) -> LeadTimeEstimate:
     """Estimate order-to-first/full-receipt time for one SKU and destination.
 
@@ -251,7 +253,12 @@ def estimate_lead_time(
     full = summarize_lead_times(full_durations, max_valid_days=max_valid_days)
     reasons: list[str] = []
 
-    if full.sample_count:
+    if manual_is_final and manual > 0:
+        chosen = manual
+        source = "manual_override"
+        confidence = "medium"
+        reasons.append(f"使用人工总备货时效 {manual} 天；历史 P80 仅作参考")
+    elif full.sample_count:
         chosen = full.p80_days or full.median_days or manual
         source = "historical_full_receipt_p80"
         if full.sample_count >= 8:
@@ -347,9 +354,8 @@ def estimate_demand_velocity(
     lines = list(
         StockLedger.objects.filter(
             organization=organization,
-            warehouse=warehouse,
             sku=sku,
-            event_type__in=[StockLedger.Type.SHIPMENT, StockLedger.Type.MANUAL_OUTBOUND],
+            event_type=StockLedger.Type.SHIPMENT,
             on_hand_delta__lt=0,
             occurred_at__gte=oldest,
             occurred_at__lte=current_time,
@@ -443,31 +449,28 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
     reserved = _decimal(getattr(balance, "reserved", ZERO))
     available = max(ZERO, on_hand - reserved)
 
-    open_lines = list(
-        PurchaseOrderLine.objects.filter(
-            purchase_order__organization=organization,
-            purchase_order__warehouse=warehouse,
-            purchase_order__status__in=(
-                PurchaseOrder.Status.SUBMITTED,
-                PurchaseOrder.Status.PARTIAL,
-            ),
-            sku=sku,
-        ).select_related("purchase_order")
-    )
+    open_lines = list(PurchaseOrderLine.objects.filter(
+        purchase_order__organization=organization,
+        purchase_order__warehouse=warehouse,
+        purchase_order__status__in=(PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL),
+        sku=sku,
+    ).select_related("purchase_order"))
     # Python subtraction keeps this compatible if either quantity later becomes a
     # computed property rather than a concrete database field.
     remaining_by_purchase: dict[object, Decimal] = defaultdict(lambda: ZERO)
     expected_by_purchase: dict[object, datetime | None] = {}
     for line in open_lines:
-        remaining = max(
-            ZERO, _decimal(line.quantity_ordered) - _decimal(line.quantity_received)
-        )
+        shipped = PurchaseShipmentLine.objects.filter(
+            purchase_line=line, purchase_shipment__confirmed_at__isnull=False
+        ).aggregate(total=Sum("quantity_shipped")).get("total") or ZERO
+        remaining = max(ZERO, _decimal(line.quantity_ordered) - _decimal(line.quantity_received) - _decimal(shipped))
         if remaining:
             remaining_by_purchase[line.purchase_order_id] += remaining
             expected_by_purchase[line.purchase_order_id] = getattr(
                 line.purchase_order, "expected_at", None
             )
-    purchase_in_transit = sum(remaining_by_purchase.values(), ZERO)
+    purchase_pending = sum(remaining_by_purchase.values(), ZERO)
+    purchase_in_transit = _decimal(getattr(balance, "in_transit", ZERO))
     transfer_in_transit = sum(
         StockTransferLine.objects.filter(
             transfer__organization=organization,
@@ -477,7 +480,7 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
         ).values_list("quantity", flat=True),
         ZERO,
     )
-    in_transit = purchase_in_transit + transfer_in_transit
+    in_transit = purchase_in_transit if purchase_in_transit else transfer_in_transit
     expected_dates = [
         value for value in expected_by_purchase.values() if value is not None
     ]
@@ -487,7 +490,7 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
         reserved=_quantity(reserved),
         available=_quantity(available),
         in_transit=_quantity(in_transit),
-        inventory_position=_quantity(available + in_transit),
+        inventory_position=_quantity(available + purchase_pending + in_transit),
         open_purchase_count=len(remaining_by_purchase),
         next_expected_at=min(expected_dates) if expected_dates else None,
     )
@@ -501,6 +504,8 @@ class ReplenishmentPolicy:
     moq: Decimal = ZERO
     pack_size: Decimal = Decimal("1")
     manual_lead_days: Decimal = Decimal("14")
+    coverage_days: Decimal | None = None
+    replenishment_enabled: bool = True
     safety_stock_units: Decimal | None = None
     service_level_factor: Decimal = Decimal("1.65")
     safety_margin_ratio: Decimal = ZERO
@@ -575,6 +580,7 @@ def calculate_replenishment(
     safety_days = _nonnegative("safety_days", _decimal(policy.safety_days))
     review_days = _nonnegative("review_cycle_days", _decimal(policy.review_cycle_days))
     target_days = _nonnegative("target_days", _decimal(policy.target_days))
+    coverage_days = _nonnegative("coverage_days", _decimal(policy.coverage_days, target_days))
     moq = _nonnegative("moq", _decimal(policy.moq))
     pack_size = _decimal(policy.pack_size)
     if pack_size <= 0:
@@ -598,10 +604,10 @@ def calculate_replenishment(
     initial_safety = initial_reference if demand.shipment_count < policy.initial_reference_shipment_count else ZERO
     safety_units = max(day_based_safety, volatility_safety, manual_safety, initial_safety)
 
-    effective_target_days = max(target_days, review_days)
+    effective_target_days = coverage_days
     volatility_ratio = demand.daily_stddev / velocity if velocity > ZERO else ZERO
     effective_margin_ratio = min(Decimal("1"), max(configured_margin_ratio, volatility_ratio))
-    reorder_demand = velocity * (lead_days + review_days)
+    reorder_demand = velocity * (lead_days + coverage_days)
     reorder_margin = reorder_demand * effective_margin_ratio
     target_demand = velocity * (lead_days + effective_target_days)
     safety_margin_units = target_demand * effective_margin_ratio
@@ -702,6 +708,7 @@ def build_replenishment_forecast(
         route=route,
         route_resolver=route_resolver,
         manual_lead_days=policy.manual_lead_days,
+        manual_is_final=True,
         as_of=current_time,
     )
     demand = estimate_demand_velocity(
@@ -720,6 +727,8 @@ def build_replenishment_forecast(
         safety_days=policy.safety_days,
         review_cycle_days=policy.review_cycle_days,
         target_days=policy.target_days,
+        coverage_days=policy.coverage_days,
+        replenishment_enabled=policy.replenishment_enabled,
         moq=policy.moq,
         pack_size=policy.pack_size,
         manual_lead_days=policy.manual_lead_days,

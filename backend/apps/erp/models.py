@@ -113,6 +113,8 @@ class OrganizationScopedModel(TimeStampedModel):
 
 
 class Warehouse(OrganizationScopedModel):
+    default_lead_time_days = models.PositiveIntegerField(null=True, blank=True)
+    default_coverage_days = models.PositiveIntegerField(null=True, blank=True)
     class Type(models.TextChoices):
         OVERSEAS = "overseas", "海外仓"
         FORWARDER = "forwarder", "货代仓"
@@ -196,16 +198,21 @@ class SKU(OrganizationScopedModel):
 
 
 class OwnStore(OrganizationScopedModel):
-    name = models.CharField(max_length=160, unique=True)
+    name = models.CharField(max_length=160)
+    platform_code = models.CharField(max_length=40, default="tiktok_shop")
+    custom_platform_name = models.CharField(max_length=120, blank=True)
     platform = models.CharField(max_length=80, default="TikTok Shop")
-    market = models.CharField(max_length=80, default="马来西亚")
+    market = models.CharField(max_length=80, blank=True, default="")
     is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["name", "id"]
+        constraints = [models.UniqueConstraint(fields=["organization", "name"], name="uniq_org_own_store_name")]
 
 
 class StoreProduct(OrganizationScopedModel):
+    external_sku_code = models.CharField(max_length=160, blank=True)
+    external_listing_id = models.CharField(max_length=200, blank=True)
     store = models.ForeignKey(OwnStore, on_delete=models.PROTECT, related_name="store_products")
     sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="store_products")
     sale_price_myr = models.DecimalField(max_digits=14, decimal_places=2)
@@ -216,6 +223,7 @@ class StoreProduct(OrganizationScopedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["store", "sku"], name="uniq_store_sku_product"),
+            models.UniqueConstraint(fields=["store", "external_sku_code"], condition=~Q(external_sku_code=""), name="uniq_store_external_sku"),
             models.CheckConstraint(condition=Q(sale_price_myr__gte=0), name="store_product_price_nonnegative"),
         ]
 
@@ -324,7 +332,11 @@ class PurchaseShipment(TimeStampedModel):
     """
 
     purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name="shipments")
-    tracking_number = models.CharField(max_length=120)
+    tracking_number = models.CharField(max_length=120, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="confirmed_purchase_shipments")
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_reason = models.CharField(max_length=240, blank=True)
 
     class Meta:
         constraints = [
@@ -397,6 +409,8 @@ class StockBalance(OrganizationScopedModel):
     sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="stock_balances")
     on_hand = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
     reserved = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    purchased_pending_shipment = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    in_transit = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
 
     class Meta:
         constraints = [
@@ -419,6 +433,8 @@ class ReplenishmentPolicy(OrganizationScopedModel):
         SKU, on_delete=models.PROTECT, related_name="replenishment_policies", verbose_name="库存单位（SKU）"
     )
     lead_time_override = models.PositiveIntegerField("补货提前期（天）", null=True, blank=True)
+    replenishment_enabled = models.BooleanField(default=True)
+    coverage_days = models.PositiveIntegerField(null=True, blank=True)
     review_cycle_days = models.PositiveIntegerField("复核周期（天）", default=7)
     target_days = models.PositiveIntegerField("目标覆盖天数", default=30)
     min_order_qty = models.DecimalField(
@@ -524,6 +540,36 @@ class ReplenishmentAIJob(OrganizationScopedModel):
         ]
 
 
+class ReplenishmentRecommendation(OrganizationScopedModel):
+    class Status(models.TextChoices):
+        SUGGESTED = "suggested", "系统建议"
+        CONFIRMED = "confirmed", "已确认"
+        PARTIALLY_CONVERTED = "partially_converted", "部分转采购"
+        CONVERTED = "converted", "已转采购"
+        CLOSED = "closed", "已关闭"
+
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="replenishment_recommendations")
+    sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="replenishment_recommendations")
+    calculated_at = models.DateTimeField()
+    calculation_version = models.CharField(max_length=40, default="v1")
+    system_suggested_quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    user_confirmed_quantity = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
+    converted_purchase_quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    adjusted_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="adjusted_replenishment_recommendations")
+    adjusted_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.SUGGESTED)
+    reasons = models.JSONField(default=list, blank=True)
+    snapshot = models.JSONField(default=dict, blank=True)
+    conversion_idempotency_key = models.CharField(max_length=160, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=Q(system_suggested_quantity__gte=0), name="recommendation_system_nonnegative"),
+            models.CheckConstraint(condition=Q(converted_purchase_quantity__gte=0), name="recommendation_converted_nonnegative"),
+            models.UniqueConstraint(fields=["organization", "conversion_idempotency_key"], condition=~Q(conversion_idempotency_key=""), name="uniq_recommendation_conversion_idem"),
+        ]
+
+
 class StockLedger(OrganizationScopedModel):
     class Type(models.TextChoices):
         RECEIPT = "receipt", "采购收货"
@@ -610,6 +656,7 @@ class StockTransfer(OrganizationScopedModel):
         PARTIALLY_RECEIVED = "partially_received", "部分收货"
         RECEIVED = "received", "已收货"
         CANCELLED = "cancelled", "已取消"
+        COMPLETED_WITH_EXCEPTION = "completed_with_exception", "已完成（有异常）"
 
     number = models.CharField("调拨单号", max_length=60)
     source_warehouse = models.ForeignKey(
@@ -618,9 +665,10 @@ class StockTransfer(OrganizationScopedModel):
     destination_warehouse = models.ForeignKey(
         Warehouse, on_delete=models.PROTECT, related_name="inbound_transfers", verbose_name="调入仓库"
     )
-    status = models.CharField("状态", max_length=20, choices=Status.choices, default=Status.DRAFT)
+    status = models.CharField("状态", max_length=32, choices=Status.choices, default=Status.DRAFT)
     notes = models.TextField("备注", blank=True)
     dispatch_idempotency_key = models.CharField("发出幂等键", max_length=120, blank=True)
+    exception_reason = models.CharField(max_length=240, blank=True)
     receive_idempotency_key = models.CharField("收货幂等键", max_length=120, blank=True)
     dispatched_at = models.DateTimeField("发出时间", null=True, blank=True)
     dispatched_by = models.ForeignKey(
@@ -725,6 +773,21 @@ class StockTransferLine(TimeStampedModel):
         return super().save(*args, **kwargs)
 
 
+class StockTransferPackage(OrganizationScopedModel):
+    transfer = models.ForeignKey(StockTransfer, on_delete=models.CASCADE, related_name="packages")
+    tracking_number = models.CharField(max_length=120, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+
+class StockTransferPackageLine(TimeStampedModel):
+    package = models.ForeignKey(StockTransferPackage, on_delete=models.CASCADE, related_name="lines")
+    sku = models.ForeignKey(SKU, on_delete=models.PROTECT)
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["package", "sku"], name="uniq_transfer_package_sku")]
+
+
 class StockTransferReceipt(OrganizationScopedModel):
     """Immutable receipt event for partial stock-transfer receiving."""
 
@@ -739,6 +802,20 @@ class StockTransferReceipt(OrganizationScopedModel):
         ]
 
 
+class PurchaseShipmentPackage(TimeStampedModel):
+    shipment = models.ForeignKey(PurchaseShipment, on_delete=models.CASCADE, related_name="packages")
+    tracking_number = models.CharField(max_length=120, blank=True)
+
+
+class PurchaseShipmentPackageLine(TimeStampedModel):
+    package = models.ForeignKey(PurchaseShipmentPackage, on_delete=models.CASCADE, related_name="lines")
+    purchase_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT, related_name="package_lines")
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["package", "purchase_line"], name="uniq_purchase_package_line")]
+
+
 class SalesOrder(OrganizationScopedModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "草稿"
@@ -750,7 +827,7 @@ class SalesOrder(OrganizationScopedModel):
         CANCELLED = "cancelled", "已取消"
 
     number = models.CharField(max_length=60)
-    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="sales_orders")
+    warehouse = models.ForeignKey(Warehouse, null=True, blank=True, on_delete=models.PROTECT, related_name="sales_orders")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     platform = models.CharField(max_length=40, blank=True)
     store = models.CharField(max_length=120, blank=True)
@@ -768,7 +845,9 @@ class SalesOrder(OrganizationScopedModel):
 
 class SalesOrderLine(TimeStampedModel):
     order = models.ForeignKey(SalesOrder, on_delete=models.CASCADE, related_name="lines")
-    sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="order_lines")
+    sku = models.ForeignKey(SKU, null=True, blank=True, on_delete=models.PROTECT, related_name="order_lines")
+    external_sku_code = models.CharField(max_length=160, blank=True)
+    external_listing_id = models.CharField(max_length=200, blank=True)
     quantity = models.DecimalField(max_digits=14, decimal_places=3)
     quantity_reserved = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
     quantity_shipped = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
@@ -1066,6 +1145,7 @@ class TikTokShopConnection(OrganizationScopedModel):
     authorized_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
     authorized_at = models.DateTimeField(null=True, blank=True)
     disconnected_at = models.DateTimeField(null=True, blank=True)
+    store = models.ForeignKey(OwnStore, null=True, blank=True, on_delete=models.PROTECT, related_name="tiktok_connections")
 
     class Meta:
         verbose_name = "TikTok Shop 授权店铺"

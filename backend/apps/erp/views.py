@@ -29,7 +29,7 @@ from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, ExchangeRateSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge, OwnStore, ProfitCalculationStrategy,
     LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
-    SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
+    SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, ReplenishmentRecommendation, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
 from .owner_security import consume_challenge, create_challenge, email_verification_enabled
 from .permissions import (
@@ -46,7 +46,7 @@ from .serializers import (
     ConfirmAndShipInputSerializer, LocalImportSerializer, OrganizationSerializer,
     ProductImageSerializer, ProductSerializer, QuickSalesSnapshotInputSerializer, UploadedMediaAssetSerializer,
     PurchaseOrderEditInputSerializer, PurchaseOrderSerializer, ReceiptSerializer, ReceiveInputSerializer,
-    ReplenishmentPolicySerializer, ReplenishmentRecommendationQuerySerializer, ReplenishmentSettingsSerializer,
+    ReplenishmentPolicySerializer, ReplenishmentRecommendationQuerySerializer, ReplenishmentSettingsSerializer, ReplenishmentRecommendationSerializer,
     ReturnOrderSerializer, ReturnReceiveInputSerializer, SalesOrderSerializer,
     ShipmentSerializer, ShipInputSerializer, SKUSerializer, StockBalanceSerializer,
     StockLedgerReversalInputSerializer, StockLedgerSerializer, StockTransferSerializer, SupplierSerializer,
@@ -58,7 +58,7 @@ from . import alphashop, integrations
 from .services import (
     adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
     confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
-    dispatch_stock_transfer, edit_purchase, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger,
+    dispatch_stock_transfer, edit_purchase, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger, reserve_stock_transfer_draft,
     reject_return, ship_order, start_picking, submit_purchase, verify_order, write_audit,
 )
 from .local_imports import commit_local_import, validate_local_import
@@ -798,7 +798,8 @@ def replenishment_recommendations(request):
         safety_days=settings.safety_days,
         review_cycle_days=Decimal(settings.review_cycle_days),
         target_days=Decimal(settings.target_days),
-        manual_lead_days=Decimal(settings.default_lead_time_days),
+        manual_lead_days=Decimal(warehouse.default_lead_time_days or 0),
+        coverage_days=Decimal(warehouse.default_coverage_days) if warehouse.default_coverage_days is not None else None,
         service_level_factor=settings.service_level_factor,
         safety_margin_ratio=settings.safety_margin_ratio,
         initial_reference_shipment_count=settings.initial_reference_shipment_count,
@@ -812,18 +813,24 @@ def replenishment_recommendations(request):
     ).select_related("product", "product__default_supplier").order_by("code", "id")
     for sku in skus:
         stored_policy = policies.get(sku.pk)
+        if stored_policy is not None and not stored_policy.replenishment_enabled:
+            continue
+        lead_value = stored_policy.lead_time_override if stored_policy and stored_policy.lead_time_override is not None else warehouse.default_lead_time_days
+        coverage_value = stored_policy.coverage_days if stored_policy and stored_policy.coverage_days is not None else warehouse.default_coverage_days
+        if lead_value is None or coverage_value is None:
+            recommendations.append({"warehouse": str(warehouse.pk), "sku": str(sku.pk), "sku_code": sku.code, "status": "missing_parameters", "reason": "缺少补货参数，请先配置仓库默认值或 SKU 单独参数"})
+            continue
         forecast_policy = default_policy
         if stored_policy is not None:
             forecast_policy = ForecastPolicy(
                 safety_days=default_policy.safety_days,
                 review_cycle_days=Decimal(stored_policy.review_cycle_days),
                 target_days=Decimal(stored_policy.target_days),
+                coverage_days=Decimal(coverage_value),
                 moq=stored_policy.min_order_qty,
                 pack_size=stored_policy.pack_size,
                 manual_lead_days=(
-                    Decimal(stored_policy.lead_time_override)
-                    if stored_policy.lead_time_override is not None
-                    else default_policy.manual_lead_days
+                    Decimal(lead_value)
                 ),
                 safety_stock_units=stored_policy.safety_stock_override,
                 service_level_factor=settings.service_level_factor,
@@ -866,7 +873,7 @@ def replenishment_batch_policy(request):
     warehouse_id = payload.get("warehouse")
     sku_ids = list(dict.fromkeys(str(value) for value in (payload.get("sku_ids") or []) if value))
     fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
-    allowed = {"lead_time_override", "review_cycle_days", "target_days", "min_order_qty", "pack_size", "safety_stock_override"}
+    allowed = {"lead_time_override", "coverage_days", "replenishment_enabled", "review_cycle_days", "target_days", "min_order_qty", "pack_size", "safety_stock_override"}
     fields = {key: value for key, value in fields.items() if key in allowed}
     if not warehouse_id or not sku_ids or not fields:
         raise ValidationError("请选择仓库、至少一个 SKU 和至少一个需要修改的参数")
@@ -876,7 +883,7 @@ def replenishment_batch_policy(request):
     skus = list(SKU.objects.filter(pk__in=sku_ids, organization=organization, active=True, product__status=Product.Status.ACTIVE))
     if len(skus) != len(sku_ids):
         raise ValidationError({"sku_ids": "包含无效或不属于当前组织的 SKU"})
-    integer_fields = {"lead_time_override", "review_cycle_days", "target_days"}
+    integer_fields = {"lead_time_override", "coverage_days", "review_cycle_days", "target_days"}
     decimal_fields = {"min_order_qty", "pack_size", "safety_stock_override"}
     cleaned = {}
     for key, value in fields.items():
@@ -1832,12 +1839,66 @@ class ReplenishmentSettingsViewSet(OrganizationScopedViewSet):
         return super().create(request, *args, **kwargs)
 
 
+class ReplenishmentRecommendationViewSet(OrganizationScopedViewSet):
+    queryset = ReplenishmentRecommendation.objects.select_related("warehouse", "sku").order_by("-calculated_at", "id")
+    serializer_class = ReplenishmentRecommendationSerializer
+    capability = "replenishment"
+
+    @action(detail=True, methods=["post"], url_path="confirm")
+    @transaction.atomic
+    def confirm(self, request, pk=None):
+        item = self.get_queryset().select_for_update().get(pk=pk)
+        quantity = request.data.get("quantity", item.user_confirmed_quantity or item.system_suggested_quantity)
+        try:
+            quantity = Decimal(str(quantity))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValidationError({"quantity": "请输入有效数量"}) from exc
+        if quantity < 0:
+            raise ValidationError({"quantity": "数量不能为负数"})
+        before = {"status": item.status, "user_confirmed_quantity": str(item.user_confirmed_quantity or "")}
+        item.user_confirmed_quantity = quantity
+        item.adjusted_by = request.user
+        item.adjusted_at = timezone.now()
+        item.status = ReplenishmentRecommendation.Status.CONFIRMED
+        item.save(update_fields=["user_confirmed_quantity", "adjusted_by", "adjusted_at", "status", "updated_at"])
+        write_audit(organization=item.organization, actor=request.user, action="replenishment.recommendation.adjust", instance=item, before=before, after={"quantity": str(quantity)})
+        return Response(self.get_serializer(item).data)
+
+    @action(detail=True, methods=["post"], url_path="convert")
+    @transaction.atomic
+    def convert(self, request, pk=None):
+        item = self.get_queryset().select_for_update().get(pk=pk)
+        idem = str(request.data.get("idempotency_key", "")).strip()
+        if not idem:
+            raise ValidationError({"idempotency_key": "不能为空"})
+        if item.conversion_idempotency_key:
+            if item.conversion_idempotency_key == idem:
+                return Response(self.get_serializer(item).data)
+            raise ValidationError("该建议已使用其它幂等键")
+        quantity = item.user_confirmed_quantity if item.user_confirmed_quantity is not None else item.system_suggested_quantity
+        remaining = quantity - item.converted_purchase_quantity
+        requested = Decimal(str(request.data.get("quantity", remaining)))
+        if requested <= 0 or requested > remaining:
+            raise ValidationError({"quantity": "转采购数量超过剩余可转数量"})
+        item.converted_purchase_quantity += requested
+        item.conversion_idempotency_key = idem
+        item.status = ReplenishmentRecommendation.Status.CONVERTED if item.converted_purchase_quantity >= quantity else ReplenishmentRecommendation.Status.PARTIALLY_CONVERTED
+        item.save(update_fields=["converted_purchase_quantity", "conversion_idempotency_key", "status", "updated_at"])
+        write_audit(organization=item.organization, actor=request.user, action="replenishment.recommendation.convert", instance=item, after={"quantity": str(requested), "remaining": str(quantity - item.converted_purchase_quantity)})
+        return Response(self.get_serializer(item).data)
+
+
 class StockTransferViewSet(OrganizationScopedViewSet):
     queryset = StockTransfer.objects.select_related(
         "source_warehouse", "destination_warehouse", "dispatched_by", "received_by"
     ).prefetch_related("lines").order_by("-created_at", "id")
     serializer_class = StockTransferSerializer
     capability = "warehouse"
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        reserve_stock_transfer_draft(transfer=serializer.instance, actor=self.request.user)
 
     @action(detail=True, methods=["post"], url_path="dispatch")
     def dispatch_transfer(self, request, pk=None):
@@ -2213,6 +2274,37 @@ class TikTokShopConnectionViewSet(mixins.ListModelMixin, mixins.RetrieveModelMix
 
     def get_queryset(self):
         return self.queryset.filter(organization=self.organization or request_organization(self.request))
+
+    @action(detail=True, methods=["post"], url_path="bind-store")
+    @transaction.atomic
+    def bind_store(self, request, pk=None):
+        connection = self.get_object()
+        store = OwnStore.objects.select_for_update().filter(
+            pk=request.data.get("store"), organization=connection.organization
+        ).first()
+        if store is None:
+            raise ValidationError({"store": "店铺不存在或不属于当前组织"})
+        if store.market and connection.region and store.market.upper() != connection.region.upper():
+            raise ValidationError({"store": "店铺市场与 TikTok 授权市场不一致"})
+        existing = TikTokShopConnection.objects.select_for_update().filter(
+            organization=connection.organization, store=store,
+            status=TikTokShopConnection.Status.CONNECTED,
+        ).exclude(pk=connection.pk).first()
+        if existing:
+            raise ValidationError({"store": "该 ERP 店铺已有有效授权"})
+        remote = TikTokShopConnection.objects.filter(
+            organization=connection.organization, shop_id=connection.shop_id,
+            status=TikTokShopConnection.Status.CONNECTED,
+        ).exclude(pk=connection.pk).first()
+        if remote:
+            raise ValidationError({"shop_id": "该远端店铺已绑定其它 ERP 店铺"})
+        connection.store = store
+        if not store.market and connection.region:
+            store.market = connection.region
+            store.save(update_fields=["market", "updated_at"])
+        connection.save(update_fields=["store", "updated_at"])
+        write_audit(organization=connection.organization, actor=request.user, action="tiktok.connection.bind_store", instance=connection, after={"store_id": str(store.pk), "shop_id": connection.shop_id})
+        return Response(self.get_serializer(connection).data)
 
     @action(detail=False, methods=["post"], url_path="authorize")
     def authorize(self, request):

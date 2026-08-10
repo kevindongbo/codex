@@ -13,9 +13,9 @@ from rest_framework import serializers
 from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, CompetitorSellerGroup, CompetitorSellerSnapshot, LocalImport, Membership, Organization, OwnStore,
     Product, ProductImage, ProfitCalculationStrategy, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReceiptLine,
-    ReplenishmentPolicy, ReplenishmentSettings,
+    ReplenishmentPolicy, ReplenishmentSettings, ReplenishmentRecommendation,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
-    SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, StockTransferLine, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
+    SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, StockTransferLine, StockTransferPackage, StockTransferPackageLine, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
 from .permissions import PERMISSION_CATALOG, request_organization
 from .secure_config import encrypt_secret
@@ -368,7 +368,7 @@ class PurchaseShipmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseShipment
-        fields = ["id", "tracking_number", "lines", "created_at", "updated_at"]
+        fields = ["id", "tracking_number", "confirmed_at", "confirmed_by", "closed_at", "closed_reason", "lines", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
@@ -450,8 +450,6 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
                 code=f"SUP-{uuid.uuid4().hex[:8].upper()}",
                 name="待完善供应商",
             )
-        if not validated_data.get("warehouse"):
-            validated_data["warehouse"] = _draft_warehouse(organization)
         if not str(validated_data.get("number", "")).strip():
             validated_data["number"] = f"PO-DRAFT-{uuid.uuid4().hex[:10].upper()}"
         purchase_order = PurchaseOrder.objects.create(**validated_data)
@@ -581,37 +579,12 @@ class ReceiveInputSerializer(OrganizationValidationMixin, serializers.Serializer
 
 class StockBalanceSerializer(ScopedSerializer):
     available = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
-    in_transit = serializers.SerializerMethodField()
-
-    def get_in_transit(self, balance):
-        lines = PurchaseOrderLine.objects.filter(
-            sku=balance.sku,
-            purchase_order__organization=balance.organization,
-            purchase_order__warehouse=balance.warehouse,
-            purchase_order__status__in=[
-                PurchaseOrder.Status.SUBMITTED,
-                PurchaseOrder.Status.PARTIAL,
-            ],
-        )
-        purchase_in_transit = sum(
-            (line.quantity_ordered - line.quantity_received for line in lines),
-            Decimal("0"),
-        )
-        transfer_in_transit = sum(
-            StockTransferLine.objects.filter(
-                sku=balance.sku,
-                transfer__organization=balance.organization,
-                transfer__destination_warehouse=balance.warehouse,
-                transfer__status=StockTransfer.Status.IN_TRANSIT,
-            ).values_list("quantity", flat=True),
-            Decimal("0"),
-        )
-        return purchase_in_transit + transfer_in_transit
+    in_transit = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
 
     class Meta(ScopedSerializer.Meta):
         model = StockBalance
         fields = "__all__"
-        read_only_fields = ScopedSerializer.Meta.read_only_fields + ["on_hand", "reserved"]
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + ["on_hand", "reserved", "purchased_pending_shipment", "in_transit"]
 
 
 class StockLedgerSerializer(ScopedSerializer):
@@ -1355,13 +1328,34 @@ class CompetitorProductSerializer(OrganizationValidationMixin, ScopedSerializer)
 
 
 class OwnStoreSerializer(ScopedSerializer):
+    def validate(self, attrs):
+        organization = _context_organization(self)
+        name = attrs.get("name", getattr(self.instance, "name", ""))
+        qs = OwnStore.objects.filter(organization=organization, name=name)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError({"name": "同一组织内店铺名称必须唯一"})
+        if attrs.get("platform_code") == "other" and not attrs.get("custom_platform_name", getattr(self.instance, "custom_platform_name", "")):
+            raise serializers.ValidationError({"custom_platform_name": "Other 平台必须填写自定义名称"})
+        return attrs
+
     class Meta(ScopedSerializer.Meta):
         model = OwnStore
         fields = "__all__"
 
 
+class ReplenishmentRecommendationSerializer(ScopedSerializer):
+    class Meta(ScopedSerializer.Meta):
+        model = ReplenishmentRecommendation
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + ["organization", "calculated_at", "converted_purchase_quantity"]
+
+
 class StoreProductSerializer(OrganizationValidationMixin, ScopedSerializer):
     store_name = serializers.CharField(source="store.name", read_only=True)
+    external_sku_code = serializers.CharField(required=False, allow_blank=True, default="")
+    external_listing_id = serializers.CharField(required=False, allow_blank=True, default="")
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1376,6 +1370,7 @@ class StoreProductSerializer(OrganizationValidationMixin, ScopedSerializer):
     class Meta(ScopedSerializer.Meta):
         model = StoreProduct
         fields = "__all__"
+        extra_kwargs = {"external_sku_code": {"required": False, "allow_blank": True}, "external_listing_id": {"required": False, "allow_blank": True}}
 
 
 class CompetitorSnapshotSerializer(OrganizationValidationMixin, serializers.ModelSerializer):

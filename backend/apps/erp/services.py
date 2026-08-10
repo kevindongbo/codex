@@ -98,7 +98,7 @@ def write_audit(*, organization, actor, action, instance, before=None, after=Non
 @transaction.atomic
 def post_stock(
     *, organization, warehouse, sku, event_type, on_hand_delta=0, reserved_delta=0,
-    reference_type, reference_id, idempotency_key, actor=None, reason="",
+    pending_delta=0, in_transit_delta=0, reference_type, reference_id, idempotency_key, actor=None, reason="",
 ):
     """Atomically update the balance and append one immutable ledger row."""
     _validate_warehouse_and_sku(organization, warehouse, sku)
@@ -138,9 +138,15 @@ def post_stock(
     if new_reserved > new_on_hand:
         raise ValidationError(f"SKU {sku.code} 可用库存不足")
 
+    pending = balance.purchased_pending_shipment + _decimal(pending_delta)
+    transit = balance.in_transit + _decimal(in_transit_delta)
+    if pending < 0 or transit < 0:
+        raise ValidationError("在途或待发货数量不足")
     balance.on_hand = new_on_hand
     balance.reserved = new_reserved
-    balance.save(update_fields=["on_hand", "reserved", "updated_at"])
+    balance.purchased_pending_shipment = pending
+    balance.in_transit = transit
+    balance.save(update_fields=["on_hand", "reserved", "purchased_pending_shipment", "in_transit", "updated_at"])
     return StockLedger.objects.create(
         organization=organization,
         warehouse=warehouse,
@@ -156,6 +162,26 @@ def post_stock(
         actor=actor if getattr(actor, "is_authenticated", False) else None,
         reason=reason,
     )
+
+
+@transaction.atomic
+def reserve_stock_transfer_draft(*, transfer, actor=None):
+    transfer = StockTransfer.objects.select_for_update().get(pk=transfer.pk)
+    if transfer.status != StockTransfer.Status.DRAFT:
+        raise ValidationError("只有草稿调拨可以预占库存")
+    for line in transfer.lines.select_for_update().select_related("sku__product"):
+        source_balance = StockBalance.objects.select_for_update().get(
+            organization=transfer.organization, warehouse=transfer.source_warehouse, sku=line.sku
+        )
+        reserved_release = min(line.quantity, source_balance.reserved)
+        post_stock(
+            organization=transfer.organization, warehouse=transfer.source_warehouse, sku=line.sku,
+            event_type=StockLedger.Type.RESERVE, reserved_delta=line.quantity,
+            reference_type="stock_transfer_line", reference_id=line.pk,
+            idempotency_key=f"transfer-reserve:{transfer.pk}:{line.pk}", actor=actor,
+        )
+    write_audit(organization=transfer.organization, actor=actor, action="stock_transfer.reserve", instance=transfer, after={"line_count": transfer.lines.count()})
+    return transfer
 
 
 @transaction.atomic
@@ -208,18 +234,29 @@ def dispatch_stock_transfer(*, transfer, idempotency_key, actor=None):
             sku=line.sku,
             defaults={"on_hand": Decimal("0"), "reserved": Decimal("0")},
         )
+        source_balance = StockBalance.objects.select_for_update().get(
+            organization=transfer.organization, warehouse=transfer.source_warehouse, sku=line.sku
+        )
+        reserved_release = min(Decimal(line.quantity), Decimal(source_balance.reserved or 0))
         post_stock(
             organization=transfer.organization,
             warehouse=transfer.source_warehouse,
             sku=line.sku,
             event_type=StockLedger.Type.TRANSFER_OUT,
             on_hand_delta=-line.quantity,
+            reserved_delta=-reserved_release,
             reference_type="stock_transfer_line",
             reference_id=line.pk,
             idempotency_key=f"transfer-out:{transfer.pk}:{line.pk}",
             actor=actor,
             reason=f"调拨至 {transfer.destination_warehouse.name}",
         )
+    for line in lines:
+        destination_balance = StockBalance.objects.select_for_update().get(
+            organization=transfer.organization, warehouse=transfer.destination_warehouse, sku=line.sku
+        )
+        destination_balance.in_transit += line.quantity
+        destination_balance.save(update_fields=["in_transit", "updated_at"])
     transfer.status = StockTransfer.Status.IN_TRANSIT
     transfer.dispatch_idempotency_key = idempotency_key
     transfer.dispatched_at = timezone.now()
@@ -296,6 +333,11 @@ def receive_stock_transfer(*, transfer, idempotency_key, quantities=None, actor=
             actor=actor,
             reason=f"从 {transfer.source_warehouse.name} 调拨收货",
         )
+        destination_balance = StockBalance.objects.select_for_update().get(
+            organization=transfer.organization, warehouse=transfer.destination_warehouse, sku=line.sku
+        )
+        destination_balance.in_transit = max(Decimal("0"), destination_balance.in_transit - quantity)
+        destination_balance.save(update_fields=["in_transit", "updated_at"])
         line.received_quantity += quantity
         line.save(update_fields=["received_quantity", "updated_at"])
         received_event[str(line.pk)] = str(quantity)
@@ -335,14 +377,13 @@ def cancel_stock_transfer(*, transfer, actor=None):
     )
     if transfer.status == StockTransfer.Status.CANCELLED:
         return transfer
-    if transfer.status in {StockTransfer.Status.RECEIVED, StockTransfer.Status.PARTIALLY_RECEIVED}:
+    if transfer.status in {StockTransfer.Status.RECEIVED, StockTransfer.Status.PARTIALLY_RECEIVED, StockTransfer.Status.IN_TRANSIT}:
         raise ValidationError("已收货调拨单不能取消")
     if transfer.status not in {
         StockTransfer.Status.DRAFT,
-        StockTransfer.Status.IN_TRANSIT,
     }:
         raise ValidationError("当前调拨状态不能取消")
-    restored = transfer.status == StockTransfer.Status.IN_TRANSIT
+    restored = False
     if restored:
         lines = list(
             StockTransferLine.objects.select_for_update()
@@ -367,6 +408,14 @@ def cancel_stock_transfer(*, transfer, actor=None):
                 idempotency_key=f"transfer-cancel:{transfer.pk}:{line.pk}",
                 actor=actor,
                 reason=f"撤回前往 {transfer.destination_warehouse.name} 的调拨",
+            )
+    if transfer.status == StockTransfer.Status.DRAFT:
+        for line in transfer.lines.select_for_update().select_related("sku"):
+            post_stock(
+                organization=transfer.organization, warehouse=transfer.source_warehouse, sku=line.sku,
+                event_type=StockLedger.Type.RELEASE, reserved_delta=-line.quantity,
+                reference_type="stock_transfer_line", reference_id=line.pk,
+                idempotency_key=f"transfer-release:{transfer.pk}:{line.pk}", actor=actor,
             )
     transfer.status = StockTransfer.Status.CANCELLED
     transfer.save(update_fields=["status", "updated_at"])
@@ -537,6 +586,15 @@ def submit_purchase(*, purchase_order, actor=None):
             sku=line.sku,
             defaults={"on_hand": Decimal("0"), "reserved": Decimal("0")},
         )
+        pending = max(Decimal("0"), Decimal(line.quantity_ordered) - Decimal(line.quantity_received or 0))
+        if pending:
+            post_stock(
+                organization=purchase_order.organization, warehouse=purchase_order.warehouse,
+                sku=line.sku, event_type=StockLedger.Type.RECEIPT,
+                pending_delta=pending, reference_type="purchase_order", reference_id=purchase_order.pk,
+                idempotency_key=f"purchase-pending:{purchase_order.pk}:{line.pk}", actor=actor,
+                reason="采购单提交，计入待发货采购",
+            )
     purchase_order.status = PurchaseOrder.Status.SUBMITTED
     purchase_order.ordered_at = purchase_order.ordered_at or timezone.now()
     purchase_order.save(update_fields=["status", "ordered_at", "updated_at"])
@@ -1015,6 +1073,8 @@ def verify_order(*, order, actor=None):
 @transaction.atomic
 def allocate_order(*, order, idempotency_key, actor=None):
     order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(pk=order.pk)
+    if order.warehouse_id is None:
+        raise ValidationError("请先人工选择仓库后再锁定库存")
     _assert_organization(order.organization, warehouse=order.warehouse)
     if order.status == SalesOrder.Status.ALLOCATED:
         lines = list(order.lines.select_for_update())

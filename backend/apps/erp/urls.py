@@ -25,6 +25,7 @@ router.register(
     basename="replenishment-policy",
 )
 router.register("replenishment-settings", views.ReplenishmentSettingsViewSet, basename="replenishment-settings")
+router.register("replenishment-recommendations", views.ReplenishmentRecommendationViewSet, basename="replenishment-recommendation")
 router.register("orders", views.SalesOrderViewSet, basename="order")
 router.register("shipments", views.ShipmentViewSet, basename="shipment")
 router.register("returns", views.ReturnOrderViewSet, basename="return")
