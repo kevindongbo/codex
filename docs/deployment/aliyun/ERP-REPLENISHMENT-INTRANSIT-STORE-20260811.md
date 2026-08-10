@@ -3,8 +3,8 @@
 本次仅完成代码与迁移，Codex 未连接阿里云、未执行生产部署。以下事实来自仓库与需求交接文件。
 
 - 实施分支：`codex/implement-erp-replenishment-intransit-store-20260811`
-- 最终 SHA：待提交后填写（不得使用移动分支或 `latest`）
-- Draft PR：待推送后填写
+- 最终 SHA：`709694d5d30c8e36ce8a5fbbd62b6a9b6f1c0d21`
+- Draft PR：[#12](https://github.com/kevindongbo/codex/pull/12)
 - 新增迁移：`backend/apps/erp/migrations/0028_replenishment_intransit_store.py`、`0029_sales_order_external_sku.py`
 - `0028` 包含数据迁移：仓库默认周期回填、策略 coverage 回填、历史采购批次确认标记、旧调拨在途余额及兼容包回填。
 - 数据迁移可能不可逆；回滚前必须保留 PostgreSQL 备份，不建议直接 reverse migration。
