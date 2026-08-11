@@ -462,14 +462,14 @@ class InventoryServiceTests(TestCase):
         dispatch_stock_transfer(
             transfer=cancellable, idempotency_key="dispatch-cancel", actor=self.user
         )
-        cancel_stock_transfer(transfer=cancellable, actor=self.user)
-        cancel_stock_transfer(transfer=cancellable, actor=self.user)
+        with self.assertRaises(ValidationError):
+            cancel_stock_transfer(transfer=cancellable, actor=self.user)
         cancellable.refresh_from_db()
         source_balance.refresh_from_db()
-        self.assertEqual(cancellable.status, StockTransfer.Status.CANCELLED)
-        self.assertEqual(source_balance.on_hand, Decimal("6"))
+        self.assertEqual(cancellable.status, StockTransfer.Status.IN_TRANSIT)
+        self.assertEqual(source_balance.on_hand, Decimal("4"))
         self.assertEqual(
-            StockLedger.objects.filter(event_type=StockLedger.Type.TRANSFER_CANCEL).count(), 1
+            StockLedger.objects.filter(event_type=StockLedger.Type.TRANSFER_CANCEL).count(), 0
         )
 
     def test_stock_transfer_overdispatch_rolls_back_every_line(self):

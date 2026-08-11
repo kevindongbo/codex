@@ -1898,18 +1898,8 @@ function receiveTransfer(next, transferId) {
 }
 function cancelTransfer(next, transferId) {
   const transfer = next.stockTransfers.find(function (item) { return item.id === transferId; });
-  if (!transfer || !['draft', 'in_transit'].includes(transfer.status)) throw new Error('调拨单当前不能取消。');
+  if (!transfer || transfer.status !== 'draft') throw new Error('调拨发出后不能取消，请通过异常关闭流程处理。');
   const occurredAt = new Date().toISOString();
-  if (transfer.status === 'in_transit') {
-    transfer.lines.forEach(function (line) {
-      addMovement(next, {
-        warehouseId: transfer.sourceWarehouseId, productId: line.productId, type: 'transfer_return',
-        onHandDelta: transferLineQuantity(line), reservedDelta: 0, sourceType: 'stock_transfer',
-        sourceId: transfer.id, sourceLineId: line.id, sourceNumber: transfer.number,
-        occurredAt: occurredAt, note: transfer.note || '取消调拨退回调出仓'
-      });
-    });
-  }
   transfer.status = 'cancelled';
   transfer.updatedAt = occurredAt;
 }
@@ -1942,7 +1932,7 @@ function renderTransfers() {
     const isDestination = String(destinationId) === String(warehouseId);
     if (teamCapabilityAllowed('transfer') && transfer.status === 'draft' && isSource && sourceWarehouse && sourceWarehouse.canShip !== false && sourceWarehouse.can_ship !== false) actions += rowButton('dispatch-transfer', transfer.id, '发出调拨', 'primary');
     if (teamCapabilityAllowed('transfer') && transfer.status === 'in_transit' && isDestination && destinationWarehouse && destinationWarehouse.canReceive !== false && destinationWarehouse.can_receive !== false) actions += rowButton('receive-transfer', transfer.id, '确认调入', 'primary');
-    if (teamCapabilityAllowed('transfer') && ['draft', 'in_transit'].includes(transfer.status) && isSource) actions += rowButton('cancel-transfer', transfer.id, transfer.status === 'draft' ? '取消草稿' : '取消调拨', 'danger');
+    if (teamCapabilityAllowed('transfer') && transfer.status === 'draft' && isSource) actions += rowButton('cancel-transfer', transfer.id, '取消草稿', 'danger');
     if (transfer.status === 'in_transit' && isSource && !actions) actions += '<span class="row-note">等待目标仓收货</span>';
     return '<tr><td><strong>' + escapeHtml(transfer.number) + '</strong></td><td>' + escapeHtml(transferWarehouseName(sourceId)) + '</td><td>' + escapeHtml(transferWarehouseName(destinationId)) + '</td><td>' + lineText + '</td><td>' + total + '</td><td>' + formatDate(transfer.shippedAt || transfer.shipped_at, true) + '</td><td>' + statusPill(TRANSFER_LABELS[transfer.status] || transfer.status, transfer.status) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
   }).join('');
@@ -2118,7 +2108,7 @@ function renderOrders() {
   const warehouse = selectedWarehouse();
   const canShip = Boolean(warehouse && warehouse.canShip !== false && warehouse.can_ship !== false);
   let orders = state.salesOrders.filter(function (order) {
-    if ((order.warehouseId || DEFAULT_WAREHOUSE_ID) !== warehouseId) return false;
+    if (order.warehouseId && order.warehouseId !== warehouseId) return false;
     if (orderFilter === 'open') return !['shipped', 'cancelled'].includes(order.status);
     if (orderFilter === 'shortage') return order.status === 'shortage';
     if (orderFilter === 'shipped') return order.status === 'shipped';
@@ -2135,7 +2125,11 @@ function renderOrders() {
       return escapeHtml((product ? product.sku + ' · ' + product.name : '未知商品') + ' × ' + integer(line.quantity) + (returned ? '（已退 ' + returned + '）' : ''));
     }).join('<br>') + (order.lines.length > 2 ? '<br>等 ' + order.lines.length + ' 项' : '');
     let actions = '';
-    if (teamCapabilityAllowed('order') && canShip && !['shipped', 'cancelled'].includes(order.status)) actions += rowButton('confirm-ship-order', order.id, '确认并出库', 'primary');
+    if (teamCapabilityAllowed('order') && !['shipped', 'cancelled'].includes(order.status) && !order.warehouseId) actions += rowButton('assign-order-warehouse', order.id, '选择仓库', 'primary');
+    else if (teamCapabilityAllowed('order') && canShip && !['shipped', 'cancelled'].includes(order.status)) {
+      actions += rowButton('confirm-ship-order', order.id, '确认并出库', 'primary');
+      if (order.apiStatus === 'allocated') actions += rowButton('change-order-warehouse', order.id, '更换仓库', 'secondary');
+    }
     if (teamCapabilityAllowed('return') && order.status === 'shipped' && order.lines.some(function (line) { return returnableForLine(line) > 0; })) actions += rowButton('return-order', order.id, '退货入库', 'primary');
     if (teamCapabilityAllowed('order') && !['shipped', 'cancelled'].includes(order.status)) actions += rowButton('cancel-order', order.id, '取消', 'danger');
     return '<tr><td><strong>' + escapeHtml(order.number) + '</strong></td><td>' + escapeHtml(order.platform) + '<br><small>' + escapeHtml(order.store || '—') + '</small></td>' +
@@ -3967,10 +3961,10 @@ async function handleAction(action, id) {
       dispatchTransfer(next, localTransfer);
     }, '调拨已发出，目标仓确认后转入库存。');
   });
-  if (action === 'cancel-transfer') return askConfirm('确认取消这张调拨单？已发出的商品会退回调出仓库存。', function () {
+  if (action === 'cancel-transfer') return askConfirm('确认取消这张调拨草稿？', function () {
     const transfer = state.stockTransfers.find(function (item) { return item.id === id; });
-    if (TEAM_MODE) return executeTeamCommand(function () { return teamGateway.cancelTransfer(transfer); }, '调拨已取消，相关库存已恢复。', 'transfer');
-    commit(function (next) { cancelTransfer(next, id); }, '调拨已取消，相关库存已恢复。');
+    if (TEAM_MODE) return executeTeamCommand(function () { return teamGateway.cancelTransfer(transfer); }, '调拨草稿已取消。', 'transfer');
+    commit(function (next) { cancelTransfer(next, id); }, '调拨草稿已取消。');
   });
   if (action === 'edit-replenishment') return openReplenishmentPolicy(id);
   if (action === 'reset-replenishment') return askConfirm('确认删除当前仓的自定义参数并恢复系统默认补货规则？', function () {
@@ -4167,6 +4161,17 @@ async function handleAction(action, id) {
     const saved = commit(function (next) { reserved = reserveOrder(next, id); }, '');
     if (saved) showToast(reserved ? '库存已整单锁定，订单进入拣货。' : '库存仍不足，未产生任何部分锁定。');
     return;
+  }
+  if (action === 'assign-order-warehouse' || action === 'change-order-warehouse') {
+    if (!TEAM_MODE || !teamGateway) return showToast('请在团队数据模式下选择服务器仓库。');
+    const order = state.salesOrders.find(function (item) { return item.id === id; });
+    const choices = teamGateway.warehouses.filter(function (item) { return item.active && item.can_ship !== false && item.canShip !== false; });
+    const promptText = '输入仓库编号：\n' + choices.map(function (item) { return item.id + ' · ' + item.name; }).join('\n');
+    const warehouseId = window.prompt(promptText, order && order.warehouseId ? order.warehouseId : '');
+    if (!warehouseId) return;
+    return executeTeamCommand(function () {
+      return teamGateway.assignOrderWarehouse(order, warehouseId, action === 'change-order-warehouse');
+    }, action === 'change-order-warehouse' ? '已更换仓库并重新锁库。' : '已选择仓库并完成整单锁库。', 'order');
   }
   if (action === 'confirm-ship-order') return askConfirm('只需这一次确认：库存足够时，系统将整单校验、扣库并生成出库流水。', function () {
     const warehouse = selectedWarehouse();

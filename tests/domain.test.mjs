@@ -147,7 +147,7 @@ test("warehouse transfer subtracts at dispatch and adds only when the destinatio
   assert.throws(() => domain.receiveTransfer(state, transfer.id), /不能收货/);
 });
 
-test("cancelling an in-transit transfer restores source stock", async () => {
+test("an in-transit transfer cannot be cancelled", async () => {
   const domain = await loadDomain();
   const state = domain.emptyState();
   state.warehouses.push(domain.normalizeWarehouse({ id: "wh-to", code: "TO", name: "目标仓" }, 1));
@@ -160,10 +160,10 @@ test("cancelling an in-transit transfer restores source stock", async () => {
   state.stockTransfers.push(transfer);
   domain.dispatchTransfer(state, transfer);
   assert.equal(domain.balanceFor("p-1", state).onHand, 2);
-  domain.cancelTransfer(state, transfer.id);
-  assert.equal(transfer.status, "cancelled");
-  assert.equal(domain.balanceFor("p-1", state).onHand, 6);
-  assert.equal(state.inventoryMovements.at(-1).type, "transfer_return");
+  assert.throws(() => domain.cancelTransfer(state, transfer.id), /不能取消/);
+  assert.equal(transfer.status, "in_transit");
+  assert.equal(domain.balanceFor("p-1", state).onHand, 2);
+  assert.equal(state.inventoryMovements.at(-1).type, "transfer_out");
 });
 
 test("purchase receipt moves quantity from transit to on-hand", async () => {

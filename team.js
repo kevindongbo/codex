@@ -581,10 +581,10 @@
       const shipmentByOrder = new Map();
       raw.shipments.forEach(function (item) { shipmentByOrder.set(String(item.order), item); });
       const orderStatus = { draft: 'shortage', ready: 'shortage', allocated: 'picking', picking: 'review', verified: 'ready', shipped: 'shipped', cancelled: 'cancelled' };
-      const salesOrders = raw.orders.filter((item) => String(item.warehouse) === this.warehouseId).map(function (item) {
+      const salesOrders = raw.orders.filter((item) => !item.warehouse || String(item.warehouse) === this.warehouseId).map(function (item) {
         const shipment = shipmentByOrder.get(String(item.id));
         return {
-          id: String(item.id), apiStatus: item.status, number: item.number,
+          id: String(item.id), apiStatus: item.status, warehouseId: item.warehouse ? String(item.warehouse) : '', number: item.number,
           platform: item.platform || (item.customer || {}).platform || '手工订单',
           store: item.store || (item.customer || {}).store || '', orderedAt: item.ordered_at || item.created_at,
           trackingNumber: shipment ? shipment.tracking_number || '' : '', note: item.notes || '',
@@ -1112,6 +1112,17 @@
         this.completeIdempotency(key, error);
         throw error;
       }
+    }
+
+    async assignOrderWarehouse(order, warehouseId, change) {
+      const key = this.idempotencyKey(change ? 'change-order-warehouse' : 'assign-order-warehouse', [order.id, warehouseId].join(':'));
+      try {
+        const result = await this.request('/orders/' + order.id + '/' + (change ? 'change-warehouse' : 'assign-warehouse') + '/', {
+          method: 'POST', body: { warehouse: warehouseId, idempotency_key: key.value }
+        });
+        this.completeIdempotency(key);
+        return result;
+      } catch (error) { this.completeIdempotency(key, error); throw error; }
     }
 
     async advanceOrder(order) {

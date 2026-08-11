@@ -1050,11 +1050,13 @@ class ApiTests(TestCase):
         submitted = self.client.post(f"/api/purchase-orders/{purchase_id}/submit/", **headers)
         self.assertEqual(submitted.status_code, 200, submitted.data)
         self.assertEqual(submitted.data["status"], PurchaseOrder.Status.SUBMITTED)
-        self.assertEqual(submitted.data["in_transit_quantity"], "3.000")
+        self.assertEqual(submitted.data["in_transit_quantity"], "0.000")
+        self.assertEqual(submitted.data["pending_shipment_quantity"], "3.000")
         balances = self.client.get("/api/stock-balances/", **headers)
         self.assertEqual(balances.status_code, 200)
         self.assertEqual(balances.data["results"][0]["on_hand"], "0.000")
-        self.assertEqual(balances.data["results"][0]["in_transit"], 3)
+        self.assertEqual(balances.data["results"][0]["purchased_pending_shipment"], "3.000")
+        self.assertEqual(balances.data["results"][0]["in_transit"], "0.000")
 
         adjusted = self.client.post(
             "/api/stock-balances/adjust/",
@@ -1855,6 +1857,7 @@ class ApiTests(TestCase):
         destination = Warehouse.objects.create(
             organization=self.organization, code="TRANSFER-DST", name="马来仓",
             warehouse_type=Warehouse.Type.OVERSEAS, country="MY",
+            default_lead_time_days=14, default_coverage_days=30,
         )
         product = Product.objects.create(
             organization=self.organization, name="调拨商品", status=Product.Status.ACTIVE
@@ -1905,7 +1908,7 @@ class ApiTests(TestCase):
             row for row in balances.data["results"]
             if row["id"] == str(destination_balance.pk)
         )
-        self.assertEqual(destination_row["in_transit"], 4)
+        self.assertEqual(destination_row["in_transit"], "4.000")
         recommendations = self.client.get(
             f"/api/replenishment/recommendations/?warehouse={destination.pk}", **headers
         )
@@ -1949,7 +1952,7 @@ class ApiTests(TestCase):
         )
         policy = ReplenishmentPolicy.objects.create(
             organization=self.organization, warehouse=warehouse, sku=sku,
-            lead_time_override=12, review_cycle_days=7, target_days=30,
+            lead_time_override=12, review_cycle_days=7, target_days=30, coverage_days=30,
             min_order_qty="10", pack_size="5", safety_stock_override="5",
         )
         inactive_product = Product.objects.create(
@@ -2148,6 +2151,68 @@ class ApiTests(TestCase):
         balance = StockBalance.objects.get(warehouse=warehouse, sku=sku)
         self.assertEqual(balance.on_hand, 2)
         self.assertEqual(balance.reserved, 0)
+
+    def test_unmapped_sku_order_actions_return_business_400_not_server_error(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(
+            organization=self.organization, code="UNMAPPED", name="未映射订单仓"
+        )
+        created = self.client.post(
+            "/api/orders/",
+            {
+                "number": "SO-UNMAPPED-API", "warehouse": str(warehouse.pk),
+                "lines": [{"external_sku_code": "AI-BAG-JALUR-08", "quantity": "1"}],
+            }, format="json", **headers,
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        order_id = created.data["id"]
+        calls = [
+            (f"/api/orders/{order_id}/confirm/", {}),
+            (f"/api/orders/{order_id}/allocate/", {"idempotency_key": "unmapped-allocate"}),
+            (f"/api/orders/{order_id}/confirm-and-ship/", {"idempotency_key": "unmapped-ship"}),
+        ]
+        for url, payload in calls:
+            response = self.client.post(url, payload, format="json", **headers)
+            self.assertEqual(response.status_code, 400, response.data)
+            self.assertEqual(response.data["external_sku_code"], "AI-BAG-JALUR-08")
+            self.assertEqual(response.data["code"], "sku_unmapped")
+
+    def test_assign_and_change_order_warehouse_are_all_or_nothing(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        first = Warehouse.objects.create(organization=self.organization, code="ALLOC-A", name="分配仓 A")
+        second = Warehouse.objects.create(organization=self.organization, code="ALLOC-B", name="分配仓 B")
+        product = Product.objects.create(organization=self.organization, name="整单校验商品", status=Product.Status.ACTIVE)
+        sku_a = SKU.objects.create(organization=self.organization, product=product, code="ALLOC-SKU-A", cost="1")
+        sku_b = SKU.objects.create(organization=self.organization, product=product, code="ALLOC-SKU-B", cost="1")
+        StockBalance.objects.create(organization=self.organization, warehouse=first, sku=sku_a, on_hand="5")
+        StockBalance.objects.create(organization=self.organization, warehouse=first, sku=sku_b, on_hand="1")
+        StockBalance.objects.create(organization=self.organization, warehouse=second, sku=sku_a, on_hand="5")
+        StockBalance.objects.create(organization=self.organization, warehouse=second, sku=sku_b, on_hand="5")
+        created = self.client.post("/api/orders/", {
+            "number": "SO-ASSIGN-ALL", "lines": [
+                {"sku": str(sku_a.pk), "quantity": "2"}, {"sku": str(sku_b.pk), "quantity": "2"},
+            ],
+        }, format="json", **headers)
+        self.assertEqual(created.status_code, 201, created.data)
+        failed = self.client.post(f"/api/orders/{created.data['id']}/assign-warehouse/", {
+            "warehouse": str(first.pk), "idempotency_key": "assign-shortage",
+        }, format="json", **headers)
+        self.assertEqual(failed.status_code, 400, failed.data)
+        self.assertEqual(failed.data["code"], "inventory_shortage")
+        self.assertEqual(failed.data["shortages"][0]["sku"], "ALLOC-SKU-B")
+        self.assertEqual(StockBalance.objects.get(warehouse=first, sku=sku_a).reserved, 0)
+        allocated = self.client.post(f"/api/orders/{created.data['id']}/assign-warehouse/", {
+            "warehouse": str(second.pk), "idempotency_key": "assign-ok",
+        }, format="json", **headers)
+        self.assertEqual(allocated.status_code, 200, allocated.data)
+        self.assertEqual(allocated.data["status"], SalesOrder.Status.ALLOCATED)
+        changed = self.client.post(f"/api/orders/{created.data['id']}/change-warehouse/", {
+            "warehouse": str(first.pk), "idempotency_key": "change-shortage",
+        }, format="json", **headers)
+        self.assertEqual(changed.status_code, 400, changed.data)
+        self.assertEqual(StockBalance.objects.get(warehouse=second, sku=sku_a).reserved, 2)
 
     def test_quick_sales_api_inherits_latest_snapshot_and_requires_history(self):
         self.client.force_authenticate(self.user)
