@@ -27,7 +27,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, ExchangeRateSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge, OwnStore, ProfitCalculationStrategy,
-    LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentPolicy, ReplenishmentSettings,
+    LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentConversionEvent, ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, ReplenishmentRecommendation, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
@@ -43,22 +43,22 @@ from .serializers import (
     AIInvocationLogSerializer, AIProviderConfigSerializer, AIRecommendationConfirmationSerializer, AIRecommendationInputSerializer, AIRecommendationSerializer, AlphaShopConfigSerializer,
     AdjustmentInputSerializer, AllocateInputSerializer, AuditLogSerializer,
     CompetitorProductSerializer, CompetitorSnapshotSerializer, InternalAccountSerializer, MembershipSerializer, OwnStoreSerializer, StoreProductSerializer,
-    ConfirmAndShipInputSerializer, LocalImportSerializer, OrganizationSerializer,
+    ConfirmAndShipInputSerializer, LocalImportSerializer, OrganizationSerializer, OrderWarehouseInputSerializer,
     ProductImageSerializer, ProductSerializer, QuickSalesSnapshotInputSerializer, UploadedMediaAssetSerializer,
-    PurchaseOrderEditInputSerializer, PurchaseOrderSerializer, ReceiptSerializer, ReceiveInputSerializer,
+    PurchaseOrderEditInputSerializer, PurchaseOrderSerializer, PurchaseShipmentSerializer, PurchaseStageCloseInputSerializer, ReceiptSerializer, ReceiveInputSerializer,
     ReplenishmentPolicySerializer, ReplenishmentRecommendationQuerySerializer, ReplenishmentSettingsSerializer, ReplenishmentRecommendationSerializer,
     ReturnOrderSerializer, ReturnReceiveInputSerializer, SalesOrderSerializer,
     ShipmentSerializer, ShipInputSerializer, SKUSerializer, StockBalanceSerializer,
     StockLedgerReversalInputSerializer, StockLedgerSerializer, StockTransferSerializer, SupplierSerializer,
     ManualStockMovementInputSerializer, TikTokAuthorizationStartSerializer, TikTokShopConnectionSerializer, TikTokShopSyncRunSerializer, TikTokSyncStartSerializer,
-    TransferPostInputSerializer, TransferReceiveInputSerializer, WarehouseSerializer,
+    TransferExceptionCloseInputSerializer, TransferPostInputSerializer, TransferReceiveInputSerializer, WarehouseSerializer,
     ProductSelectionKeywordInputSerializer, ProductSelectionReportInputSerializer, ProfitCalculationStrategySerializer,
 )
 from . import alphashop, integrations
 from .services import (
-    adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
+    adjust_inventory, allocate_order, assign_order_warehouse, cancel_order, cancel_purchase, cancel_stock_transfer,
     confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
-    dispatch_stock_transfer, edit_purchase, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger, reserve_stock_transfer_draft,
+    change_order_warehouse, close_purchase_transit_exception, close_purchase_unshipped, close_stock_transfer_exception, confirm_purchase_shipment, dispatch_stock_transfer, edit_purchase, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger, reserve_stock_transfer_draft,
     reject_return, ship_order, start_picking, submit_purchase, verify_order, write_audit,
 )
 from .local_imports import commit_local_import, validate_local_import
@@ -151,6 +151,8 @@ def _service_call(function, **kwargs):
     try:
         return function(**kwargs)
     except DjangoValidationError as exc:
+        if hasattr(exc, "payload"):
+            raise ValidationError(exc.payload)
         raise ValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
     except IntegrityError as exc:
         raise DataConflict() from exc
@@ -1635,6 +1637,34 @@ class PurchaseOrderViewSet(OrganizationScopedViewSet):
         )
         return Response(self.get_serializer(purchase_order).data)
 
+    @action(detail=True, methods=["post"], url_path="confirm-shipment")
+    def confirm_shipment(self, request, pk=None):
+        shipment_id = request.data.get("shipment")
+        shipment = PurchaseShipment.objects.filter(
+            pk=shipment_id, purchase_order=self.get_object()
+        ).first()
+        if shipment is None:
+            raise ValidationError({"shipment": "请选择属于当前采购单的发货批次"})
+        shipment = _service_call(confirm_purchase_shipment, purchase_shipment=shipment, actor=request.user)
+        return Response(PurchaseShipmentSerializer(shipment, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["post"], url_path="close-unshipped")
+    def close_unshipped(self, request, pk=None):
+        data = PurchaseStageCloseInputSerializer(data=request.data, context=self.get_serializer_context())
+        data.is_valid(raise_exception=True)
+        order = _service_call(close_purchase_unshipped, purchase_order=self.get_object(), quantities=data.validated_data["lines"], reason=data.validated_data["reason"], actor=request.user)
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="close-transit-exception")
+    def close_transit_exception(self, request, pk=None):
+        data = PurchaseStageCloseInputSerializer(data=request.data, context=self.get_serializer_context())
+        data.is_valid(raise_exception=True)
+        shipment = PurchaseShipment.objects.filter(pk=request.data.get("shipment"), purchase_order=self.get_object()).first()
+        if shipment is None:
+            raise ValidationError({"shipment": "请选择属于当前采购单的发货批次"})
+        shipment = _service_call(close_purchase_transit_exception, purchase_shipment=shipment, quantities=data.validated_data["lines"], reason=data.validated_data["reason"], actor=request.user)
+        return Response(PurchaseShipmentSerializer(shipment, context=self.get_serializer_context()).data)
+
     @transaction.atomic
     def perform_destroy(self, instance):
         if instance.status != PurchaseOrder.Status.DRAFT:
@@ -1871,20 +1901,48 @@ class ReplenishmentRecommendationViewSet(OrganizationScopedViewSet):
         idem = str(request.data.get("idempotency_key", "")).strip()
         if not idem:
             raise ValidationError({"idempotency_key": "不能为空"})
-        if item.conversion_idempotency_key:
-            if item.conversion_idempotency_key == idem:
-                return Response(self.get_serializer(item).data)
-            raise ValidationError("该建议已使用其它幂等键")
+        existing = ReplenishmentConversionEvent.objects.filter(
+            organization=item.organization, idempotency_key=idem
+        ).first()
+        if existing:
+            if existing.recommendation_id != item.pk:
+                raise ValidationError("幂等键已被其它补货建议占用")
+            return Response(self.get_serializer(item).data)
+        supplier = Supplier.objects.filter(
+            organization=item.organization, pk=request.data.get("supplier"), active=True
+        ).first()
+        if supplier is None:
+            raise ValidationError({"supplier": "转采购前必须人工选择启用的供应商"})
         quantity = item.user_confirmed_quantity if item.user_confirmed_quantity is not None else item.system_suggested_quantity
         remaining = quantity - item.converted_purchase_quantity
         requested = Decimal(str(request.data.get("quantity", remaining)))
         if requested <= 0 or requested > remaining:
             raise ValidationError({"quantity": "转采购数量超过剩余可转数量"})
+        purchase_order = PurchaseOrder.objects.filter(
+            organization=item.organization, supplier=supplier, warehouse=item.warehouse,
+            status=PurchaseOrder.Status.DRAFT, number__startswith="RPL-",
+        ).order_by("created_at").first()
+        if purchase_order is None:
+            purchase_order = PurchaseOrder.objects.create(
+                organization=item.organization, supplier=supplier, warehouse=item.warehouse,
+                number=f"RPL-{timezone.now():%Y%m%d}-{uuid.uuid4().hex[:8].upper()}", purchaser=request.user,
+                notes="由补货建议转换创建；草稿不会进入待发货库存。",
+            )
+        purchase_line, created = PurchaseOrderLine.objects.select_for_update().get_or_create(
+            purchase_order=purchase_order, sku=item.sku,
+            defaults={"quantity_ordered": requested, "unit_cost": item.sku.cost},
+        )
+        if not created:
+            purchase_line.quantity_ordered += requested
+            purchase_line.save(update_fields=["quantity_ordered", "updated_at"])
+        ReplenishmentConversionEvent.objects.create(
+            organization=item.organization, recommendation=item, purchase_order=purchase_order,
+            quantity=requested, idempotency_key=idem,
+        )
         item.converted_purchase_quantity += requested
-        item.conversion_idempotency_key = idem
         item.status = ReplenishmentRecommendation.Status.CONVERTED if item.converted_purchase_quantity >= quantity else ReplenishmentRecommendation.Status.PARTIALLY_CONVERTED
-        item.save(update_fields=["converted_purchase_quantity", "conversion_idempotency_key", "status", "updated_at"])
-        write_audit(organization=item.organization, actor=request.user, action="replenishment.recommendation.convert", instance=item, after={"quantity": str(requested), "remaining": str(quantity - item.converted_purchase_quantity)})
+        item.save(update_fields=["converted_purchase_quantity", "status", "updated_at"])
+        write_audit(organization=item.organization, actor=request.user, action="replenishment.recommendation.convert", instance=item, after={"quantity": str(requested), "remaining": str(quantity - item.converted_purchase_quantity), "purchase_order": str(purchase_order.pk)})
         return Response(self.get_serializer(item).data)
 
 
@@ -1909,6 +1967,16 @@ class StockTransferViewSet(OrganizationScopedViewSet):
             transfer=self.get_object(),
             actor=request.user,
             **data.validated_data,
+        )
+        return Response(self.get_serializer(transfer).data)
+
+    @action(detail=True, methods=["post"], url_path="close-transit-exception")
+    def close_transit_exception(self, request, pk=None):
+        data = TransferExceptionCloseInputSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        transfer = _service_call(
+            close_stock_transfer_exception, transfer=self.get_object(), actor=request.user,
+            quantities=data.validated_data.get("quantities") or {}, reason=data.validated_data["reason"],
         )
         return Response(self.get_serializer(transfer).data)
 
@@ -1957,6 +2025,22 @@ class SalesOrderViewSet(OrganizationScopedViewSet):
         data = AllocateInputSerializer(data=request.data, context=self.get_serializer_context())
         data.is_valid(raise_exception=True)
         order = _service_call(allocate_order, order=self.get_object(), actor=request.user, **data.validated_data)
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="assign-warehouse")
+    def assign_warehouse(self, request, pk=None):
+        data = OrderWarehouseInputSerializer(data=request.data, context=self.get_serializer_context())
+        data.is_valid(raise_exception=True)
+        _require_warehouse_access(request, self.get_organization(), data.validated_data["warehouse"])
+        order = _service_call(assign_order_warehouse, order=self.get_object(), actor=request.user, **data.validated_data)
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="change-warehouse")
+    def change_warehouse(self, request, pk=None):
+        data = OrderWarehouseInputSerializer(data=request.data, context=self.get_serializer_context())
+        data.is_valid(raise_exception=True)
+        _require_warehouse_access(request, self.get_organization(), data.validated_data["warehouse"])
+        order = _service_call(change_order_warehouse, order=self.get_object(), actor=request.user, **data.validated_data)
         return Response(self.get_serializer(order).data)
 
     @action(detail=True, methods=["post"], url_path="start-picking")

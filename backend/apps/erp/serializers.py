@@ -343,15 +343,21 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
     def get_quantity_in_transit(self, line):
         if line.purchase_order.status not in {PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL}:
             return "0.000"
-        return str(max(line.quantity_ordered - line.quantity_received, 0))
+        shipped = PurchaseShipmentLine.objects.filter(
+            purchase_line=line, purchase_shipment__confirmed_at__isnull=False,
+        ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+        exceptions = PurchaseShipmentLine.objects.filter(
+            purchase_line=line, purchase_shipment__confirmed_at__isnull=False,
+        ).aggregate(total=models.Sum("quantity_exception_closed"))["total"] or Decimal("0")
+        return str(max(Decimal("0"), shipped - line.quantity_received - exceptions).quantize(Decimal("0.001")))
 
     class Meta:
         model = PurchaseOrderLine
         fields = [
-            "id", "sku", "quantity_ordered", "quantity_received", "quantity_in_transit",
+            "id", "sku", "quantity_ordered", "quantity_received", "quantity_unshipped_closed", "quantity_in_transit",
             "unit_cost", "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "quantity_received", "quantity_in_transit", "created_at", "updated_at"]
+        read_only_fields = ["id", "quantity_received", "quantity_unshipped_closed", "quantity_in_transit", "created_at", "updated_at"]
 
 
 class PurchaseShipmentLineSerializer(serializers.ModelSerializer):
@@ -359,7 +365,7 @@ class PurchaseShipmentLineSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseShipmentLine
-        fields = ["id", "purchase_line", "sku", "quantity_shipped", "created_at", "updated_at"]
+        fields = ["id", "purchase_line", "sku", "quantity_shipped", "quantity_exception_closed", "created_at", "updated_at"]
         read_only_fields = ["id", "sku", "created_at", "updated_at"]
 
 
@@ -411,19 +417,23 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
             purchase_shipment__purchase_order=order,
             purchase_shipment__confirmed_at__isnull=False,
         ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+        exceptions = PurchaseShipmentLine.objects.filter(
+            purchase_shipment__purchase_order=order,
+            purchase_shipment__confirmed_at__isnull=False,
+        ).aggregate(total=models.Sum("quantity_exception_closed"))["total"] or Decimal("0")
         received = sum((line.quantity_received for line in order.lines.all()), Decimal("0"))
-        return str(max(Decimal("0"), shipped - received).quantize(Decimal("0.001")))
+        return str(max(Decimal("0"), shipped - received - exceptions).quantize(Decimal("0.001")))
 
     def get_pending_shipment_quantity(self, order):
         if order.status not in {PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL}:
             return "0.000"
         ordered = sum((line.quantity_ordered for line in order.lines.all()), Decimal("0"))
-        received = sum((line.quantity_received for line in order.lines.all()), Decimal("0"))
+        closed = sum((line.quantity_unshipped_closed for line in order.lines.all()), Decimal("0"))
         shipped = PurchaseShipmentLine.objects.filter(
             purchase_shipment__purchase_order=order,
             purchase_shipment__confirmed_at__isnull=False,
         ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
-        return str(max(Decimal("0"), ordered - received - shipped).quantize(Decimal("0.001")))
+        return str(max(Decimal("0"), ordered - shipped - closed).quantize(Decimal("0.001")))
 
     def validate(self, attrs):
         if "status" in getattr(self, "initial_data", {}):
@@ -497,6 +507,21 @@ class PurchaseShipmentEditInputSerializer(serializers.Serializer):
     id = serializers.UUIDField(required=False)
     tracking_number = serializers.CharField(max_length=120)
     lines = PurchaseShipmentEditLineInputSerializer(many=True, required=False)
+
+
+class PurchaseStageLineInputSerializer(serializers.Serializer):
+    purchase_line = serializers.PrimaryKeyRelatedField(queryset=PurchaseOrderLine.objects.all())
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=3, min_value=Decimal("0.001"))
+
+
+class PurchaseStageCloseInputSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=240)
+    lines = PurchaseStageLineInputSerializer(many=True)
+
+    def validate_lines(self, value):
+        if not value:
+            raise serializers.ValidationError("至少需要一条 SKU 明细")
+        return value
 
 
 class PurchaseOrderEditInputSerializer(OrganizationValidationMixin, serializers.Serializer):
@@ -604,6 +629,26 @@ class ReceiveInputSerializer(OrganizationValidationMixin, serializers.Serializer
 class StockBalanceSerializer(ScopedSerializer):
     available = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
     in_transit = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
+    purchased_pending_sources = serializers.SerializerMethodField()
+    in_transit_sources = serializers.SerializerMethodField()
+
+    def get_purchased_pending_sources(self, balance):
+        return [
+            {"reference_type": item.reference_type, "reference_id": item.reference_id, "quantity": str(item.on_hand_delta), "reason": item.reason}
+            for item in StockLedger.objects.filter(
+                organization=balance.organization, warehouse=balance.warehouse, sku=balance.sku,
+                event_type=StockLedger.Type.PURCHASE_PENDING,
+            ).order_by("occurred_at", "id")
+        ]
+
+    def get_in_transit_sources(self, balance):
+        return [
+            {"reference_type": item.reference_type, "reference_id": item.reference_id, "event_type": item.event_type, "reason": item.reason}
+            for item in StockLedger.objects.filter(
+                organization=balance.organization, warehouse=balance.warehouse, sku=balance.sku,
+                event_type__in=[StockLedger.Type.PURCHASE_TRANSIT, StockLedger.Type.TRANSFER_TRANSIT],
+            ).order_by("occurred_at", "id")
+        ]
 
     class Meta(ScopedSerializer.Meta):
         model = StockBalance
@@ -745,6 +790,10 @@ class TransferReceiveInputSerializer(TransferPostInputSerializer):
         child=serializers.DecimalField(max_digits=14, decimal_places=3, min_value=Decimal("0.001")),
         required=False,
     )
+
+
+class TransferExceptionCloseInputSerializer(TransferReceiveInputSerializer):
+    reason = serializers.CharField(max_length=240)
 
 
 class AdjustmentInputSerializer(OrganizationValidationMixin, serializers.Serializer):
@@ -1047,12 +1096,17 @@ class SalesOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
                 raise serializers.ValidationError("订单确认后，仓库、单号和外部单号不可修改")
         seen = set()
         for line in lines or []:
-            self.require_same_organization(line["sku"], "lines")
-            if not line["sku"].active or line["sku"].product.status != Product.Status.ACTIVE:
+            sku = line.get("sku")
+            if sku is None:
+                if not str(line.get("external_sku_code", "")).strip():
+                    raise serializers.ValidationError({"lines": "未映射订单行必须保留外部 SKU 编码"})
+                continue
+            self.require_same_organization(sku, "lines")
+            if not sku.active or sku.product.status != Product.Status.ACTIVE:
                 raise serializers.ValidationError({"lines": "订单只能选择已启用商品的有效 SKU"})
-            if line["sku"].pk in seen:
+            if sku.pk in seen:
                 raise serializers.ValidationError({"lines": "同一 SKU 只能出现一次"})
-            seen.add(line["sku"].pk)
+            seen.add(sku.pk)
         return attrs
 
     class Meta(ScopedSerializer.Meta):
@@ -1081,6 +1135,19 @@ class SalesOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
 
 class AllocateInputSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(max_length=120)
+
+
+class OrderWarehouseInputSerializer(OrganizationValidationMixin, serializers.Serializer):
+    warehouse = serializers.PrimaryKeyRelatedField(queryset=Warehouse.objects.all())
+    idempotency_key = serializers.CharField(max_length=120)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        organization = self.get_organization()
+        if organization is not None:
+            self.fields["warehouse"].queryset = Warehouse.objects.filter(
+                organization=organization, active=True
+            )
 
 
 class ConfirmAndShipInputSerializer(serializers.Serializer):

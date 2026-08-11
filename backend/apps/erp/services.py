@@ -33,6 +33,14 @@ from .models import (
 )
 
 
+class WorkflowValidationError(ValidationError):
+    """A validation failure that the API can return without losing its facts."""
+
+    def __init__(self, payload):
+        self.payload = payload
+        super().__init__(payload.get("detail", "业务校验失败"))
+
+
 def _decimal(value):
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
@@ -51,6 +59,64 @@ def _validate_warehouse_and_sku(organization, warehouse, sku=None):
     _assert_organization(organization, warehouse=warehouse)
     if sku is not None:
         _assert_organization(organization, sku=sku, product=sku.product)
+
+
+def _unmapped_order_line_error(order, line):
+    return WorkflowValidationError({
+        "code": "sku_unmapped",
+        "detail": "SKU 未映射，不能锁库/出库",
+        "order_number": order.number,
+        "external_sku_code": line.external_sku_code or "",
+    })
+
+
+def _order_lines_or_raise(order, *, lock=False):
+    queryset = order.lines
+    if lock:
+        queryset = queryset.select_for_update()
+    lines = list(queryset.select_related("sku__product").order_by("pk"))
+    if not lines:
+        raise ValidationError("订单没有明细")
+    for line in lines:
+        if line.sku_id is None:
+            raise _unmapped_order_line_error(order, line)
+        _assert_organization(order.organization, sku=line.sku, product=line.sku.product)
+        if not line.sku.active or line.sku.product.status != line.sku.product.Status.ACTIVE:
+            raise ValidationError(f"SKU {line.sku.code} 对应商品未启用")
+    return lines
+
+
+def _order_stock_shortages(order, warehouse, lines):
+    """Lock every required balance and return the complete order shortage list."""
+    shortages = []
+    for line in lines:
+        balance, _ = StockBalance.objects.select_for_update().get_or_create(
+            organization=order.organization,
+            warehouse=warehouse,
+            sku=line.sku,
+            defaults={"on_hand": Decimal("0"), "reserved": Decimal("0")},
+        )
+        required = Decimal(line.quantity) - Decimal(line.quantity_shipped) - Decimal(line.quantity_reserved)
+        available = Decimal(balance.on_hand) - Decimal(balance.reserved)
+        if required > 0 and available < required:
+            shortages.append({
+                "sku": line.sku.code,
+                "external_sku_code": line.external_sku_code or "",
+                "required": str(required),
+                "available": str(max(Decimal("0"), available)),
+                "shortage": str(required - max(Decimal("0"), available)),
+            })
+    return shortages
+
+
+def _raise_order_shortages(order, shortages):
+    if shortages:
+        raise WorkflowValidationError({
+            "code": "inventory_shortage",
+            "detail": "库存不足，整单不能锁库/出库",
+            "order_number": order.number,
+            "shortages": shortages,
+        })
 
 
 def _assert_ledger_replay(
@@ -170,10 +236,10 @@ def reserve_stock_transfer_draft(*, transfer, actor=None):
     if transfer.status != StockTransfer.Status.DRAFT:
         raise ValidationError("只有草稿调拨可以预占库存")
     for line in transfer.lines.select_for_update().select_related("sku__product"):
-        source_balance = StockBalance.objects.select_for_update().get(
-            organization=transfer.organization, warehouse=transfer.source_warehouse, sku=line.sku
+        StockBalance.objects.select_for_update().get_or_create(
+            organization=transfer.organization, warehouse=transfer.source_warehouse, sku=line.sku,
+            defaults={"on_hand": Decimal("0"), "reserved": Decimal("0")},
         )
-        reserved_release = min(line.quantity, source_balance.reserved)
         post_stock(
             organization=transfer.organization, warehouse=transfer.source_warehouse, sku=line.sku,
             event_type=StockLedger.Type.RESERVE, reserved_delta=line.quantity,
@@ -252,11 +318,13 @@ def dispatch_stock_transfer(*, transfer, idempotency_key, actor=None):
             reason=f"调拨至 {transfer.destination_warehouse.name}",
         )
     for line in lines:
-        destination_balance = StockBalance.objects.select_for_update().get(
-            organization=transfer.organization, warehouse=transfer.destination_warehouse, sku=line.sku
+        post_stock(
+            organization=transfer.organization, warehouse=transfer.destination_warehouse, sku=line.sku,
+            event_type=StockLedger.Type.TRANSFER_TRANSIT, in_transit_delta=line.quantity,
+            reference_type="stock_transfer_line", reference_id=line.pk,
+            idempotency_key=f"transfer-transit:{transfer.pk}:{line.pk}", actor=actor,
+            reason=f"调拨自 {transfer.source_warehouse.name} 在途",
         )
-        destination_balance.in_transit += line.quantity
-        destination_balance.save(update_fields=["in_transit", "updated_at"])
     transfer.status = StockTransfer.Status.IN_TRANSIT
     transfer.dispatch_idempotency_key = idempotency_key
     transfer.dispatched_at = timezone.now()
@@ -327,17 +395,13 @@ def receive_stock_transfer(*, transfer, idempotency_key, quantities=None, actor=
             sku=line.sku,
             event_type=StockLedger.Type.TRANSFER_IN,
             on_hand_delta=quantity,
+            in_transit_delta=-quantity,
             reference_type="stock_transfer_receipt",
             reference_id=line.pk,
             idempotency_key=f"transfer-in:{transfer.pk}:{line.pk}:{idempotency_key}",
             actor=actor,
             reason=f"从 {transfer.source_warehouse.name} 调拨收货",
         )
-        destination_balance = StockBalance.objects.select_for_update().get(
-            organization=transfer.organization, warehouse=transfer.destination_warehouse, sku=line.sku
-        )
-        destination_balance.in_transit = max(Decimal("0"), destination_balance.in_transit - quantity)
-        destination_balance.save(update_fields=["in_transit", "updated_at"])
         line.received_quantity += quantity
         line.save(update_fields=["received_quantity", "updated_at"])
         received_event[str(line.pk)] = str(quantity)
@@ -364,6 +428,44 @@ def receive_stock_transfer(*, transfer, idempotency_key, quantities=None, actor=
         instance=transfer,
         after={"idempotency_key": idempotency_key, "quantities": received_event, "fully_received": fully_received},
     )
+    return transfer
+
+
+@transaction.atomic
+def close_stock_transfer_exception(*, transfer, quantities, reason, actor=None):
+    """Close lost/damaged transfer quantities at the destination without restoring source stock."""
+    if not str(reason or "").strip():
+        raise ValidationError("关闭调拨在途异常必须填写原因")
+    transfer = StockTransfer.objects.select_for_update().select_related(
+        "organization", "destination_warehouse"
+    ).get(pk=transfer.pk, organization=transfer.organization)
+    if transfer.status not in {StockTransfer.Status.IN_TRANSIT, StockTransfer.Status.PARTIALLY_RECEIVED}:
+        raise ValidationError("只有在途调拨可以关闭异常")
+    lines = {str(line.pk): line for line in StockTransferLine.objects.select_for_update().select_related("sku").filter(transfer=transfer)}
+    if not quantities:
+        raise ValidationError("至少需要一条调拨异常明细")
+    for line_id, raw_quantity in quantities.items():
+        line = lines.get(str(line_id))
+        if line is None:
+            raise ValidationError("异常明细不属于当前调拨单")
+        quantity = _decimal(raw_quantity)
+        remaining = Decimal(line.quantity) - Decimal(line.received_quantity)
+        if quantity <= 0 or quantity > remaining:
+            raise ValidationError(f"SKU {line.sku.code} 异常关闭数量超过在途剩余")
+        post_stock(
+            organization=transfer.organization, warehouse=transfer.destination_warehouse, sku=line.sku,
+            event_type=StockLedger.Type.TRANSFER_TRANSIT, in_transit_delta=-quantity,
+            reference_type="stock_transfer_line", reference_id=line.pk,
+            idempotency_key=f"transfer-exception-close:{transfer.pk}:{line.pk}:{line.received_quantity}", actor=actor,
+            reason=reason,
+        )
+        # Keep receipt capacity settled without fabricating an on-hand receipt.
+        line.received_quantity += quantity
+        line.save(update_fields=["received_quantity", "updated_at"])
+    transfer.status = StockTransfer.Status.COMPLETED_WITH_EXCEPTION
+    transfer.exception_reason = reason
+    transfer.save(update_fields=["status", "exception_reason", "updated_at"])
+    write_audit(organization=transfer.organization, actor=actor, action="stock_transfer.transit.exception_close", instance=transfer, after={"reason": reason, "quantities": {str(key): str(value) for key, value in quantities.items()}})
     return transfer
 
 
@@ -588,13 +690,13 @@ def submit_purchase(*, purchase_order, actor=None):
         )
         pending = max(Decimal("0"), Decimal(line.quantity_ordered) - Decimal(line.quantity_received or 0))
         if pending:
-            balance = StockBalance.objects.select_for_update().get(
-                organization=purchase_order.organization,
-                warehouse=purchase_order.warehouse,
-                sku=line.sku,
+            post_stock(
+                organization=purchase_order.organization, warehouse=purchase_order.warehouse, sku=line.sku,
+                event_type=StockLedger.Type.PURCHASE_PENDING, pending_delta=pending,
+                reference_type="purchase_order_line", reference_id=line.pk,
+                idempotency_key=f"purchase-pending:{purchase_order.pk}:{line.pk}", actor=actor,
+                reason="采购提交，待发货",
             )
-            balance.purchased_pending_shipment += pending
-            balance.save(update_fields=["purchased_pending_shipment", "updated_at"])
     purchase_order.status = PurchaseOrder.Status.SUBMITTED
     purchase_order.ordered_at = purchase_order.ordered_at or timezone.now()
     purchase_order.save(update_fields=["status", "ordered_at", "updated_at"])
@@ -818,6 +920,112 @@ def edit_purchase(*, purchase_order, data, actor=None):
 
 
 @transaction.atomic
+def confirm_purchase_shipment(*, purchase_shipment, actor=None):
+    """Confirm one editable purchase batch and move only its quantities to transit."""
+    purchase_shipment = PurchaseShipment.objects.select_for_update().select_related(
+        "purchase_order__organization", "purchase_order__warehouse"
+    ).get(pk=purchase_shipment.pk)
+    purchase_order = PurchaseOrder.objects.select_for_update().get(pk=purchase_shipment.purchase_order_id)
+    if purchase_shipment.confirmed_at is not None:
+        return purchase_shipment
+    if purchase_order.status not in {PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL}:
+        raise ValidationError("只有已提交采购单可以确认本批发货")
+    lines = list(PurchaseShipmentLine.objects.select_for_update().select_related("purchase_line__sku__product").filter(
+        purchase_shipment=purchase_shipment
+    ))
+    if not lines:
+        raise ValidationError("发货批次必须至少包含一个 SKU")
+    for shipment_line in lines:
+        purchase_line = shipment_line.purchase_line
+        already_confirmed = PurchaseShipmentLine.objects.filter(
+            purchase_line=purchase_line, purchase_shipment__confirmed_at__isnull=False,
+        ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+        remaining = Decimal(purchase_line.quantity_ordered) - Decimal(purchase_line.quantity_unshipped_closed) - Decimal(already_confirmed)
+        if shipment_line.quantity_shipped <= 0 or shipment_line.quantity_shipped > remaining:
+            raise ValidationError(f"SKU {purchase_line.sku.code} 本批发货数量超过未发货数量")
+        post_stock(
+            organization=purchase_order.organization, warehouse=purchase_order.warehouse, sku=purchase_line.sku,
+            event_type=StockLedger.Type.PURCHASE_TRANSIT,
+            pending_delta=-shipment_line.quantity_shipped, in_transit_delta=shipment_line.quantity_shipped,
+            reference_type="purchase_shipment_line", reference_id=shipment_line.pk,
+            idempotency_key=f"purchase-shipment-confirm:{purchase_shipment.pk}:{shipment_line.pk}", actor=actor,
+            reason="确认采购发货批次",
+        )
+    purchase_shipment.confirmed_at = timezone.now()
+    purchase_shipment.confirmed_by = actor if getattr(actor, "is_authenticated", False) else None
+    purchase_shipment.save(update_fields=["confirmed_at", "confirmed_by", "updated_at"])
+    write_audit(
+        organization=purchase_order.organization, actor=actor, action="purchase.shipment.confirm",
+        instance=purchase_shipment, after={"purchase_order": str(purchase_order.pk), "line_count": len(lines)},
+    )
+    return purchase_shipment
+
+
+@transaction.atomic
+def close_purchase_unshipped(*, purchase_order, quantities, reason, actor=None):
+    purchase_order = PurchaseOrder.objects.select_for_update().select_related("organization", "warehouse").get(pk=purchase_order.pk)
+    if purchase_order.status not in {PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL}:
+        raise ValidationError("只有已提交采购单可以关闭未发货数量")
+    if not str(reason or "").strip():
+        raise ValidationError("关闭未发货数量必须填写原因")
+    for item in quantities:
+        line = PurchaseOrderLine.objects.select_for_update().select_related("sku").get(
+            pk=item["purchase_line"].pk, purchase_order=purchase_order
+        )
+        confirmed = PurchaseShipmentLine.objects.filter(
+            purchase_line=line, purchase_shipment__confirmed_at__isnull=False,
+        ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+        quantity = _decimal(item["quantity"])
+        remaining = Decimal(line.quantity_ordered) - Decimal(confirmed) - Decimal(line.quantity_unshipped_closed)
+        if quantity <= 0 or quantity > remaining:
+            raise ValidationError(f"SKU {line.sku.code} 关闭数量超过未发货数量")
+        post_stock(
+            organization=purchase_order.organization, warehouse=purchase_order.warehouse, sku=line.sku,
+            event_type=StockLedger.Type.PURCHASE_PENDING, pending_delta=-quantity,
+            reference_type="purchase_order_line", reference_id=line.pk,
+            idempotency_key=f"purchase-unshipped-close:{purchase_order.pk}:{line.pk}:{line.quantity_unshipped_closed}", actor=actor,
+            reason=reason,
+        )
+        line.quantity_unshipped_closed += quantity
+        line.save(update_fields=["quantity_unshipped_closed", "updated_at"])
+    write_audit(organization=purchase_order.organization, actor=actor, action="purchase.unshipped.close", instance=purchase_order, after={"reason": reason})
+    return purchase_order
+
+
+@transaction.atomic
+def close_purchase_transit_exception(*, purchase_shipment, quantities, reason, actor=None):
+    purchase_shipment = PurchaseShipment.objects.select_for_update().select_related("purchase_order__organization", "purchase_order__warehouse").get(pk=purchase_shipment.pk)
+    if purchase_shipment.confirmed_at is None:
+        raise ValidationError("未确认发货批次不能关闭在途异常")
+    if not str(reason or "").strip():
+        raise ValidationError("关闭在途异常必须填写原因")
+    lines = {str(line.purchase_line_id): line for line in PurchaseShipmentLine.objects.select_for_update().select_related("purchase_line__sku").filter(purchase_shipment=purchase_shipment)}
+    for item in quantities:
+        shipment_line = lines.get(str(item["purchase_line"].pk))
+        if shipment_line is None:
+            raise ValidationError("异常 SKU 不属于当前发货批次")
+        received = sum((receipt_line.quantity for receipt in purchase_shipment.receipts.all() for receipt_line in receipt.lines.filter(purchase_line=shipment_line.purchase_line)), Decimal("0"))
+        quantity = _decimal(item["quantity"])
+        remaining = Decimal(shipment_line.quantity_shipped) - received - Decimal(shipment_line.quantity_exception_closed)
+        if quantity <= 0 or quantity > remaining:
+            raise ValidationError(f"SKU {shipment_line.purchase_line.sku.code} 异常关闭数量超过在途剩余")
+        post_stock(
+            organization=purchase_shipment.purchase_order.organization, warehouse=purchase_shipment.purchase_order.warehouse, sku=shipment_line.purchase_line.sku,
+            event_type=StockLedger.Type.PURCHASE_TRANSIT, in_transit_delta=-quantity,
+            reference_type="purchase_shipment_line", reference_id=shipment_line.pk,
+            idempotency_key=f"purchase-transit-close:{purchase_shipment.pk}:{shipment_line.pk}:{shipment_line.quantity_exception_closed}", actor=actor,
+            reason=reason,
+        )
+        shipment_line.quantity_exception_closed += quantity
+        shipment_line.save(update_fields=["quantity_exception_closed", "updated_at"])
+    purchase_shipment.closed_at = timezone.now()
+    purchase_shipment.closed_reason = reason
+    purchase_shipment.save(update_fields=["closed_at", "closed_reason", "updated_at"])
+    write_audit(organization=purchase_shipment.purchase_order.organization, actor=actor, action="purchase.transit.exception_close", instance=purchase_shipment, after={"reason": reason})
+    return purchase_shipment
+
+
+@transaction.atomic
 def receive_purchase(*, organization, purchase_order, number, lines, idempotency_key, purchase_shipment=None, actor=None):
     _assert_organization(organization, purchase_order=purchase_order)
     purchase_order = PurchaseOrder.objects.select_for_update().select_related(
@@ -972,12 +1180,7 @@ def confirm_order(*, order, actor=None):
         return order
     if order.status != SalesOrder.Status.DRAFT:
         raise ValidationError("只有草稿订单可以确认")
-    if not order.lines.exists():
-        raise ValidationError("订单没有明细")
-    for line in order.lines.select_related("sku__product"):
-        _assert_organization(order.organization, sku=line.sku, product=line.sku.product)
-        if not line.sku.active or line.sku.product.status != line.sku.product.Status.ACTIVE:
-            raise ValidationError(f"SKU {line.sku.code} 对应商品未启用")
+    _order_lines_or_raise(order, lock=True)
     order.status = SalesOrder.Status.READY
     order.save(update_fields=["status", "updated_at"])
     write_audit(
@@ -1108,13 +1311,12 @@ def allocate_order(*, order, idempotency_key, actor=None):
         if expected_keys and actual_keys == expected_keys:
             return order
         raise ValidationError("订单已经使用其他幂等键完成锁库")
+    lines = _order_lines_or_raise(order, lock=True)
     if order.status != SalesOrder.Status.READY:
         raise ValidationError("只有待锁库订单可以锁定库存")
-    if not order.lines.exists():
-        raise ValidationError("订单没有明细")
+    _raise_order_shortages(order, _order_stock_shortages(order, order.warehouse, lines))
 
-    for line in order.lines.select_for_update().select_related("sku__product"):
-        _assert_organization(order.organization, sku=line.sku, product=line.sku.product)
+    for line in lines:
         quantity = line.quantity - line.quantity_shipped - line.quantity_reserved
         if quantity <= 0:
             continue
@@ -1150,6 +1352,91 @@ def allocate_order(*, order, idempotency_key, actor=None):
 
 
 @transaction.atomic
+def assign_order_warehouse(*, order, warehouse, idempotency_key, actor=None):
+    """Select a warehouse and reserve the entire order in one all-or-nothing step."""
+    if not idempotency_key:
+        raise ValidationError("幂等键不能为空")
+    organization = order.organization
+    order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(
+        pk=order.pk, organization=organization
+    )
+    _assert_organization(order.organization, warehouse=warehouse)
+    if not warehouse.active or not warehouse.can_ship:
+        raise ValidationError("所选仓库未启用或不允许出库")
+    if order.status in {SalesOrder.Status.SHIPPED, SalesOrder.Status.CANCELLED, SalesOrder.Status.PICKING, SalesOrder.Status.VERIFIED}:
+        raise ValidationError("当前订单状态不能选择仓库")
+    if order.status == SalesOrder.Status.ALLOCATED:
+        if order.warehouse_id == warehouse.pk:
+            return order
+        raise ValidationError("已锁库订单请使用更换仓库")
+    lines = _order_lines_or_raise(order, lock=True)
+    _raise_order_shortages(order, _order_stock_shortages(order, warehouse, lines))
+    order.warehouse = warehouse
+    if order.status == SalesOrder.Status.DRAFT:
+        order.status = SalesOrder.Status.READY
+    order.save(update_fields=["warehouse", "status", "updated_at"])
+    # Allocation is deliberately performed only after every line is proven available.
+    order = allocate_order(order=order, idempotency_key=idempotency_key, actor=actor)
+    write_audit(
+        organization=order.organization, actor=actor, action="order.warehouse.assign", instance=order,
+        after={"warehouse": str(warehouse.pk), "idempotency_key": idempotency_key},
+    )
+    return order
+
+
+@transaction.atomic
+def change_order_warehouse(*, order, warehouse, idempotency_key, actor=None):
+    """Move an active order reservation without ever leaving it half-reserved."""
+    if not idempotency_key:
+        raise ValidationError("幂等键不能为空")
+    organization = order.organization
+    order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(
+        pk=order.pk, organization=organization
+    )
+    _assert_organization(order.organization, warehouse=warehouse)
+    if Shipment.objects.filter(order=order).exists() or order.status in {SalesOrder.Status.SHIPPED, SalesOrder.Status.PICKING, SalesOrder.Status.VERIFIED}:
+        raise ValidationError("订单已进入拣货或已出库，不能更换仓库")
+    if order.warehouse_id is None:
+        return assign_order_warehouse(order=order, warehouse=warehouse, idempotency_key=idempotency_key, actor=actor)
+    if order.warehouse_id == warehouse.pk:
+        return order
+    if order.status != SalesOrder.Status.ALLOCATED:
+        return assign_order_warehouse(order=order, warehouse=warehouse, idempotency_key=idempotency_key, actor=actor)
+    if not warehouse.active or not warehouse.can_ship:
+        raise ValidationError("所选仓库未启用或不允许出库")
+    lines = _order_lines_or_raise(order, lock=True)
+    # Validate and lock the destination before touching the original reservation.
+    _raise_order_shortages(order, _order_stock_shortages(order, warehouse, lines))
+    reservations = list(StockReservation.objects.select_for_update().filter(
+        order_line__order=order, status=StockReservation.Status.ACTIVE
+    ).select_related("order_line", "sku"))
+    if len(reservations) != len([line for line in lines if line.quantity_reserved > 0]):
+        raise ValidationError("订单缺少有效锁库记录")
+    for reservation in reservations:
+        post_stock(
+            organization=order.organization, warehouse=reservation.warehouse, sku=reservation.sku,
+            event_type=StockLedger.Type.RELEASE, reserved_delta=-reservation.quantity,
+            reference_type="stock_reservation", reference_id=reservation.pk,
+            idempotency_key=f"order-change-release:{idempotency_key}:{reservation.pk}", actor=actor,
+            reason="更换订单出库仓释放旧锁库",
+        )
+        reservation.status = StockReservation.Status.RELEASED
+        reservation.save(update_fields=["status", "updated_at"])
+        line = next(line for line in lines if line.pk == reservation.order_line_id)
+        line.quantity_reserved -= reservation.quantity
+        line.save(update_fields=["quantity_reserved", "updated_at"])
+    order.warehouse = warehouse
+    order.status = SalesOrder.Status.READY
+    order.save(update_fields=["warehouse", "status", "updated_at"])
+    order = allocate_order(order=order, idempotency_key=idempotency_key, actor=actor)
+    write_audit(
+        organization=order.organization, actor=actor, action="order.warehouse.change", instance=order,
+        after={"warehouse": str(warehouse.pk), "idempotency_key": idempotency_key},
+    )
+    return order
+
+
+@transaction.atomic
 def ship_order(*, order, number, idempotency_key, tracking_number="", actor=None):
     expected_organization = order.organization
     order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(
@@ -1168,11 +1455,10 @@ def ship_order(*, order, number, idempotency_key, tracking_number="", actor=None
         return existing
     if order.status != SalesOrder.Status.VERIFIED:
         raise ValidationError("只有已完成拣货复核的订单可以出库")
-    lines = list(order.lines.select_for_update().select_related("sku__product"))
+    lines = _order_lines_or_raise(order, lock=True)
     if not lines or not any(line.quantity_reserved > 0 for line in lines):
         raise ValidationError("订单没有可出库的锁定库存")
     for line in lines:
-        _assert_organization(order.organization, sku=line.sku, product=line.sku.product)
         remaining = line.quantity - line.quantity_shipped
         if remaining <= 0 or line.quantity_reserved != remaining:
             raise ValidationError(f"SKU {line.sku.code} 的锁定数量不足以完成出库")

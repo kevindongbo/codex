@@ -308,6 +308,7 @@ class PurchaseOrderLine(TimeStampedModel):
     sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="purchase_lines")
     quantity_ordered = models.DecimalField(max_digits=14, decimal_places=3)
     quantity_received = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    quantity_unshipped_closed = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
     unit_cost = models.DecimalField(max_digits=14, decimal_places=4)
 
     class Meta:
@@ -352,6 +353,7 @@ class PurchaseShipmentLine(TimeStampedModel):
     purchase_shipment = models.ForeignKey(PurchaseShipment, on_delete=models.CASCADE, related_name="lines")
     purchase_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT, related_name="shipment_lines")
     quantity_shipped = models.DecimalField(max_digits=14, decimal_places=3)
+    quantity_exception_closed = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
 
     class Meta:
         constraints = [
@@ -570,6 +572,25 @@ class ReplenishmentRecommendation(OrganizationScopedModel):
         ]
 
 
+class ReplenishmentConversionEvent(OrganizationScopedModel):
+    """Immutable, repeatable conversion of part of one replenishment suggestion."""
+
+    recommendation = models.ForeignKey(
+        ReplenishmentRecommendation, on_delete=models.PROTECT, related_name="conversion_events"
+    )
+    purchase_order = models.ForeignKey(
+        PurchaseOrder, on_delete=models.PROTECT, related_name="replenishment_conversion_events"
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=3)
+    idempotency_key = models.CharField(max_length=120)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "idempotency_key"], name="uniq_replenishment_conversion_event_idem"),
+            models.CheckConstraint(condition=Q(quantity__gt=0), name="replenishment_conversion_event_positive"),
+        ]
+
+
 class StockLedger(OrganizationScopedModel):
     class Type(models.TextChoices):
         RECEIPT = "receipt", "采购收货"
@@ -580,6 +601,9 @@ class StockLedger(OrganizationScopedModel):
         RETURN = "return", "退货入库"
         TRANSFER_OUT = "transfer_out", "调拨发出"
         TRANSFER_IN = "transfer_in", "调拨收货"
+        PURCHASE_PENDING = "purchase_pending", "采购待发货"
+        PURCHASE_TRANSIT = "purchase_transit", "采购在途"
+        TRANSFER_TRANSIT = "transfer_transit", "调拨在途"
         TRANSFER_CANCEL = "transfer_cancel", "调拨撤回"
         MANUAL_INBOUND = "manual_inbound", "手动入库"
         MANUAL_OUTBOUND = "manual_outbound", "手动出库"

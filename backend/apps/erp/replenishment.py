@@ -25,6 +25,8 @@ from .models import (
     PurchaseShipmentLine,
     Receipt,
     ReceiptLine,
+    ReturnReceiptLine,
+    ShipmentLine,
     StockLedger,
     StockBalance,
     StockTransfer,
@@ -363,6 +365,22 @@ def estimate_demand_velocity(
         ).order_by("occurred_at")
     )
 
+    # A customer return reverses demand on the *original sales date*, rather
+    # than the date it reached our warehouse.  RESTOCK and DAMAGED both reduce
+    # net sales; the receive service alone decides whether RESTOCK returns stock.
+    return_by_day: dict[date, Decimal] = defaultdict(lambda: ZERO)
+    return_lines = ReturnReceiptLine.objects.filter(
+        receipt__organization=organization, sku=sku,
+        receipt__return_order__warehouse=warehouse,
+        receipt__return_order__original_order__isnull=False,
+    ).select_related("receipt__return_order__original_order")
+    for return_line in return_lines:
+        shipment_line = ShipmentLine.objects.filter(
+            shipment__order=return_line.receipt.return_order.original_order, sku=sku,
+        ).select_related("shipment").order_by("shipment__shipped_at", "id").first()
+        if shipment_line is not None:
+            return_by_day[timezone.localtime(shipment_line.shipment.shipped_at).date()] += _decimal(return_line.quantity)
+
     quantities: dict[int, Decimal] = {}
     for days in windows:
         threshold = current_time - timedelta(days=days)
@@ -373,7 +391,7 @@ def estimate_demand_velocity(
                 if line.occurred_at >= threshold
             ),
             ZERO,
-        )
+        ) - sum((quantity for day, quantity in return_by_day.items() if day >= timezone.localtime(threshold).date()), ZERO)
     daily = {days: quantities[days] / Decimal(days) for days in windows}
     velocity = sum((daily[days] * normalized_weights[index] for index, days in enumerate(windows)), ZERO)
     daily_3 = daily.get(3, ZERO)
@@ -390,12 +408,15 @@ def estimate_demand_velocity(
         day = timezone.localtime(line.occurred_at).date()
         if day in daily_quantities:
             daily_quantities[day] += -_decimal(line.on_hand_delta)
+    for day, quantity in return_by_day.items():
+        if day in daily_quantities:
+            daily_quantities[day] -= quantity
     daily_values = list(daily_quantities.values())
     daily_average = sum(daily_values, ZERO) / Decimal(len(daily_values))
     variance = sum(((value - daily_average) ** 2 for value in daily_values), ZERO) / Decimal(len(daily_values))
     daily_stddev = _rate(Decimal(str(math.sqrt(float(variance)))))
     reasons: list[str] = [
-        "日速度按近 3/7/15/30 日最终出库流水加权计算；包含订单实际出库和手动出库，不含锁库或已撤回流水"
+        "日速度按近 3/7/15/30 日最终出库流水加权计算；退货按原销售日回溯扣减，不含锁库或已撤回流水"
     ]
     if not lines:
         confidence = "low"
@@ -464,26 +485,27 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
         shipped = PurchaseShipmentLine.objects.filter(
             purchase_line=line, purchase_shipment__confirmed_at__isnull=False
         ).aggregate(total=Sum("quantity_shipped")).get("total") or ZERO
-        remaining = max(ZERO, _decimal(line.quantity_ordered) - _decimal(line.quantity_received) - _decimal(shipped))
+        # A receipt is downstream from confirmed shipment.  Deducting it again
+        # here made "待发货" disappear twice after a partial receipt.
+        # Pre-stage historical records have receipts but no shipment batches. In
+        # that one legacy shape, received implies already-confirmed shipment;
+        # once batches exist the authoritative formula is ordered - confirmed.
+        confirmed_shipped = _decimal(shipped) if shipped else _decimal(line.quantity_received)
+        remaining = max(ZERO, _decimal(line.quantity_ordered) - confirmed_shipped)
         if remaining:
             remaining_by_purchase[line.purchase_order_id] += remaining
             expected_by_purchase[line.purchase_order_id] = getattr(
                 line.purchase_order, "expected_at", None
             )
     calculated_pending = sum(remaining_by_purchase.values(), ZERO)
+    # StockBalance is the single authoritative stage balance.  Purchase and
+    # transfer services both post their in-transit delta here, so summing a
+    # query on top would double-count one source and if/else would lose another.
     stored_pending = _decimal(getattr(balance, "purchased_pending_shipment", ZERO))
+    # Existing records created before stage accounting did not carry the balance;
+    # retain a read-only formula fallback for that historical data only.
     purchase_pending = stored_pending if stored_pending else calculated_pending
-    purchase_in_transit = _decimal(getattr(balance, "in_transit", ZERO))
-    transfer_in_transit = sum(
-        StockTransferLine.objects.filter(
-            transfer__organization=organization,
-            transfer__destination_warehouse=warehouse,
-            transfer__status=StockTransfer.Status.IN_TRANSIT,
-            sku=sku,
-        ).values_list("quantity", flat=True),
-        ZERO,
-    )
-    in_transit = purchase_in_transit if purchase_in_transit else transfer_in_transit
+    in_transit = _decimal(getattr(balance, "in_transit", ZERO))
     expected_dates = [
         value for value in expected_by_purchase.values() if value is not None
     ]
