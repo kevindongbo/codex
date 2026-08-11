@@ -1050,11 +1050,13 @@ class ApiTests(TestCase):
         submitted = self.client.post(f"/api/purchase-orders/{purchase_id}/submit/", **headers)
         self.assertEqual(submitted.status_code, 200, submitted.data)
         self.assertEqual(submitted.data["status"], PurchaseOrder.Status.SUBMITTED)
-        self.assertEqual(submitted.data["in_transit_quantity"], "3.000")
+        self.assertEqual(submitted.data["in_transit_quantity"], "0.000")
+        self.assertEqual(submitted.data["pending_shipment_quantity"], "3.000")
         balances = self.client.get("/api/stock-balances/", **headers)
         self.assertEqual(balances.status_code, 200)
         self.assertEqual(balances.data["results"][0]["on_hand"], "0.000")
-        self.assertEqual(balances.data["results"][0]["in_transit"], 3)
+        self.assertEqual(balances.data["results"][0]["purchased_pending_shipment"], "3.000")
+        self.assertEqual(balances.data["results"][0]["in_transit"], "0.000")
 
         adjusted = self.client.post(
             "/api/stock-balances/adjust/",
@@ -1855,6 +1857,7 @@ class ApiTests(TestCase):
         destination = Warehouse.objects.create(
             organization=self.organization, code="TRANSFER-DST", name="马来仓",
             warehouse_type=Warehouse.Type.OVERSEAS, country="MY",
+            default_lead_time_days=14, default_coverage_days=30,
         )
         product = Product.objects.create(
             organization=self.organization, name="调拨商品", status=Product.Status.ACTIVE
@@ -1905,7 +1908,7 @@ class ApiTests(TestCase):
             row for row in balances.data["results"]
             if row["id"] == str(destination_balance.pk)
         )
-        self.assertEqual(destination_row["in_transit"], 4)
+        self.assertEqual(destination_row["in_transit"], "4.000")
         recommendations = self.client.get(
             f"/api/replenishment/recommendations/?warehouse={destination.pk}", **headers
         )
@@ -1949,7 +1952,7 @@ class ApiTests(TestCase):
         )
         policy = ReplenishmentPolicy.objects.create(
             organization=self.organization, warehouse=warehouse, sku=sku,
-            lead_time_override=12, review_cycle_days=7, target_days=30,
+            lead_time_override=12, review_cycle_days=7, target_days=30, coverage_days=30,
             min_order_qty="10", pack_size="5", safety_stock_override="5",
         )
         inactive_product = Product.objects.create(

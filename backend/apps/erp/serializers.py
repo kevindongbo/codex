@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
-from django.db import transaction
+from django.db import models, transaction
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -376,6 +376,7 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
     lines = PurchaseOrderLineSerializer(many=True, required=False)
     shipments = PurchaseShipmentSerializer(many=True, read_only=True)
     in_transit_quantity = serializers.SerializerMethodField()
+    pending_shipment_quantity = serializers.SerializerMethodField()
     purchaser_display_name = serializers.SerializerMethodField()
 
     def __init__(self, *args, **kwargs):
@@ -406,7 +407,23 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
     def get_in_transit_quantity(self, order):
         if order.status not in {PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL}:
             return "0.000"
-        return str(sum((line.quantity_ordered - line.quantity_received for line in order.lines.all()), 0))
+        shipped = PurchaseShipmentLine.objects.filter(
+            purchase_shipment__purchase_order=order,
+            purchase_shipment__confirmed_at__isnull=False,
+        ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+        received = sum((line.quantity_received for line in order.lines.all()), Decimal("0"))
+        return str(max(Decimal("0"), shipped - received).quantize(Decimal("0.001")))
+
+    def get_pending_shipment_quantity(self, order):
+        if order.status not in {PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL}:
+            return "0.000"
+        ordered = sum((line.quantity_ordered for line in order.lines.all()), Decimal("0"))
+        received = sum((line.quantity_received for line in order.lines.all()), Decimal("0"))
+        shipped = PurchaseShipmentLine.objects.filter(
+            purchase_shipment__purchase_order=order,
+            purchase_shipment__confirmed_at__isnull=False,
+        ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+        return str(max(Decimal("0"), ordered - received - shipped).quantize(Decimal("0.001")))
 
     def validate(self, attrs):
         if "status" in getattr(self, "initial_data", {}):
@@ -422,12 +439,17 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
                 raise serializers.ValidationError("采购单提交后，供应商、仓库、币种和单号不可修改")
         seen = set()
         for line in lines or []:
-            self.require_same_organization(line["sku"], "lines")
-            if not line["sku"].active or line["sku"].product.status != Product.Status.ACTIVE:
+            line_sku = line.get("sku")
+            if line_sku is None:
+                if not str(line.get("external_sku_code", "")).strip():
+                    raise serializers.ValidationError({"lines": "未映射订单行必须保留外部 SKU 编码"})
+                continue
+            self.require_same_organization(line_sku, "lines")
+            if not line_sku.active or line_sku.product.status != Product.Status.ACTIVE:
                 raise serializers.ValidationError({"lines": "采购单只能选择已启用商品的有效 SKU"})
-            if line["sku"].pk in seen:
+            if line_sku.pk in seen:
                 raise serializers.ValidationError({"lines": "同一 SKU 只能出现一次"})
-            seen.add(line["sku"].pk)
+            seen.add(line_sku.pk)
         return attrs
 
     class Meta(ScopedSerializer.Meta):
@@ -450,6 +472,8 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
                 code=f"SUP-{uuid.uuid4().hex[:8].upper()}",
                 name="待完善供应商",
             )
+        if not validated_data.get("warehouse"):
+            validated_data["warehouse"] = _draft_warehouse(organization)
         if not str(validated_data.get("number", "")).strip():
             validated_data["number"] = f"PO-DRAFT-{uuid.uuid4().hex[:10].upper()}"
         purchase_order = PurchaseOrder.objects.create(**validated_data)
@@ -991,8 +1015,9 @@ class AIRecommendationConfirmationSerializer(serializers.Serializer):
 class SalesOrderLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalesOrderLine
-        fields = ["id", "sku", "quantity", "quantity_reserved", "quantity_shipped", "unit_price", "created_at", "updated_at"]
+        fields = ["id", "sku", "external_sku_code", "external_listing_id", "quantity", "quantity_reserved", "quantity_shipped", "unit_price", "created_at", "updated_at"]
         read_only_fields = ["id", "quantity_reserved", "quantity_shipped", "created_at", "updated_at"]
+        extra_kwargs = {"sku": {"required": False, "allow_null": True}}
 
 
 class SalesOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
@@ -1046,8 +1071,6 @@ class SalesOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
     def create(self, validated_data):
         lines = validated_data.pop("lines", [])
         organization = validated_data["organization"]
-        if not validated_data.get("warehouse"):
-            validated_data["warehouse"] = _draft_warehouse(organization)
         if not str(validated_data.get("number", "")).strip():
             validated_data["number"] = f"SO-DRAFT-{uuid.uuid4().hex[:10].upper()}"
         order = SalesOrder.objects.create(**validated_data)

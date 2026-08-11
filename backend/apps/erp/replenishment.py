@@ -437,6 +437,7 @@ class InventoryPosition:
     inventory_position: Decimal
     open_purchase_count: int
     next_expected_at: datetime | None
+    purchased_pending_shipment: Decimal = ZERO
 
 
 def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition:
@@ -469,7 +470,9 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
             expected_by_purchase[line.purchase_order_id] = getattr(
                 line.purchase_order, "expected_at", None
             )
-    purchase_pending = sum(remaining_by_purchase.values(), ZERO)
+    calculated_pending = sum(remaining_by_purchase.values(), ZERO)
+    stored_pending = _decimal(getattr(balance, "purchased_pending_shipment", ZERO))
+    purchase_pending = stored_pending if stored_pending else calculated_pending
     purchase_in_transit = _decimal(getattr(balance, "in_transit", ZERO))
     transfer_in_transit = sum(
         StockTransferLine.objects.filter(
@@ -493,6 +496,7 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
         inventory_position=_quantity(available + purchase_pending + in_transit),
         open_purchase_count=len(remaining_by_purchase),
         next_expected_at=min(expected_dates) if expected_dates else None,
+        purchased_pending_shipment=_quantity(purchase_pending),
     )
 
 

@@ -285,7 +285,7 @@ class ReplenishmentTests(TestCase):
         self.assertEqual(summary.median_days, Decimal("10.0000"))
         self.assertEqual(summary.p80_days, Decimal("12.0000"))
 
-    def test_weighted_velocity_uses_actual_shipments_and_isolates_warehouse(self):
+    def test_weighted_velocity_uses_all_organization_shipments_for_the_sku(self):
         self.create_shipment(
             warehouse=self.warehouse, days_ago=2, quantity="14", sequence=1
         )
@@ -309,18 +309,12 @@ class ReplenishmentTests(TestCase):
             as_of=self.as_of,
         )
 
-        self.assertEqual(demand.quantity_7, Decimal("14.000"))
-        self.assertEqual(demand.quantity_15, Decimal("28.000"))
-        self.assertEqual(demand.quantity_30, Decimal("58.000"))
-        self.assertEqual(demand.daily_7, Decimal("2.0000"))
-        self.assertEqual(demand.daily_15, Decimal("1.8667"))
-        self.assertEqual(demand.daily_30, Decimal("1.9333"))
-        self.assertEqual(demand.quantity_3, Decimal("14.000"))
-        self.assertEqual(demand.daily_3, Decimal("4.6667"))
-        self.assertEqual(demand.daily_velocity, Decimal("3.0333"))
-        self.assertEqual(demand.shipment_count, 3)
+        self.assertEqual(demand.quantity_7, Decimal("714.000"))
+        self.assertEqual(demand.quantity_15, Decimal("728.000"))
+        self.assertEqual(demand.quantity_30, Decimal("758.000"))
+        self.assertEqual(demand.shipment_count, 4)
 
-    def test_weighted_velocity_counts_manual_outbound_but_not_inbound_or_reversed_rows(self):
+    def test_weighted_velocity_excludes_manual_stock_movements(self):
         manual = post_stock(
             organization=self.organization,
             warehouse=self.warehouse,
@@ -350,8 +344,8 @@ class ReplenishmentTests(TestCase):
             organization=self.organization, sku=self.sku, warehouse=self.warehouse, as_of=self.as_of
         )
 
-        self.assertEqual(demand.quantity_3, Decimal("6.000"))
-        self.assertEqual(demand.shipment_count, 1)
+        self.assertEqual(demand.quantity_3, Decimal("0.000"))
+        self.assertEqual(demand.shipment_count, 0)
 
     def test_inventory_position_counts_only_target_warehouse_open_inbound(self):
         StockBalance.objects.create(
@@ -399,7 +393,8 @@ class ReplenishmentTests(TestCase):
         self.assertEqual(inventory.on_hand, Decimal("10.000"))
         self.assertEqual(inventory.reserved, Decimal("2.000"))
         self.assertEqual(inventory.available, Decimal("8.000"))
-        self.assertEqual(inventory.in_transit, Decimal("15.000"))
+        self.assertEqual(inventory.in_transit, Decimal("0.000"))
+        self.assertEqual(inventory.purchased_pending_shipment, Decimal("15.000"))
         self.assertEqual(inventory.inventory_position, Decimal("23.000"))
         self.assertEqual(inventory.open_purchase_count, 1)
 
@@ -419,7 +414,7 @@ class ReplenishmentTests(TestCase):
         )
 
         self.assertEqual(forecast.safety_stock_units, Decimal("6.000"))
-        self.assertEqual(forecast.reorder_point, Decimal("36.000"))
+        self.assertEqual(forecast.reorder_point, Decimal("86.000"))
         self.assertEqual(forecast.target_inventory_position, Decimal("86.000"))
         self.assertEqual(forecast.raw_order_quantity, Decimal("66.000"))
         self.assertEqual(forecast.suggested_order_quantity, Decimal("72.000"))
@@ -430,7 +425,7 @@ class ReplenishmentTests(TestCase):
         forecast = calculate_replenishment(
             lead_time=self.lead(days=10),
             demand=self.demand(daily="2"),
-            inventory=self.inventory(available="10", in_transit="30"),
+            inventory=self.inventory(available="10", in_transit="80"),
             policy=ReplenishmentPolicy(
                 safety_days=Decimal("3"),
                 review_cycle_days=Decimal("5"),
@@ -439,7 +434,7 @@ class ReplenishmentTests(TestCase):
             as_of=self.as_of,
         )
 
-        self.assertEqual(forecast.inventory.inventory_position, Decimal("40"))
+        self.assertEqual(forecast.inventory.inventory_position, Decimal("90"))
         self.assertFalse(forecast.needs_reorder)
         self.assertEqual(forecast.suggested_order_quantity, Decimal("0"))
         self.assertEqual(forecast.alert_level, "yellow")

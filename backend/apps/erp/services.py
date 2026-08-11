@@ -588,13 +588,13 @@ def submit_purchase(*, purchase_order, actor=None):
         )
         pending = max(Decimal("0"), Decimal(line.quantity_ordered) - Decimal(line.quantity_received or 0))
         if pending:
-            post_stock(
-                organization=purchase_order.organization, warehouse=purchase_order.warehouse,
-                sku=line.sku, event_type=StockLedger.Type.RECEIPT,
-                pending_delta=pending, reference_type="purchase_order", reference_id=purchase_order.pk,
-                idempotency_key=f"purchase-pending:{purchase_order.pk}:{line.pk}", actor=actor,
-                reason="采购单提交，计入待发货采购",
+            balance = StockBalance.objects.select_for_update().get(
+                organization=purchase_order.organization,
+                warehouse=purchase_order.warehouse,
+                sku=line.sku,
             )
+            balance.purchased_pending_shipment += pending
+            balance.save(update_fields=["purchased_pending_shipment", "updated_at"])
     purchase_order.status = PurchaseOrder.Status.SUBMITTED
     purchase_order.ordered_at = purchase_order.ordered_at or timezone.now()
     purchase_order.save(update_fields=["status", "ordered_at", "updated_at"])
@@ -902,12 +902,26 @@ def receive_purchase(*, organization, purchase_order, number, lines, idempotency
             quantity=quantity,
             unit_cost=unit_cost,
         )
+        balance = StockBalance.objects.select_for_update().filter(
+            organization=organization,
+            warehouse=purchase_order.warehouse,
+            sku=purchase_line.sku,
+        ).first()
+        pending_release = Decimal("0")
+        transit_release = Decimal("0")
+        if balance is not None:
+            if purchase_shipment is not None and purchase_shipment.confirmed_at is not None:
+                transit_release = min(quantity, Decimal(balance.in_transit or 0))
+            else:
+                pending_release = min(quantity, Decimal(balance.purchased_pending_shipment or 0))
         post_stock(
             organization=organization,
             warehouse=purchase_order.warehouse,
             sku=purchase_line.sku,
             event_type=StockLedger.Type.RECEIPT,
             on_hand_delta=quantity,
+            pending_delta=-pending_release,
+            in_transit_delta=-transit_release,
             reference_type="receipt_line",
             reference_id=receipt_line.pk,
             idempotency_key=f"receipt:{idempotency_key}:{index}",
@@ -949,6 +963,8 @@ def receive_purchase(*, organization, purchase_order, number, lines, idempotency
 @transaction.atomic
 def confirm_order(*, order, actor=None):
     order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(pk=order.pk)
+    if order.warehouse_id is None:
+        raise ValidationError("订单出库前必须人工指定仓库")
     _assert_organization(order.organization, warehouse=order.warehouse)
     if not order.warehouse.active or not order.warehouse.can_ship:
         raise ValidationError("订单仓库未启用或不允许出库")
