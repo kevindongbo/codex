@@ -82,6 +82,21 @@ test("invalid persisted navigation falls back to safe ERP routes", async () => {
   assert.equal(domain.normalizeV5(saved).ui.warehouseTab, "replenishment");
 });
 
+test("store save state survives normalize and a simulated F5 reload", async () => {
+  const domain = await loadDomain();
+  const saved = domain.emptyState();
+  saved.stores = [{ id: "store-1", name: "Dongbo MY", platform: "TikTok Shop", is_active: true }];
+  saved.storeProducts = [{ id: "listing-1", store: "store-1", sku: "sku-1", sale_price_myr: "79.90" }];
+  saved.profitCategories = [{ code: "bags", label: "Bags" }];
+  const afterSaveRender = domain.normalizeV5(saved);
+  const afterF5 = domain.normalizeV5(JSON.parse(JSON.stringify(afterSaveRender)));
+
+  assert.equal(afterSaveRender.stores[0].name, "Dongbo MY");
+  assert.equal(afterF5.stores[0].id, "store-1");
+  assert.equal(afterF5.storeProducts[0].store, "store-1");
+  assert.equal(afterF5.profitCategories[0].code, "bags");
+});
+
 test("custom warehouses keep separate balances, purchase transit and operational fields", async () => {
   const domain = await loadDomain();
   const state = domain.emptyState();

@@ -12,7 +12,7 @@ from rest_framework import serializers
 
 from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, CompetitorSellerGroup, CompetitorSellerSnapshot, LocalImport, Membership, Organization, OwnStore,
-    Product, ProductImage, ProfitCalculationStrategy, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReceiptLine,
+    Product, ProductImage, ProfitCalculationStrategy, ProfitCalculationWorkingConfig, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReceiptLine,
     ReplenishmentPolicy, ReplenishmentSettings, ReplenishmentRecommendation,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, StockTransferLine, StockTransferPackage, StockTransferPackageLine, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
@@ -175,6 +175,28 @@ class ProfitCalculationStrategySerializer(ScopedSerializer):
         model = ProfitCalculationStrategy
         fields = ["id", "name", "config", "is_default", "created_by_name", "updated_by_name", "created_at", "updated_at"]
         read_only_fields = ["id", "is_default", "created_by_name", "updated_by_name", "created_at", "updated_at"]
+
+
+class ProfitCalculationWorkingConfigSerializer(ScopedSerializer):
+    config = ProfitCalculationStrategyConfigSerializer()
+    updated_by_name = serializers.CharField(source="updated_by.username", read_only=True, default=None)
+
+    class Meta(ScopedSerializer.Meta):
+        model = ProfitCalculationWorkingConfig
+        fields = [
+            "id", "config", "rate_mode", "manual_cny_per_myr", "manual_usd_per_myr",
+            "updated_by_name", "updated_at",
+        ]
+        read_only_fields = ["id", "updated_by_name", "updated_at"]
+
+    def validate(self, attrs):
+        mode = attrs.get("rate_mode", getattr(self.instance, "rate_mode", "auto"))
+        if mode == "manual" and (
+            attrs.get("manual_cny_per_myr", getattr(self.instance, "manual_cny_per_myr", None)) is None
+            or attrs.get("manual_usd_per_myr", getattr(self.instance, "manual_usd_per_myr", None)) is None
+        ):
+            raise serializers.ValidationError("手工汇率模式必须同时填写 CNY/MYR 与 USD/MYR。")
+        return attrs
 
 
 class WarehouseSerializer(ScopedSerializer):
@@ -719,7 +741,7 @@ class ReplenishmentRecommendationQuerySerializer(
 class StockTransferLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = StockTransferLine
-        fields = ["id", "sku", "quantity", "received_quantity", "created_at", "updated_at"]
+        fields = ["id", "sku", "quantity", "received_quantity", "exception_closed_quantity", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
@@ -794,6 +816,58 @@ class TransferReceiveInputSerializer(TransferPostInputSerializer):
 
 class TransferExceptionCloseInputSerializer(TransferReceiveInputSerializer):
     reason = serializers.CharField(max_length=240)
+
+
+class StockTransferPackageLineInputSerializer(OrganizationValidationMixin, serializers.Serializer):
+    sku = serializers.PrimaryKeyRelatedField(queryset=SKU.objects.all())
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=3, min_value=Decimal("0.001"))
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        organization = self.get_organization()
+        if organization is not None:
+            self.fields["sku"].queryset = SKU.objects.filter(organization=organization, active=True)
+
+
+class StockTransferPackageInputSerializer(serializers.Serializer):
+    id = serializers.UUIDField(required=False)
+    tracking_number = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    lines = StockTransferPackageLineInputSerializer(many=True, required=False)
+
+    def validate_lines(self, lines):
+        if not lines:
+            raise serializers.ValidationError("每个物流包至少需要一条 SKU 数量。")
+        seen = set()
+        for line in lines:
+            if line["sku"].pk in seen:
+                raise serializers.ValidationError("同一个物流包内同一 SKU 只能出现一次。")
+            seen.add(line["sku"].pk)
+        return lines
+
+
+class TransferPackagesInputSerializer(serializers.Serializer):
+    packages = StockTransferPackageInputSerializer(many=True)
+
+    def validate_packages(self, packages):
+        if not packages:
+            raise serializers.ValidationError("至少需要一个物流包；物流单号可稍后补录。")
+        return packages
+
+
+class StockTransferPackageLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StockTransferPackageLine
+        fields = ["id", "sku", "quantity", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class StockTransferPackageSerializer(ScopedSerializer):
+    lines = StockTransferPackageLineSerializer(many=True, read_only=True)
+
+    class Meta(ScopedSerializer.Meta):
+        model = StockTransferPackage
+        fields = ["id", "transfer", "tracking_number", "confirmed_at", "lines", "created_at", "updated_at"]
+        read_only_fields = fields
 
 
 class AdjustmentInputSerializer(OrganizationValidationMixin, serializers.Serializer):

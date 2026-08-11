@@ -36,10 +36,10 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260805-profit-ui-req-1/);
-  assert.match(html, /team\.js\?v=20260805-profit-ui-req-1/);
-  assert.match(html, /profit-calculator\.js\?v=20260805-profit-ui-req-1/);
-  assert.match(html, /app\.js\?v=20260805-profit-ui-req-1/);
+  assert.match(html, /styles\.css\?v=20260812-erp-ui-workflow-fix-1/);
+  assert.match(html, /team\.js\?v=20260812-erp-ui-workflow-fix-1/);
+  assert.match(html, /profit-calculator\.js\?v=20260812-erp-ui-workflow-fix-1/);
+  assert.match(html, /app\.js\?v=20260812-erp-ui-workflow-fix-1/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
@@ -93,6 +93,37 @@ test("keeps the ERP polish controls and daily exchange-rate workflow wired", asy
   assert.match(appScript, /purchase-detail-list/);
   assert.match(appScript, /velocity3 \* 0\.4 \+ velocity7 \* 0\.3 \+ velocity15 \* 0\.2 \+ velocity30 \* 0\.1/);
   assert.match(profitScript, /profit-calculator\/exchange-rates\//);
+});
+
+test("wires shared profit configuration, modal warehouse allocation, and transfer transit workflows", async () => {
+  const [html, appScript, teamScript, profitScript] = await Promise.all([
+    (await fetchPath("/index.html")).text(), (await fetchPath("/app.js")).text(),
+    (await fetchPath("/team.js")).text(), (await fetchPath("/profit-calculator.js")).text(),
+  ]);
+  assert.match(html, /id="profitWorkingConfigStatus"/);
+  assert.match(profitScript, /profit-calculator\/working-config\//);
+  assert.match(profitScript, /scheduleWorkingConfigSave/);
+  assert.match(html, /id="orderWarehouseModal"/);
+  assert.match(appScript, /function openOrderWarehouseSelector/);
+  assert.match(appScript, /required.*available.*shortage/s);
+  assert.doesNotMatch(appScript, /window\.prompt/);
+  assert.match(teamScript, /warehouse-options/);
+  assert.match(html, /在途库存/);
+  assert.match(html, /id="transferWorkflowModal"/);
+  assert.match(appScript, /exception_closed_quantity/);
+  assert.match(appScript, /function openTransferWorkflow/);
+  assert.match(teamScript, /close-transit-exception/);
+});
+
+test("keeps ERP cancellation as one confirmed internal API call and supports restore fulfillment", async () => {
+  const [appScript, teamScript] = await Promise.all([
+    (await fetchPath("/app.js")).text(), (await fetchPath("/team.js")).text(),
+  ]);
+  assert.match(appScript, /action === 'cancel-order'[\s\S]*askConfirm[\s\S]*teamGateway\.cancelOrder/);
+  assert.match(appScript, /restore-order-fulfillment/);
+  assert.match(teamScript, /\/orders\/' \+ order\.id \+ '\/cancel\/'/);
+  assert.match(teamScript, /restore-fulfillment/);
+  assert.doesNotMatch(teamScript, /tiktok.*cancel|shopee.*cancel|ozon.*cancel/i);
 });
 
 test("keeps profit rules on a dedicated route and collapses fee bases by default", async () => {

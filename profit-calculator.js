@@ -24,6 +24,9 @@
   let buyerShippingRegion = 'west_malaysia';
   let loadedStrategies = [];
   let strategyModalMode = 'create';
+  let workingConfigSaveTimer = null;
+  let workingConfigHydrating = false;
+  let workingConfigSaveFailed = false;
   const manualCommissionByRow = new Map();
 
   function el(id) { return document.getElementById(id); }
@@ -85,9 +88,9 @@
       : '手动汇率';
   }
 
-  async function loadExchangeRates(force) {
-    const saved = ratePreference();
-    rateMode = saved.mode === 'manual' ? 'manual' : 'auto';
+  async function loadExchangeRates(force, preserveMode) {
+    const saved = preserveMode ? {} : ratePreference();
+    if (!preserveMode) rateMode = saved.mode === 'manual' ? 'manual' : 'auto';
     if (rateMode === 'manual' && !force) {
       if (saved.cny_per_myr) el('profitExchangeRate').value = saved.cny_per_myr;
       if (saved.usd_per_myr) el('profitUsdRate').value = saved.usd_per_myr;
@@ -114,6 +117,7 @@
     rateMode = 'manual';
     saveRatePreference({ mode: 'manual', cny_per_myr: el('profitExchangeRate').value, usd_per_myr: el('profitUsdRate').value });
     updateRateUi();
+    scheduleWorkingConfigSave();
     el('profitExchangeRate').focus();
   }
 
@@ -411,6 +415,56 @@
     document.querySelectorAll('[data-profit-currency]').forEach(function (button) { button.classList.toggle('active', button.dataset.profitCurrency === displayCurrency); });
     updateBuyerShippingUi();
   }
+  function workingConfigPayload() {
+    return {
+      config: strategyConfig(), rate_mode: rateMode,
+      manual_cny_per_myr: rateMode === 'manual' ? el('profitExchangeRate').value : null,
+      manual_usd_per_myr: rateMode === 'manual' ? el('profitUsdRate').value : null
+    };
+  }
+  function setWorkingConfigStatus(message, failed) {
+    const target = el('profitWorkingConfigStatus');
+    if (!target) return;
+    target.textContent = message;
+    target.classList.toggle('error', Boolean(failed));
+    target.dataset.retry = failed ? 'true' : 'false';
+    workingConfigSaveFailed = Boolean(failed);
+  }
+  async function saveWorkingConfig() {
+    if (workingConfigHydrating) return;
+    setWorkingConfigStatus('当前配置保存中…');
+    try {
+      const saved = await request('/profit-calculator/working-config/', { method: 'PUT', body: workingConfigPayload() });
+      const editor = saved.updated_by_name ? '，由 ' + saved.updated_by_name + ' 更新' : '';
+      setWorkingConfigStatus('当前配置已保存' + editor);
+    } catch (error) {
+      setWorkingConfigStatus('保存失败，点击重试', true);
+    }
+  }
+  function scheduleWorkingConfigSave() {
+    if (workingConfigHydrating) return;
+    if (workingConfigSaveTimer) root.clearTimeout(workingConfigSaveTimer);
+    setWorkingConfigStatus('当前配置待保存…');
+    workingConfigSaveTimer = root.setTimeout(function () { saveWorkingConfig(); }, 650);
+  }
+  async function loadWorkingConfig() {
+    const saved = await request('/profit-calculator/working-config/');
+    workingConfigHydrating = true;
+    try {
+      applyStrategyConfig(saved.config || {});
+      rateMode = saved.rate_mode === 'manual' ? 'manual' : 'auto';
+      if (rateMode === 'manual') {
+        el('profitExchangeRate').value = saved.manual_cny_per_myr || '';
+        el('profitUsdRate').value = saved.manual_usd_per_myr || '';
+        updateRateUi(saved);
+      } else {
+        await loadExchangeRates(false, true);
+      }
+      setWorkingConfigStatus('已恢复组织共享的当前配置。');
+    } finally {
+      workingConfigHydrating = false;
+    }
+  }
   function applyStrategy(strategy) {
     applyStrategyConfig(strategy.config || {});
     loadedStrategyId = strategy.id;
@@ -488,6 +542,7 @@
     loadedStrategyId = strategy.id;
     await loadStrategies();
     applyStrategy(strategy);
+    scheduleWorkingConfigSave();
     setStatus('已加载并设为默认策略：' + strategy.name + '。');
   }
   async function deleteStrategy() {
@@ -524,6 +579,7 @@
       const leafCount = categoryTree.reduce(function (total, item) { return total + item.children.reduce(function (subtotal, group) { return subtotal + group.children.length; }, 0); }, 0);
       setStatus('已加载箱包、美妆个护完整三级类目（' + groupCount + ' 个二级、' + leafCount + ' 个三级）及马来西亚跨境运费配置。');
       await loadStrategies();
+      await loadWorkingConfig();
     } catch (_) {
       setStatus('费率配置暂时无法读取，请确认已登录团队服务器后重试。', true);
     }
@@ -579,7 +635,7 @@
     el('profitFeeModalCancel').addEventListener('click', closeFeeModal);
     el('profitFeeModalClose').addEventListener('click', closeFeeModal);
     el('profitFeeModal').addEventListener('click', function (event) { if (event.target === this) closeFeeModal(); });
-    el('profitRateAuto').addEventListener('click', function () { rateMode = 'auto'; saveRatePreference({ mode: 'auto' }); loadExchangeRates(true); });
+    el('profitRateAuto').addEventListener('click', function () { rateMode = 'auto'; saveRatePreference({ mode: 'auto' }); loadExchangeRates(true, true); scheduleWorkingConfigSave(); });
     el('profitRateManual').addEventListener('click', useManualRates);
     el('profitRateRefresh').addEventListener('click', function () { loadExchangeRates(true); });
     el('profitStrategyCreate').addEventListener('click', function () { openStrategyModal('create'); });
@@ -592,8 +648,8 @@
     ['profitStrategyModalClose', 'profitStrategyModalCancel'].forEach(function (id) { el(id).addEventListener('click', function () { closeStrategyModal('profitStrategyModal'); }); });
     ['profitStrategySaveChoiceClose', 'profitStrategySaveChoiceCancel'].forEach(function (id) { el(id).addEventListener('click', function () { closeStrategyModal('profitStrategySaveChoiceModal'); }); });
     ['profitStrategyDeleteClose', 'profitStrategyDeleteCancel'].forEach(function (id) { el(id).addEventListener('click', function () { closeStrategyModal('profitStrategyDeleteModal'); }); });
-    el('profitBuyerPaysShipping').addEventListener('change', updateBuyerShippingUi);
-    el('profitSellerType').addEventListener('change', updateBuyerShippingUi);
+    el('profitBuyerPaysShipping').addEventListener('change', function () { updateBuyerShippingUi(); scheduleWorkingConfigSave(); });
+    el('profitSellerType').addEventListener('change', function () { updateBuyerShippingUi(); scheduleWorkingConfigSave(); });
 
     document.addEventListener('change', function (event) {
       if (event.target.matches('[data-profit-field="ad_cost_type"]')) {
@@ -605,8 +661,13 @@
       }
       if (event.target.matches('#profitExchangeRate, #profitUsdRate')) {
         if (rateMode === 'manual') saveRatePreference({ mode: 'manual', cny_per_myr: el('profitExchangeRate').value, usd_per_myr: el('profitUsdRate').value });
+        if (rateMode === 'manual') scheduleWorkingConfigSave();
         rerenderLastResult();
       }
+      if (event.target.matches('#profitCountry, #profitShopIdentity, #profitBxp, #profitCommissionAdjustment, #profitTransactionFeeAdjustment')) scheduleWorkingConfigSave();
+    });
+    document.addEventListener('input', function (event) {
+      if (event.target.matches('#profitCommissionAdjustment, #profitTransactionFeeAdjustment, #profitExchangeRate, #profitUsdRate') && (rateMode === 'manual' || !event.target.matches('#profitExchangeRate, #profitUsdRate'))) scheduleWorkingConfigSave();
     });
     document.addEventListener('click', function (event) {
       const currency = event.target.closest('[data-profit-currency]');
@@ -614,6 +675,7 @@
         displayCurrency = currency.dataset.profitCurrency;
         document.querySelectorAll('[data-profit-currency]').forEach(function (button) { button.classList.toggle('active', button === currency); });
         rerenderLastResult();
+        scheduleWorkingConfigSave();
         return;
       }
       const feeEdit = event.target.closest('[data-profit-fee-edit]');
@@ -628,6 +690,7 @@
         setGroupExpanded(group, !expanded);
         return;
       }
+      if (event.target.closest('#profitWorkingConfigStatus') && workingConfigSaveFailed) return saveWorkingConfig();
       const categoryOption = event.target.closest('[data-category-option]');
       if (categoryOption) return chooseCategory(categoryOption.closest('[data-profit-row]'), Number(categoryOption.dataset.categoryOption), categoryOption.dataset.categoryValue);
       const categoryOpen = event.target.closest('[data-category-open]');

@@ -30,6 +30,8 @@ from .models import (
     StockReservation,
     StockTransfer,
     StockTransferLine,
+    StockTransferPackage,
+    StockTransferPackageLine,
 )
 
 
@@ -246,8 +248,86 @@ def reserve_stock_transfer_draft(*, transfer, actor=None):
             reference_type="stock_transfer_line", reference_id=line.pk,
             idempotency_key=f"transfer-reserve:{transfer.pk}:{line.pk}", actor=actor,
         )
+    # Preserve legacy create-and-dispatch callers while still giving every
+    # transfer a real package allocation (tracking is intentionally optional).
+    if not StockTransferPackage.objects.filter(transfer=transfer).exists():
+        package = StockTransferPackage.objects.create(organization=transfer.organization, transfer=transfer)
+        StockTransferPackageLine.objects.bulk_create([
+            StockTransferPackageLine(package=package, sku=line.sku, quantity=line.quantity)
+            for line in transfer.lines.all()
+        ])
     write_audit(organization=transfer.organization, actor=actor, action="stock_transfer.reserve", instance=transfer, after={"line_count": transfer.lines.count()})
     return transfer
+
+
+@transaction.atomic
+def save_stock_transfer_packages(*, transfer, packages, actor=None):
+    """Replace a draft transfer's package allocation without moving stock."""
+    transfer = StockTransfer.objects.select_for_update().get(pk=transfer.pk, organization=transfer.organization)
+    if transfer.status != StockTransfer.Status.DRAFT:
+        raise ValidationError("只有草稿调拨单可以修改物流包 SKU 数量。")
+    transfer_lines = {
+        line.sku_id: line
+        for line in StockTransferLine.objects.select_for_update().filter(transfer=transfer)
+    }
+    if not transfer_lines or not packages:
+        raise ValidationError("调拨单必须包含明细和至少一个物流包。")
+    prepared = []
+    for package_data in packages:
+        lines = package_data.get("lines") or []
+        if not lines:
+            raise ValidationError("每个物流包至少需要一条 SKU 数量。")
+        seen = set()
+        for item in lines:
+            sku = item["sku"]
+            if sku.pk not in transfer_lines or sku.pk in seen:
+                raise ValidationError("物流包 SKU 必须属于调拨单且不可重复。")
+            seen.add(sku.pk)
+        prepared.append((str(package_data.get("tracking_number") or "").strip(), lines))
+    StockTransferPackage.objects.filter(transfer=transfer).delete()
+    for tracking_number, lines in prepared:
+        package = StockTransferPackage.objects.create(
+            organization=transfer.organization, transfer=transfer, tracking_number=tracking_number
+        )
+        StockTransferPackageLine.objects.bulk_create([
+            StockTransferPackageLine(package=package, sku=item["sku"], quantity=item["quantity"])
+            for item in lines
+        ])
+    write_audit(organization=transfer.organization, actor=actor, action="stock_transfer.packages.save", instance=transfer, after={"package_count": len(prepared)})
+    return transfer
+
+
+@transaction.atomic
+def update_stock_transfer_package_tracking(*, transfer, packages, actor=None):
+    """Tracking can be backfilled after dispatch while package quantities stay immutable."""
+    transfer = StockTransfer.objects.select_for_update().get(pk=transfer.pk, organization=transfer.organization)
+    if transfer.status == StockTransfer.Status.DRAFT:
+        raise ValidationError("草稿调拨请使用完整物流包编辑。")
+    stored = {str(item.pk): item for item in StockTransferPackage.objects.select_for_update().filter(transfer=transfer)}
+    for item in packages:
+        package = stored.get(str(item.get("id") or ""))
+        if package is None or item.get("lines"):
+            raise ValidationError("发货后只能补录当前物流包的物流单号。")
+        package.tracking_number = str(item.get("tracking_number") or "").strip()
+        package.save(update_fields=["tracking_number", "updated_at"])
+    write_audit(organization=transfer.organization, actor=actor, action="stock_transfer.packages.tracking_update", instance=transfer)
+    return transfer
+
+
+def _assert_transfer_package_allocation(transfer, lines):
+    packages = list(StockTransferPackage.objects.select_for_update().filter(transfer=transfer).prefetch_related("lines"))
+    if not packages:
+        raise ValidationError("确认发货前必须配置至少一个物流包。")
+    planned = {line.sku_id: Decimal(line.quantity) for line in lines}
+    allocated = {sku_id: Decimal("0") for sku_id in planned}
+    for package in packages:
+        for package_line in package.lines.all():
+            if package_line.sku_id not in allocated:
+                raise ValidationError("物流包包含不属于调拨单的 SKU。")
+            allocated[package_line.sku_id] += Decimal(package_line.quantity)
+    if any(allocated[sku_id] != quantity for sku_id, quantity in planned.items()):
+        raise ValidationError("发货前每个 SKU 的物流包数量之和必须与调拨计划完全一致。")
+    return packages
 
 
 @transaction.atomic
@@ -290,6 +370,17 @@ def dispatch_stock_transfer(*, transfer, idempotency_key, actor=None):
     )
     if not lines:
         raise ValidationError("调拨单没有明细")
+    # Service callers from earlier releases may create a draft directly instead
+    # of via the viewset pre-reservation hook.  Give those legacy drafts one
+    # explicit blank-tracking package so dispatch still validates an exact
+    # package allocation rather than silently bypassing the package rule.
+    if not StockTransferPackage.objects.filter(transfer=transfer).exists():
+        package = StockTransferPackage.objects.create(organization=transfer.organization, transfer=transfer)
+        StockTransferPackageLine.objects.bulk_create([
+            StockTransferPackageLine(package=package, sku=line.sku, quantity=line.quantity)
+            for line in lines
+        ])
+    packages = _assert_transfer_package_allocation(transfer, lines)
     for line in lines:
         _assert_organization(
             transfer.organization, sku=line.sku, product=line.sku.product
@@ -332,6 +423,9 @@ def dispatch_stock_transfer(*, transfer, idempotency_key, actor=None):
     transfer.save(update_fields=[
         "status", "dispatch_idempotency_key", "dispatched_at", "dispatched_by", "updated_at",
     ])
+    for package in packages:
+        package.confirmed_at = transfer.dispatched_at
+        package.save(update_fields=["confirmed_at", "updated_at"])
     write_audit(
         organization=transfer.organization,
         actor=actor,
@@ -378,14 +472,16 @@ def receive_stock_transfer(*, transfer, idempotency_key, quantities=None, actor=
     if not lines:
         raise ValidationError("调拨单没有明细")
     requested = {str(key): _decimal(value) for key, value in (quantities or {}).items()}
-    if requested and {str(line.pk) for line in lines} != set(requested):
-        raise ValidationError("部分收货必须填写调拨单的全部 SKU 明细")
+    if requested and not set(requested).issubset({str(line.pk) for line in lines}):
+        raise ValidationError("收货数量包含不属于当前调拨单的 SKU 明细")
     received_event = {}
     for line in lines:
         _assert_organization(
             transfer.organization, sku=line.sku, product=line.sku.product
         )
-        remaining = line.quantity - line.received_quantity
+        remaining = line.quantity - line.received_quantity - line.exception_closed_quantity
+        if requested and str(line.pk) not in requested:
+            continue
         quantity = requested.get(str(line.pk), remaining)
         if quantity <= 0 or quantity > remaining:
             raise ValidationError("收货数量必须大于 0 且不能超过在途数量")
@@ -405,9 +501,10 @@ def receive_stock_transfer(*, transfer, idempotency_key, quantities=None, actor=
         line.received_quantity += quantity
         line.save(update_fields=["received_quantity", "updated_at"])
         received_event[str(line.pk)] = str(quantity)
-    fully_received = all(line.received_quantity >= line.quantity for line in lines)
-    transfer.status = StockTransfer.Status.RECEIVED if fully_received else StockTransfer.Status.PARTIALLY_RECEIVED
-    if fully_received:
+    fully_settled = all(line.received_quantity + line.exception_closed_quantity >= line.quantity for line in lines)
+    has_exception = any(line.exception_closed_quantity > 0 for line in lines)
+    transfer.status = StockTransfer.Status.COMPLETED_WITH_EXCEPTION if fully_settled and has_exception else (StockTransfer.Status.RECEIVED if fully_settled else StockTransfer.Status.PARTIALLY_RECEIVED)
+    if fully_settled:
         transfer.receive_idempotency_key = idempotency_key
         transfer.received_at = timezone.now()
         transfer.received_by = actor if getattr(actor, "is_authenticated", False) else None
@@ -426,7 +523,7 @@ def receive_stock_transfer(*, transfer, idempotency_key, quantities=None, actor=
         actor=actor,
         action="stock_transfer.receive",
         instance=transfer,
-        after={"idempotency_key": idempotency_key, "quantities": received_event, "fully_received": fully_received},
+        after={"idempotency_key": idempotency_key, "quantities": received_event, "fully_settled": fully_settled},
     )
     return transfer
 
@@ -449,7 +546,7 @@ def close_stock_transfer_exception(*, transfer, quantities, reason, actor=None):
         if line is None:
             raise ValidationError("异常明细不属于当前调拨单")
         quantity = _decimal(raw_quantity)
-        remaining = Decimal(line.quantity) - Decimal(line.received_quantity)
+        remaining = Decimal(line.quantity) - Decimal(line.received_quantity) - Decimal(line.exception_closed_quantity)
         if quantity <= 0 or quantity > remaining:
             raise ValidationError(f"SKU {line.sku.code} 异常关闭数量超过在途剩余")
         post_stock(
@@ -459,10 +556,11 @@ def close_stock_transfer_exception(*, transfer, quantities, reason, actor=None):
             idempotency_key=f"transfer-exception-close:{transfer.pk}:{line.pk}:{line.received_quantity}", actor=actor,
             reason=reason,
         )
-        # Keep receipt capacity settled without fabricating an on-hand receipt.
-        line.received_quantity += quantity
-        line.save(update_fields=["received_quantity", "updated_at"])
-    transfer.status = StockTransfer.Status.COMPLETED_WITH_EXCEPTION
+        line.exception_closed_quantity += quantity
+        line.save(update_fields=["exception_closed_quantity", "updated_at"])
+    settled_lines = list(StockTransferLine.objects.select_for_update().filter(transfer=transfer))
+    fully_settled = all(line.received_quantity + line.exception_closed_quantity >= line.quantity for line in settled_lines)
+    transfer.status = StockTransfer.Status.COMPLETED_WITH_EXCEPTION if fully_settled else StockTransfer.Status.PARTIALLY_RECEIVED
     transfer.exception_reason = reason
     transfer.save(update_fields=["status", "exception_reason", "updated_at"])
     write_audit(organization=transfer.organization, actor=actor, action="stock_transfer.transit.exception_close", instance=transfer, after={"reason": reason, "quantities": {str(key): str(value) for key, value in quantities.items()}})
@@ -1241,7 +1339,10 @@ def cancel_order(*, order, actor=None):
             reservation.save(update_fields=["status", "updated_at"])
 
     order.status = SalesOrder.Status.CANCELLED
-    order.save(update_fields=["status", "updated_at"])
+    order.fulfillment_override = "erp_cancelled"
+    order.erp_cancelled_at = timezone.now()
+    order.erp_cancelled_by = actor if getattr(actor, "is_authenticated", False) else None
+    order.save(update_fields=["status", "fulfillment_override", "erp_cancelled_at", "erp_cancelled_by", "updated_at"])
     write_audit(
         organization=order.organization, actor=actor, action="order.cancel", instance=order
     )
@@ -1348,6 +1449,22 @@ def allocate_order(*, order, idempotency_key, actor=None):
         organization=order.organization, actor=actor, action="order.allocate", instance=order,
         after={"idempotency_key": idempotency_key},
     )
+    return order
+
+
+@transaction.atomic
+def restore_order_fulfillment(*, order, actor=None):
+    """Re-enable ERP fulfilment without recreating a prior warehouse reservation."""
+    order = SalesOrder.objects.select_for_update().get(pk=order.pk, organization=order.organization)
+    if order.status != SalesOrder.Status.CANCELLED or order.fulfillment_override != "erp_cancelled":
+        raise ValidationError("只有 ERP 人工取消的订单可以恢复履约。")
+    if StockReservation.objects.filter(order_line__order=order, status=StockReservation.Status.ACTIVE).exists():
+        raise ValidationError("恢复履约前订单不应存在有效锁库记录，请先排查历史库存数据。")
+    order.status = SalesOrder.Status.READY
+    order.warehouse = None
+    order.fulfillment_override = "normal"
+    order.save(update_fields=["status", "warehouse", "fulfillment_override", "updated_at"])
+    write_audit(organization=order.organization, actor=actor, action="order.fulfillment.restore", instance=order)
     return order
 
 

@@ -2196,6 +2196,14 @@ class ApiTests(TestCase):
             ],
         }, format="json", **headers)
         self.assertEqual(created.status_code, 201, created.data)
+        preview = self.client.get(f"/api/orders/{created.data['id']}/warehouse-options/", **headers)
+        self.assertEqual(preview.status_code, 200, preview.data)
+        options = {item["warehouse"]["id"]: item for item in preview.data["options"]}
+        self.assertFalse(options[str(first.pk)]["selectable"])
+        self.assertTrue(options[str(second.pk)]["selectable"])
+        self.assertEqual(options[str(first.pk)]["lines"][1]["required"], "2.000")
+        self.assertEqual(options[str(first.pk)]["lines"][1]["available"], "1.000")
+        self.assertEqual(options[str(first.pk)]["lines"][1]["shortage"], "1.000")
         failed = self.client.post(f"/api/orders/{created.data['id']}/assign-warehouse/", {
             "warehouse": str(first.pk), "idempotency_key": "assign-shortage",
         }, format="json", **headers)

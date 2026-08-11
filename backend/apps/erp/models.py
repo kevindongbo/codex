@@ -746,7 +746,7 @@ class StockTransferLineQuerySet(models.QuerySet):
             raise ValidationError("已过账调拨单的明细不可修改或删除")
 
     def update(self, **kwargs):
-        if set(kwargs).issubset({"received_quantity", "updated_at"}) and not self.exclude(
+        if set(kwargs).issubset({"received_quantity", "exception_closed_quantity", "updated_at"}) and not self.exclude(
             transfer__status__in={StockTransfer.Status.IN_TRANSIT, StockTransfer.Status.PARTIALLY_RECEIVED}
         ).exists():
             return super().update(**kwargs)
@@ -763,6 +763,11 @@ class StockTransferLine(TimeStampedModel):
     sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="transfer_lines", verbose_name="库存单位（SKU）")
     quantity = models.DecimalField("数量", max_digits=14, decimal_places=3)
     received_quantity = models.DecimalField("累计收货数量", max_digits=14, decimal_places=3, default=Decimal("0"))
+    # Receipt and loss are distinct business facts.  A transit exception must
+    # never be presented as stock that arrived in the destination warehouse.
+    exception_closed_quantity = models.DecimalField(
+        "在途异常关闭数量", max_digits=14, decimal_places=3, default=Decimal("0")
+    )
 
     objects = StockTransferLineQuerySet.as_manager()
 
@@ -789,7 +794,7 @@ class StockTransferLine(TimeStampedModel):
             ).first()
             allowed_receipt_update = (
                 bool(kwargs.get("update_fields"))
-                and set(kwargs["update_fields"]) <= {"received_quantity", "updated_at"}
+                and set(kwargs["update_fields"]) <= {"received_quantity", "exception_closed_quantity", "updated_at"}
                 and persisted_status in {StockTransfer.Status.IN_TRANSIT, StockTransfer.Status.PARTIALLY_RECEIVED}
             )
             if persisted_status != StockTransfer.Status.DRAFT and not allowed_receipt_update:
@@ -859,6 +864,14 @@ class SalesOrder(OrganizationScopedModel):
     external_ref = models.CharField(max_length=100, blank=True)
     customer = models.JSONField(default=dict, blank=True)
     notes = models.TextField(blank=True)
+    # Platform synchronization may update its snapshot, but can never silently
+    # resume an ERP fulfilment that an operator has stopped.
+    fulfillment_override = models.CharField(max_length=24, default="normal")
+    erp_cancelled_at = models.DateTimeField(null=True, blank=True)
+    erp_cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="erp_cancelled_sales_orders",
+    )
 
     class Meta:
         constraints = [
@@ -1130,6 +1143,25 @@ class ProfitCalculationStrategy(OrganizationScopedModel):
         constraints = [
             models.UniqueConstraint(fields=["organization", "name"], name="uniq_org_profit_strategy_name"),
             models.UniqueConstraint(fields=["organization"], condition=Q(is_default=True), name="uniq_org_default_profit_strategy"),
+        ]
+
+
+class ProfitCalculationWorkingConfig(OrganizationScopedModel):
+    """The single shared, unnamed calculation workspace for an organization."""
+
+    config = models.JSONField(default=dict)
+    rate_mode = models.CharField(max_length=12, default="auto")
+    manual_cny_per_myr = models.DecimalField(max_digits=14, decimal_places=6, null=True, blank=True)
+    manual_usd_per_myr = models.DecimalField(max_digits=14, decimal_places=6, null=True, blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="updated_profit_calculation_working_configs",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["organization"], name="uniq_org_profit_working_config"),
+            models.CheckConstraint(condition=Q(rate_mode__in=["auto", "manual"]), name="profit_working_rate_mode_valid"),
         ]
 
 

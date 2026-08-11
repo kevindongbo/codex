@@ -8,13 +8,13 @@ from apps.erp.models import (
     AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, Product,
     PurchaseOrder, PurchaseOrderLine, Receipt, ReturnLine, ReturnOrder, ReturnReceipt,
     SalesOrder, SalesOrderLine, Shipment, SKU, StockBalance, StockLedger,
-    StockReservation, StockTransfer, StockTransferLine, Supplier, Warehouse,
+    StockReservation, StockTransfer, StockTransferLine, StockTransferPackage, StockTransferPackageLine, Supplier, Warehouse,
 )
 from apps.erp.services import (
     adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
     confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
-    dispatch_stock_transfer, receive_purchase, receive_return, receive_stock_transfer,
-    ship_order, start_picking, submit_purchase, verify_order,
+    close_stock_transfer_exception, dispatch_stock_transfer, receive_purchase, receive_return, receive_stock_transfer,
+    restore_order_fulfillment, ship_order, start_picking, submit_purchase, verify_order,
 )
 
 
@@ -242,6 +242,7 @@ class InventoryServiceTests(TestCase):
         balance = StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku)
         reservation = StockReservation.objects.get(order_line__order=order)
         self.assertEqual(order.status, SalesOrder.Status.CANCELLED)
+        self.assertEqual(order.fulfillment_override, "erp_cancelled")
         self.assertEqual(balance.on_hand, Decimal("6"))
         self.assertEqual(balance.reserved, Decimal("0"))
         self.assertEqual(reservation.status, StockReservation.Status.RELEASED)
@@ -252,6 +253,10 @@ class InventoryServiceTests(TestCase):
         self.assertEqual(
             StockLedger.objects.filter(event_type=StockLedger.Type.RELEASE).count(), 1
         )
+        restored = restore_order_fulfillment(order=order, actor=self.user)
+        self.assertEqual(restored.status, SalesOrder.Status.READY)
+        self.assertIsNone(restored.warehouse)
+        self.assertEqual(restored.fulfillment_override, "normal")
 
     def test_shipment_rejects_allocated_order_without_reservations(self):
         order = SalesOrder.objects.create(
@@ -471,6 +476,58 @@ class InventoryServiceTests(TestCase):
         self.assertEqual(
             StockLedger.objects.filter(event_type=StockLedger.Type.TRANSFER_CANCEL).count(), 0
         )
+
+    def test_transfer_packages_partial_sku_receipt_and_exception_are_separate(self):
+        destination = Warehouse.objects.create(
+            organization=self.organization, code="PKG-DST", name="Package destination"
+        )
+        second_product = Product.objects.create(
+            organization=self.organization, name="Second transfer product", status=Product.Status.ACTIVE
+        )
+        second_sku = SKU.objects.create(
+            organization=self.organization, product=second_product, code="SKU-002", cost="8"
+        )
+        adjust_inventory(organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+                         delta="5", reason="package opening a", idempotency_key="pkg-open-a", actor=self.user)
+        adjust_inventory(organization=self.organization, warehouse=self.warehouse, sku=second_sku,
+                         delta="3", reason="package opening b", idempotency_key="pkg-open-b", actor=self.user)
+        transfer = StockTransfer.objects.create(
+            organization=self.organization, number="TR-PACKAGES", source_warehouse=self.warehouse,
+            destination_warehouse=destination,
+        )
+        line_a = StockTransferLine.objects.create(transfer=transfer, sku=self.sku, quantity="5")
+        line_b = StockTransferLine.objects.create(transfer=transfer, sku=second_sku, quantity="3")
+        first = StockTransferPackage.objects.create(organization=self.organization, transfer=transfer, tracking_number="")
+        StockTransferPackageLine.objects.create(package=first, sku=self.sku, quantity="2")
+        StockTransferPackageLine.objects.create(package=first, sku=second_sku, quantity="3")
+        second = StockTransferPackage.objects.create(organization=self.organization, transfer=transfer, tracking_number="TRACK-2")
+        StockTransferPackageLine.objects.create(package=second, sku=self.sku, quantity="3")
+        dispatch_stock_transfer(transfer=transfer, idempotency_key="pkg-dispatch", actor=self.user)
+        self.assertIsNotNone(StockTransferPackage.objects.get(pk=first.pk).confirmed_at)
+        received = receive_stock_transfer(
+            transfer=transfer, idempotency_key="pkg-receive-a", quantities={str(line_a.pk): Decimal("2")}, actor=self.user,
+        )
+        self.assertEqual(received.status, StockTransfer.Status.PARTIALLY_RECEIVED)
+        line_a.refresh_from_db()
+        line_b.refresh_from_db()
+        self.assertEqual(line_a.received_quantity, Decimal("2"))
+        self.assertEqual(line_b.received_quantity, Decimal("0"))
+        closed = close_stock_transfer_exception(
+            transfer=transfer, quantities={str(line_a.pk): Decimal("3"), str(line_b.pk): Decimal("3")}, reason="lost in transit", actor=self.user,
+        )
+        self.assertEqual(closed.status, StockTransfer.Status.COMPLETED_WITH_EXCEPTION)
+        line_a.refresh_from_db()
+        line_b.refresh_from_db()
+        destination_a = StockBalance.objects.get(warehouse=destination, sku=self.sku)
+        destination_b = StockBalance.objects.get(warehouse=destination, sku=second_sku)
+        self.assertEqual(line_a.received_quantity, Decimal("2"))
+        self.assertEqual(line_a.exception_closed_quantity, Decimal("3"))
+        self.assertEqual(line_b.received_quantity, Decimal("0"))
+        self.assertEqual(line_b.exception_closed_quantity, Decimal("3"))
+        self.assertEqual(destination_a.on_hand, Decimal("2"))
+        self.assertEqual(destination_a.in_transit, Decimal("0"))
+        self.assertEqual(destination_b.on_hand, Decimal("0"))
+        self.assertEqual(destination_b.in_transit, Decimal("0"))
 
     def test_stock_transfer_overdispatch_rolls_back_every_line(self):
         destination = Warehouse.objects.create(

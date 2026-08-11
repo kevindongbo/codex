@@ -42,6 +42,7 @@ router.register("ai-recommendations", views.AIRecommendationViewSet, basename="a
 urlpatterns = [
     path("health/", views.health, name="health"),
     path("profit-calculator/config/", views.profit_calculator_config, name="profit-calculator-config"),
+    path("profit-calculator/working-config/", views.profit_calculator_working_config, name="profit-calculator-working-config"),
     path("profit-calculator/exchange-rates/", views.profit_exchange_rates, name="profit-exchange-rates"),
     path("profit-calculator/calculate/", views.profit_calculator_calculate, name="profit-calculator-calculate"),
     path("sync/version/", views.sync_version, name="sync-version"),

@@ -562,7 +562,8 @@
       const inventoryBalances = raw.balances.filter((item) => String(item.warehouse) === this.warehouseId).map(function (item) {
         return {
           apiBalanceId: String(item.id), warehouseId: LOCAL_WAREHOUSE_ID, productId: productBySku.get(String(item.sku)) || '',
-          onHand: number(item.on_hand), reserved: number(item.reserved), inTransit: number(item.in_transit),
+          onHand: number(item.on_hand), reserved: number(item.reserved),
+          purchasedPendingShipment: number(item.purchased_pending_shipment), inTransit: number(item.in_transit),
           updatedAt: item.updated_at
         };
       }).filter(function (item) { return item.productId; });
@@ -588,7 +589,7 @@
           platform: item.platform || (item.customer || {}).platform || '手工订单',
           store: item.store || (item.customer || {}).store || '', orderedAt: item.ordered_at || item.created_at,
           trackingNumber: shipment ? shipment.tracking_number || '' : '', note: item.notes || '',
-          status: orderStatus[item.status] || item.status, createdAt: item.created_at, updatedAt: item.updated_at,
+          status: orderStatus[item.status] || item.status, fulfillmentOverride: item.fulfillment_override || 'normal', createdAt: item.created_at, updatedAt: item.updated_at,
           lines: (item.lines || []).map(function (line) {
             return {
               id: String(line.id), skuId: String(line.sku), productId: productBySku.get(String(line.sku)) || '',
@@ -623,7 +624,7 @@
           lines: (item.lines || []).map(function (line) {
             return {
               id: String(line.id), skuId: String(line.sku), productId: productBySku.get(String(line.sku)) || '',
-              quantity: number(line.quantity), receivedQty: item.status === 'received' ? number(line.quantity) : 0
+              quantity: number(line.quantity), receivedQty: number(line.received_quantity), exceptionClosedQty: number(line.exception_closed_quantity)
             };
           })
         };
@@ -689,9 +690,16 @@
 
     async saveStore(store, storeId) {
       const path = storeId ? '/stores/' + storeId + '/' : '/stores/';
+      const rawPlatform = String(store.platform_code || store.platformCode || store.platform || 'tiktok_shop').trim().toLowerCase();
+      const platformAliases = {
+        tiktok: 'tiktok_shop', 'tiktok shop': 'tiktok_shop', tiktok_shop: 'tiktok_shop',
+        shopee: 'shopee', ozon: 'ozon', other: 'other'
+      };
+      const platformCode = platformAliases[rawPlatform] || 'other';
       return this.request(path, { method: storeId ? 'PATCH' : 'POST', body: {
-        name: String(store.name || '').trim(), platform: store.platform || 'TikTok Shop',
-        market: store.market || '马来西亚', is_active: store.is_active !== false
+        name: String(store.name || '').trim(), platform_code: platformCode,
+        custom_platform_name: platformCode === 'other' ? String(store.custom_platform_name || store.customPlatformName || '').trim() : '',
+        platform: String(store.platform || '').trim(), market: String(store.market || '').trim(), is_active: store.is_active !== false
       }});
     }
 
@@ -1025,6 +1033,7 @@
         lines: transfer.lines.map(function (line) { return { sku: line.skuId, quantity: line.quantity }; })
       };
       const saved = await this.request('/stock-transfers/', { method: 'POST', body: payload });
+      if (transfer.packages && transfer.packages.length) await this.saveTransferPackages(saved, transfer.packages);
       const key = this.idempotencyKey('transfer-dispatch', saved.id);
       try {
         const result = await this.request('/stock-transfers/' + saved.id + '/dispatch/', { method: 'POST', body: { idempotency_key: key.value } });
@@ -1056,13 +1065,30 @@
       } catch (error) { this.completeIdempotency(key, error); throw error; }
     }
 
-    async receiveTransfer(transfer) {
-      const key = this.idempotencyKey('transfer-receive', transfer.id);
+    async receiveTransfer(transfer, quantities) {
+      const normalizedQuantities = (quantities || []).map(function (line) {
+        return { transfer_line: line.transferLineId || line.transfer_line || line.id, quantity: number(line.quantity) };
+      }).filter(function (line) { return line.transfer_line && line.quantity > 0; });
+      const quantityMap = Object.fromEntries(normalizedQuantities.map(function (line) { return [line.transfer_line, line.quantity]; }));
+      const signature = normalizedQuantities.map(function (line) { return line.transfer_line + ':' + line.quantity; }).sort().join(':');
+      const key = this.idempotencyKey('transfer-receive', transfer.id + ':' + signature);
       try {
-        const result = await this.request('/stock-transfers/' + transfer.id + '/receive/', { method: 'POST', body: { idempotency_key: key.value } });
+        const result = await this.request('/stock-transfers/' + transfer.id + '/receive/', {
+          method: 'POST', body: { idempotency_key: key.value, quantities: quantityMap }
+        });
         this.completeIdempotency(key);
         return result;
       } catch (error) { this.completeIdempotency(key, error); throw error; }
+    }
+
+    async closeTransferException(transfer, quantities, reason) {
+      const lines = (quantities || []).map(function (line) {
+        return { transfer_line: line.transferLineId || line.transfer_line || line.id, quantity: number(line.quantity) };
+      }).filter(function (line) { return line.transfer_line && line.quantity > 0; });
+      if (!lines.length) throw new ApiError('请至少填写一条异常关闭数量。', 400, null);
+      return this.request('/stock-transfers/' + transfer.id + '/close-transit-exception/', {
+        method: 'POST', body: { quantities: Object.fromEntries(lines.map(function (line) { return [line.transfer_line, line.quantity]; })), reason: String(reason || '').trim() }
+      });
     }
 
     async cancelTransfer(transfer) {
@@ -1125,6 +1151,31 @@
       } catch (error) { this.completeIdempotency(key, error); throw error; }
     }
 
+    async getOrderWarehouseOptions(order) {
+      return this.request('/orders/' + order.id + '/warehouse-options/', { method: 'GET' });
+    }
+
+    async listTransferPackages(transfer) {
+      return this.listAll('/stock-transfers/' + transfer.id + '/packages/');
+    }
+
+    async saveTransferPackages(transfer, packages) {
+      const isUuid = function (value) { return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '')); };
+      return this.request('/stock-transfers/' + transfer.id + '/packages/', {
+        method: 'PUT',
+        body: { packages: packages.map(function (item) {
+          const payload = {
+            tracking_number: item.trackingNumber || item.tracking_number || ''
+          };
+          if (transfer.status === 'draft') payload.lines = (item.lines || []).map(function (line) {
+            return { sku: line.skuId || line.sku, quantity: number(line.quantity) };
+          });
+          if (isUuid(item.id)) payload.id = item.id;
+          return payload;
+        }) }
+      });
+    }
+
     async advanceOrder(order) {
       if (order.apiStatus === 'allocated') return this.request('/orders/' + order.id + '/start-picking/', { method: 'POST', body: {} });
       if (order.apiStatus === 'picking') return this.request('/orders/' + order.id + '/verify/', { method: 'POST', body: {} });
@@ -1151,6 +1202,10 @@
 
     async cancelOrder(order) {
       return this.request('/orders/' + order.id + '/cancel/', { method: 'POST', body: {} });
+    }
+
+    async restoreOrderFulfillment(order) {
+      return this.request('/orders/' + order.id + '/restore-fulfillment/', { method: 'POST', body: {} });
     }
 
     async receiveReturn(order, line, quantity, condition, note) {

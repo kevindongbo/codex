@@ -7,7 +7,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.erp.models import AuditLog, ExchangeRateSnapshot, Membership, Organization, ProfitCalculationStrategy
+from apps.erp.models import AuditLog, ExchangeRateSnapshot, Membership, Organization, ProfitCalculationStrategy, ProfitCalculationWorkingConfig
 from apps.erp.exchange_rates import refresh_snapshot
 from apps.erp.profit_calculator import CATEGORY_RULES, calculate_profit, category_tree
 from apps.erp.profit_shipping_rates import malaysia_cross_border_shipping
@@ -354,6 +354,28 @@ class ProfitCalculatorApiTests(TestCase):
         )
         self.assertEqual(len(response.data["categories"][0]["path"]), 3)
         self.assertTrue(response.data["sources"]["lvg_tax"].startswith("https://mysst.customs.gov.my/"))
+
+    def test_working_config_is_shared_and_keeps_manual_rates_outside_named_strategy(self):
+        config = {
+            "country": "MY", "seller_type": "local", "shop_identity": "marketplace", "bxp": True,
+            "commission_adjustment": "2.00", "buyer_pays_shipping": False,
+            "buyer_shipping_region": "west_malaysia", "transaction_fee_adjustment": "1.00", "display_currency": "CNY",
+        }
+        saved = self.client.put("/api/profit-calculator/working-config/", {
+            "config": config, "rate_mode": "manual", "manual_cny_per_myr": "1.680000", "manual_usd_per_myr": "0.235000",
+        }, format="json")
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(saved.data["config"]["seller_type"], "local")
+        self.assertEqual(saved.data["rate_mode"], "manual")
+        refreshed = self.client.get("/api/profit-calculator/working-config/")
+        self.assertEqual(refreshed.status_code, 200, refreshed.data)
+        self.assertEqual(refreshed.data["manual_cny_per_myr"], "1.680000")
+        self.assertEqual(ProfitCalculationWorkingConfig.objects.filter(organization=self.organization).count(), 1)
+        strategy = self.client.post("/api/profit-calculator/strategies/", {"name": "Named", "config": {**config, "seller_type": "cross_border"}}, format="json")
+        self.assertEqual(strategy.status_code, 201, strategy.data)
+        refreshed_again = self.client.get("/api/profit-calculator/working-config/")
+        self.assertEqual(refreshed_again.data["config"]["seller_type"], "local")
+        self.assertTrue(AuditLog.objects.filter(action="profit_calculator.working_config.save").exists())
 
     def test_strategy_create_and_update_atomically_promote_the_default(self):
         config = {

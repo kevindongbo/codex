@@ -26,10 +26,10 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, ExchangeRateSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge, OwnStore, ProfitCalculationStrategy,
+    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, ExchangeRateSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge, OwnStore, ProfitCalculationStrategy, ProfitCalculationWorkingConfig,
     LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentConversionEvent, ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
-    SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, ReplenishmentRecommendation, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
+    SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, StockTransferPackage, ReplenishmentRecommendation, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
 )
 from .owner_security import consume_challenge, create_challenge, email_verification_enabled
 from .permissions import (
@@ -52,14 +52,15 @@ from .serializers import (
     StockLedgerReversalInputSerializer, StockLedgerSerializer, StockTransferSerializer, SupplierSerializer,
     ManualStockMovementInputSerializer, TikTokAuthorizationStartSerializer, TikTokShopConnectionSerializer, TikTokShopSyncRunSerializer, TikTokSyncStartSerializer,
     TransferExceptionCloseInputSerializer, TransferPostInputSerializer, TransferReceiveInputSerializer, WarehouseSerializer,
-    ProductSelectionKeywordInputSerializer, ProductSelectionReportInputSerializer, ProfitCalculationStrategySerializer,
+    ProductSelectionKeywordInputSerializer, ProductSelectionReportInputSerializer, ProfitCalculationStrategySerializer, ProfitCalculationWorkingConfigSerializer,
+    StockTransferPackageSerializer, TransferPackagesInputSerializer,
 )
 from . import alphashop, integrations
 from .services import (
     adjust_inventory, allocate_order, assign_order_warehouse, cancel_order, cancel_purchase, cancel_stock_transfer,
     confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
     change_order_warehouse, close_purchase_transit_exception, close_purchase_unshipped, close_stock_transfer_exception, confirm_purchase_shipment, dispatch_stock_transfer, edit_purchase, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger, reserve_stock_transfer_draft,
-    reject_return, ship_order, start_picking, submit_purchase, verify_order, write_audit,
+    reject_return, restore_order_fulfillment, save_stock_transfer_packages, ship_order, start_picking, submit_purchase, update_stock_transfer_package_tracking, verify_order, write_audit,
 )
 from .local_imports import commit_local_import, validate_local_import
 from .replenishment import (
@@ -235,6 +236,44 @@ def profit_calculator_config(request):
             "lvg_tax": LVG_TAX_SOURCE,
         },
     })
+
+
+@api_view(["GET", "PUT"])
+def profit_calculator_working_config(request):
+    """Read/write the organization shared, unnamed profit-calculation workspace."""
+    _require_capability(request, "profit_rules", "当前账号没有使用利润试算配置的权限")
+    organization = request_organization(request)
+    record = ProfitCalculationWorkingConfig.objects.filter(organization=organization).select_related("updated_by").first()
+    if request.method == "GET":
+        if record is not None:
+            return Response(ProfitCalculationWorkingConfigSerializer(record).data)
+        fallback = ProfitCalculationStrategy.objects.filter(organization=organization, is_default=True).first()
+        return Response({
+            "id": None,
+            "config": fallback.config if fallback else {},
+            "rate_mode": "auto",
+            "manual_cny_per_myr": None,
+            "manual_usd_per_myr": None,
+            "updated_by_name": None,
+            "updated_at": None,
+        })
+    _require_capability(request, "profit_rules", "当前账号没有修改利润试算配置的权限")
+    with transaction.atomic():
+        record, _ = ProfitCalculationWorkingConfig.objects.select_for_update().get_or_create(
+            organization=organization
+        )
+        serializer = ProfitCalculationWorkingConfigSerializer(record, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        saved = serializer.save(
+            updated_by=request.user,
+            config=_profit_strategy_config(serializer.validated_data.get("config", record.config)),
+        )
+        write_audit(
+            organization=organization, actor=request.user, action="profit_calculator.working_config.save",
+            instance=saved, after={"rate_mode": saved.rate_mode},
+        )
+        bump_sync_revision(organization_id=organization.pk)
+    return Response(ProfitCalculationWorkingConfigSerializer(saved).data)
 
 
 @api_view(["GET", "POST"])
@@ -1958,6 +1997,27 @@ class StockTransferViewSet(OrganizationScopedViewSet):
         super().perform_create(serializer)
         reserve_stock_transfer_draft(transfer=serializer.instance, actor=self.request.user)
 
+    @action(detail=True, methods=["get", "put"], url_path="packages")
+    def packages(self, request, pk=None):
+        transfer = self.get_object()
+        if request.method == "GET":
+            packages = StockTransferPackage.objects.filter(transfer=transfer).prefetch_related("lines").order_by("created_at", "id")
+            return Response(StockTransferPackageSerializer(packages, many=True).data)
+        data = TransferPackagesInputSerializer(data=request.data, context=self.get_serializer_context())
+        data.is_valid(raise_exception=True)
+        if transfer.status == StockTransfer.Status.DRAFT:
+            saved = _service_call(
+                save_stock_transfer_packages, transfer=transfer,
+                packages=data.validated_data["packages"], actor=request.user,
+            )
+        else:
+            saved = _service_call(
+                update_stock_transfer_package_tracking, transfer=transfer,
+                packages=data.validated_data["packages"], actor=request.user,
+            )
+        packages = StockTransferPackage.objects.filter(transfer=saved).prefetch_related("lines").order_by("created_at", "id")
+        return Response(StockTransferPackageSerializer(packages, many=True).data)
+
     @action(detail=True, methods=["post"], url_path="dispatch")
     def dispatch_transfer(self, request, pk=None):
         data = TransferPostInputSerializer(data=request.data)
@@ -2019,6 +2079,52 @@ class SalesOrderViewSet(OrganizationScopedViewSet):
     def cancel(self, request, pk=None):
         order = _service_call(cancel_order, order=self.get_object(), actor=request.user)
         return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["post"], url_path="restore-fulfillment")
+    def restore_fulfillment(self, request, pk=None):
+        order = _service_call(restore_order_fulfillment, order=self.get_object(), actor=request.user)
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["get"], url_path="warehouse-options")
+    def warehouse_options(self, request, pk=None):
+        """A side-effect free preview used by the warehouse choice modal."""
+        order = self.get_object()
+        lines = list(order.lines.select_related("sku__product").order_by("pk"))
+        membership = active_internal_membership(request.user)
+        allowed = allowed_warehouse_ids(request.user, membership, order.organization)
+        warehouses = Warehouse.objects.filter(organization=order.organization, active=True, can_ship=True).order_by("code", "name")
+        if allowed is not None:
+            warehouses = warehouses.filter(pk__in=allowed)
+        unmapped = [line for line in lines if line.sku_id is None]
+        options = []
+        for warehouse in warehouses:
+            preview_lines, total_shortage = [], Decimal("0")
+            for line in lines:
+                if line.sku_id is None:
+                    preview_lines.append({
+                        "line_id": str(line.pk), "sku": None, "sku_code": line.external_sku_code,
+                        "required": str(line.quantity), "available": "0", "shortage": str(line.quantity),
+                        "unmapped": True,
+                    })
+                    total_shortage += Decimal(line.quantity)
+                    continue
+                balance = StockBalance.objects.filter(
+                    organization=order.organization, warehouse=warehouse, sku=line.sku
+                ).first()
+                required = Decimal(line.quantity) - Decimal(line.quantity_shipped) - Decimal(line.quantity_reserved)
+                available = (Decimal(balance.on_hand) - Decimal(balance.reserved)) if balance else Decimal("0")
+                shortage = max(Decimal("0"), required - available)
+                total_shortage += shortage
+                preview_lines.append({
+                    "line_id": str(line.pk), "sku": str(line.sku_id), "sku_code": line.sku.code,
+                    "required": str(required), "available": str(available), "shortage": str(shortage), "unmapped": False,
+                })
+            options.append({
+                "warehouse": {"id": str(warehouse.pk), "code": warehouse.code, "name": warehouse.name},
+                "lines": preview_lines, "shortage": str(total_shortage),
+                "selectable": not unmapped and total_shortage == 0,
+            })
+        return Response({"order": str(order.pk), "order_number": order.number, "unmapped": bool(unmapped), "options": options})
 
     @action(detail=True, methods=["post"])
     def allocate(self, request, pk=None):

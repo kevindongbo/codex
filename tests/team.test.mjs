@@ -249,6 +249,44 @@ test('unknown network outcome reuses the same inventory idempotency key', async 
   assert.equal(bodies[1].delta, 3);
 });
 
+test('warehouse modal APIs, cancellation restore, and partial transfer payloads use the ERP endpoints once', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  const calls = [];
+  gateway.request = async (path, options = {}) => { calls.push({ path, options }); return { id: 'ok' }; };
+  const order = { id: 'order-1' };
+  const transfer = { id: 'transfer-1', status: 'in_transit' };
+
+  await gateway.getOrderWarehouseOptions(order);
+  await gateway.assignOrderWarehouse(order, 'warehouse-1', false);
+  await gateway.cancelOrder(order);
+  await gateway.restoreOrderFulfillment(order);
+  await gateway.receiveTransfer(transfer, [{ transferLineId: 'line-a', quantity: 2 }]);
+  await gateway.closeTransferException(transfer, [{ transferLineId: 'line-b', quantity: 1 }], 'lost');
+
+  assert.equal(calls[0].path, '/orders/order-1/warehouse-options/');
+  assert.equal(calls[1].path, '/orders/order-1/assign-warehouse/');
+  assert.equal(calls[2].path, '/orders/order-1/cancel/');
+  assert.equal(calls[3].path, '/orders/order-1/restore-fulfillment/');
+  assert.equal(JSON.stringify(calls[4].options.body.quantities), JSON.stringify({ 'line-a': 2 }));
+  assert.equal(JSON.stringify(calls[5].options.body.quantities), JSON.stringify({ 'line-b': 1 }));
+});
+
+test('transfer packages allow blank tracking while preserving exact SKU quantities before dispatch', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  let call;
+  gateway.request = async (path, options = {}) => { call = { path, options }; return {}; };
+  await gateway.saveTransferPackages({ id: 'transfer-1', status: 'draft' }, [
+    { id: 'browser-package', trackingNumber: '', lines: [{ skuId: 'sku-a', quantity: 2 }] },
+    { trackingNumber: 'TRACK-2', lines: [{ skuId: 'sku-a', quantity: 3 }] },
+  ]);
+  assert.equal(call.path, '/stock-transfers/transfer-1/packages/');
+  assert.equal(call.options.body.packages[0].tracking_number, '');
+  assert.equal(Object.hasOwn(call.options.body.packages[0], 'id'), false);
+  assert.equal(JSON.stringify(call.options.body.packages[1].lines), JSON.stringify([{ sku: 'sku-a', quantity: 3 }]));
+});
+
 test('custom warehouse creation sends operational fields and refreshes the unlimited directory', async () => {
   const calls = [];
   const replies = [
