@@ -3,10 +3,11 @@
 本轮仅完成代码、迁移和本地验证；Codex 未连接阿里云，也未执行生产部署。
 
 - 实施分支：`codex/implement-erp-replenishment-intransit-store-20260811`
-- 已完整测试的实施 SHA：`2377dfb874767b24fa0bb318ff0efe05dfe3da0a`
+- 已完整测试的实施 SHA：`06c219dde3298955823d9ad77fee5a6f51d7fb3e`
 - Draft PR：[#12](https://github.com/kevindongbo/codex/pull/12)
-- 新增迁移：`0028_replenishment_intransit_store.py`、`0029_sales_order_external_sku.py`
+- 本次新增迁移：`0030_purchase_stages_and_replenishment_conversion_events.py`、`0031_repair_0028_replenishment_history.py`
 - `0028` 包含 Data Migration：回填仓库默认周期、SKU 策略覆盖周期、历史采购批次确认标记、旧调拨在途余额及兼容包。
+- `0030` 新增采购未发货关闭、采购在途异常关闭和补货建议分次转采购事件的数据字段；`0031` 为已执行过 `0028` 的数据库提供仅向前、可重复运行的历史修复，纠正可识别的策略覆盖周期并补齐小写调拨在途状态遗漏的包/在途余额。
 - Data Migration 不保证安全反向执行；生产迁移前必须备份 PostgreSQL，回滚时按数据影响决定是否恢复备份。
 - 修改了静态前端 `app.js`，生产更新需要执行仓库既有前端构建流程。
 - 已验证构建命令：`node scripts/build-site.mjs`。
@@ -17,7 +18,8 @@
 ## 已执行测试
 
 - `python manage.py makemigrations --check --dry-run`：通过，无待生成迁移。
-- `python manage.py test apps.erp.tests --noinput`：通过，131 项全部成功。
+- `python manage.py check`：通过，0 个系统检查问题。
+- `python manage.py test apps.erp.tests --noinput`：通过，133 项全部成功。
 - `node --check app.js`、`team.js`、`profit-calculator.js`：通过。
 - `node --test tests/site.test.mjs`：15 项通过。
 - `node --test tests/domain.test.mjs`：16 项通过。
