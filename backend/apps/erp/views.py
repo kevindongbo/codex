@@ -58,7 +58,7 @@ from .serializers import (
 from . import alphashop, integrations
 from .services import (
     adjust_inventory, allocate_order, assign_order_warehouse, cancel_order, cancel_purchase, cancel_stock_transfer,
-    confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
+    confirm_and_ship_order, confirm_and_ship_or_shortage, confirm_order, create_quick_sales_snapshot,
     change_order_warehouse, close_purchase_transit_exception, close_purchase_unshipped, close_stock_transfer_exception, confirm_purchase_shipment, dispatch_stock_transfer, edit_purchase, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger, reserve_stock_transfer_draft,
     reject_return, restore_order_fulfillment, save_stock_transfer_packages, ship_order, start_picking, submit_purchase, update_stock_transfer_package_tracking, verify_order, write_audit,
 )
@@ -2070,6 +2070,51 @@ class SalesOrderViewSet(OrganizationScopedViewSet):
     serializer_class = SalesOrderSerializer
     capability = "order"
 
+    @action(detail=False, methods=["post"], url_path="create-and-ship")
+    @transaction.atomic
+    def create_and_ship(self, request):
+        payload = request.data.copy()
+        idempotency_key = str(payload.pop("idempotency_key", "") or "").strip()
+        shipment_number = str(payload.pop("shipment_number", "") or "").strip()
+        tracking_number = str(payload.pop("tracking_number", "") or "").strip()
+        if not idempotency_key or len(idempotency_key) > 120:
+            raise ValidationError({"idempotency_key": "幂等键不能为空且不能超过 120 个字符"})
+        if len(shipment_number) > 60 or len(tracking_number) > 100:
+            raise ValidationError("出库单号或物流单号过长")
+
+        organization = Organization.objects.select_for_update().get(pk=self.get_organization().pk)
+        external_ref = "erp-create:" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+        order = SalesOrder.objects.filter(organization=organization, external_ref=external_ref).first()
+        if order is None:
+            payload["external_ref"] = external_ref
+            serializer = self.get_serializer(data=payload)
+            serializer.is_valid(raise_exception=True)
+            _require_serializer_warehouse_access(request, organization, serializer)
+            order = _save_serializer(serializer, organization=organization)
+            order, shipment, shortages = _service_call(
+                confirm_and_ship_or_shortage,
+                order=order,
+                idempotency_key=idempotency_key,
+                number=shipment_number,
+                tracking_number=tracking_number,
+                actor=request.user,
+            )
+        else:
+            shipment = Shipment.objects.filter(
+                organization=organization, order=order, idempotency_key=idempotency_key
+            ).first()
+            shortages = []
+        outcome = "shipped" if shipment is not None else "shortage"
+        return Response(
+            {
+                "outcome": outcome,
+                "order": self.get_serializer(order).data,
+                "shipment": ShipmentSerializer(shipment).data if shipment is not None else None,
+                "shortages": shortages,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
         order = _service_call(confirm_order, order=self.get_object(), actor=request.user)
@@ -2089,7 +2134,7 @@ class SalesOrderViewSet(OrganizationScopedViewSet):
     def warehouse_options(self, request, pk=None):
         """A side-effect free preview used by the warehouse choice modal."""
         order = self.get_object()
-        lines = list(order.lines.select_related("sku__product").order_by("pk"))
+        lines = list(order.lines.select_related("sku__product").order_by("sku__code", "external_sku_code", "id"))
         membership = active_internal_membership(request.user)
         allowed = allowed_warehouse_ids(request.user, membership, order.organization)
         warehouses = Warehouse.objects.filter(organization=order.organization, active=True, can_ship=True).order_by("code", "name")

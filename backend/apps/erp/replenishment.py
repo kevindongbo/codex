@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from statistics import median
@@ -321,6 +321,7 @@ class DemandVelocity:
     daily_stddev: Decimal = ZERO
     daily_3: Decimal = ZERO
     quantity_3: Decimal = ZERO
+    breakdown: dict[str, dict[str, Decimal]] = field(default_factory=dict)
 
 
 def estimate_demand_velocity(
@@ -356,8 +357,12 @@ def estimate_demand_velocity(
     lines = list(
         StockLedger.objects.filter(
             organization=organization,
+            warehouse=warehouse,
             sku=sku,
-            event_type=StockLedger.Type.SHIPMENT,
+            event_type__in=(
+                StockLedger.Type.SHIPMENT,
+                StockLedger.Type.MANUAL_OUTBOUND,
+            ),
             on_hand_delta__lt=0,
             occurred_at__gte=oldest,
             occurred_at__lte=current_time,
@@ -381,17 +386,44 @@ def estimate_demand_velocity(
         if shipment_line is not None:
             return_by_day[timezone.localtime(shipment_line.shipment.shipped_at).date()] += _decimal(return_line.quantity)
 
+    order_quantities: dict[int, Decimal] = {}
+    manual_quantities: dict[int, Decimal] = {}
+    return_quantities: dict[int, Decimal] = {}
     quantities: dict[int, Decimal] = {}
     for days in windows:
         threshold = current_time - timedelta(days=days)
-        quantities[days] = sum(
+        order_quantities[days] = sum(
             (
                 -_decimal(line.on_hand_delta)
                 for line in lines
+                if line.event_type == StockLedger.Type.SHIPMENT
+                and line.occurred_at >= threshold
+            ),
+            ZERO,
+        )
+        manual_quantities[days] = sum(
+            (
+                -_decimal(line.on_hand_delta)
+                for line in lines
+                if line.event_type == StockLedger.Type.MANUAL_OUTBOUND
                 if line.occurred_at >= threshold
             ),
             ZERO,
-        ) - sum((quantity for day, quantity in return_by_day.items() if day >= timezone.localtime(threshold).date()), ZERO)
+        )
+        return_quantities[days] = sum(
+            (
+                quantity
+                for day, quantity in return_by_day.items()
+                if day >= timezone.localtime(threshold).date()
+            ),
+            ZERO,
+        )
+        quantities[days] = max(
+            ZERO,
+            order_quantities[days]
+            + manual_quantities[days]
+            - return_quantities[days],
+        )
     daily = {days: quantities[days] / Decimal(days) for days in windows}
     velocity = sum((daily[days] * normalized_weights[index] for index, days in enumerate(windows)), ZERO)
     daily_3 = daily.get(3, ZERO)
@@ -416,11 +448,11 @@ def estimate_demand_velocity(
     variance = sum(((value - daily_average) ** 2 for value in daily_values), ZERO) / Decimal(len(daily_values))
     daily_stddev = _rate(Decimal(str(math.sqrt(float(variance)))))
     reasons: list[str] = [
-        "日速度按近 3/7/15/30 日最终出库流水加权计算；退货按原销售日回溯扣减，不含锁库或已撤回流水"
+        "日速度按近 3/7/15/30 日订单出库与手动销售出库加权计算；退货按原销售日回溯扣减，不含锁库、调拨、调整或已撤回流水"
     ]
     if not lines:
         confidence = "low"
-        reasons.append("近 30 天没有实际出库记录，无法从历史判断需求")
+        reasons.append("近 30 天没有订单出库或手动销售出库，无法从历史判断需求")
     else:
         history_days = (current_time - lines[0].occurred_at).days
         if history_days >= 28 and len(active_dates) >= 10:
@@ -446,6 +478,16 @@ def estimate_demand_velocity(
         reasons=tuple(reasons),
         daily_3=_rate(daily_3),
         quantity_3=_quantity(quantities.get(3, ZERO)),
+        breakdown={
+            str(days): {
+                "order_outbound": _quantity(order_quantities[days]),
+                "manual_outbound": _quantity(manual_quantities[days]),
+                "returns_at_original_sale_date": _quantity(return_quantities[days]),
+                "net_sales": _quantity(quantities[days]),
+                "daily_average": _rate(daily[days]),
+            }
+            for days in windows
+        },
     )
 
 
@@ -459,6 +501,7 @@ class InventoryPosition:
     open_purchase_count: int
     next_expected_at: datetime | None
     purchased_pending_shipment: Decimal = ZERO
+    inbound_total: Decimal = ZERO
 
 
 def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition:
@@ -519,6 +562,7 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
         open_purchase_count=len(remaining_by_purchase),
         next_expected_at=min(expected_dates) if expected_dates else None,
         purchased_pending_shipment=_quantity(purchase_pending),
+        inbound_total=_quantity(purchase_pending + in_transit),
     )
 
 

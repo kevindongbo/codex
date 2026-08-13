@@ -187,7 +187,9 @@
         const fallback = response.status
           ? ('请求失败（HTTP ' + response.status + '），请稍后重试。')
           : '请求失败，请稍后重试。';
-        throw new ApiError(errorMessage(payload, fallback), response.status, payload);
+        const requestId = response.headers.get('x-request-id') || response.headers.get('x-correlation-id') || '';
+        const message = errorMessage(payload, fallback) + (requestId ? '（请求编号 ' + requestId + '）' : '');
+        throw new ApiError(message, response.status, payload);
       }
       return payload;
     }
@@ -564,6 +566,9 @@
           apiBalanceId: String(item.id), warehouseId: LOCAL_WAREHOUSE_ID, productId: productBySku.get(String(item.sku)) || '',
           onHand: number(item.on_hand), reserved: number(item.reserved),
           purchasedPendingShipment: number(item.purchased_pending_shipment), inTransit: number(item.in_transit),
+          inboundTotal: number(item.inbound_total),
+          purchasedPendingSources: Array.isArray(item.purchased_pending_sources) ? item.purchased_pending_sources : [],
+          inTransitSources: Array.isArray(item.in_transit_sources) ? item.in_transit_sources : [],
           updatedAt: item.updated_at
         };
       }).filter(function (item) { return item.productId; });
@@ -1104,13 +1109,29 @@
           return { sku: line.skuId, quantity: line.quantity, unit_price: 0 };
         })
       };
-      const saved = await this.request('/orders/', { method: 'POST', body: payload });
-      if (!order.lines.length) return { order: saved, shipped: false, draft: true };
+      if (!order.lines.length) throw new ApiError('请至少加入一条订单明细。', 400, null);
+      const signature = [order.number, this.warehouseId, order.trackingNumber || ''].concat(
+        order.lines.map(function (line) { return line.skuId + ':' + line.quantity; }).sort()
+      ).join(':');
+      const key = this.idempotencyKey('create-and-ship-order', signature);
       try {
-        await this.confirmAndShipOrder({ id: saved.id, trackingNumber: order.trackingNumber || '' });
-        return { order: saved, shipped: true };
+        const result = await this.request('/orders/create-and-ship/', {
+          method: 'POST',
+          body: Object.assign(payload, {
+            idempotency_key: key.value,
+            shipment_number: 'SHP-' + key.value.slice(-24),
+            tracking_number: order.trackingNumber || ''
+          })
+        });
+        this.completeIdempotency(key);
+        return {
+          order: result.order,
+          shipped: result.outcome === 'shipped',
+          shortage: result.outcome === 'shortage',
+          shortages: result.shortages || []
+        };
       } catch (error) {
-        if (error instanceof ApiError && [400, 409].includes(error.status)) return { order: saved, shipped: false, error: error.message };
+        this.completeIdempotency(key, error);
         throw error;
       }
     }

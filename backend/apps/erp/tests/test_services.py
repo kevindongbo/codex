@@ -6,13 +6,13 @@ from django.test import TestCase
 
 from apps.erp.models import (
     AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, Product,
-    PurchaseOrder, PurchaseOrderLine, Receipt, ReturnLine, ReturnOrder, ReturnReceipt,
+    PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReturnLine, ReturnOrder, ReturnReceipt,
     SalesOrder, SalesOrderLine, Shipment, SKU, StockBalance, StockLedger,
     StockReservation, StockTransfer, StockTransferLine, StockTransferPackage, StockTransferPackageLine, Supplier, Warehouse,
 )
 from apps.erp.services import (
     adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
-    confirm_and_ship_order, confirm_order, create_quick_sales_snapshot,
+    confirm_and_ship_order, confirm_order, confirm_purchase_shipment, create_quick_sales_snapshot,
     close_stock_transfer_exception, dispatch_stock_transfer, receive_purchase, receive_return, receive_stock_transfer,
     restore_order_fulfillment, ship_order, start_picking, submit_purchase, verify_order,
 )
@@ -257,6 +257,82 @@ class InventoryServiceTests(TestCase):
         self.assertEqual(restored.status, SalesOrder.Status.READY)
         self.assertIsNone(restored.warehouse)
         self.assertEqual(restored.fulfillment_override, "normal")
+
+    def test_cancel_purchase_closes_pending_and_confirmed_transit_without_receiving_stock(self):
+        supplier = Supplier.objects.create(
+            organization=self.organization, code="SUP-CLOSE", name="Transit supplier"
+        )
+        purchase = PurchaseOrder.objects.create(
+            organization=self.organization,
+            number="PO-CLOSE-STAGES",
+            supplier=supplier,
+            warehouse=self.warehouse,
+        )
+        line = PurchaseOrderLine.objects.create(
+            purchase_order=purchase,
+            sku=self.sku,
+            quantity_ordered="10",
+            unit_cost="7",
+        )
+        submit_purchase(purchase_order=purchase, actor=self.user)
+        shipment = PurchaseShipment.objects.create(
+            purchase_order=purchase,
+            tracking_number="PKG-CLOSE",
+        )
+        shipment_line = PurchaseShipmentLine.objects.create(
+            purchase_shipment=shipment,
+            purchase_line=line,
+            quantity_shipped="4",
+        )
+        confirm_purchase_shipment(purchase_shipment=shipment, actor=self.user)
+
+        balance = StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku)
+        self.assertEqual(balance.purchased_pending_shipment, Decimal("6"))
+        self.assertEqual(balance.in_transit, Decimal("4"))
+
+        cancel_purchase(purchase_order=purchase, actor=self.user)
+
+        purchase.refresh_from_db()
+        line.refresh_from_db()
+        shipment.refresh_from_db()
+        shipment_line.refresh_from_db()
+        balance.refresh_from_db()
+        self.assertEqual(purchase.status, PurchaseOrder.Status.CANCELLED)
+        self.assertEqual(line.quantity_unshipped_closed, Decimal("6"))
+        self.assertEqual(shipment_line.quantity_exception_closed, Decimal("4"))
+        self.assertIsNotNone(shipment.closed_at)
+        self.assertEqual(balance.purchased_pending_shipment, Decimal("0"))
+        self.assertEqual(balance.in_transit, Decimal("0"))
+        self.assertEqual(balance.on_hand, Decimal("0"))
+
+    def test_cancel_rejects_inconsistent_reservations_without_partial_release(self):
+        adjust_inventory(
+            organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+            delta="6", reason="opening", idempotency_key="dirty-cancel-opening", actor=self.user,
+        )
+        order = SalesOrder.objects.create(
+            organization=self.organization, number="SO-DIRTY-CANCEL", warehouse=self.warehouse,
+            status=SalesOrder.Status.ALLOCATED,
+        )
+        line = SalesOrderLine.objects.create(
+            order=order, sku=self.sku, quantity="4", quantity_reserved="4",
+        )
+        StockBalance.objects.filter(warehouse=self.warehouse, sku=self.sku).update(reserved="2")
+        StockReservation.objects.create(
+            organization=self.organization, order_line=line, warehouse=self.warehouse,
+            sku=self.sku, quantity="2", idempotency_key="dirty-reservation",
+        )
+
+        with self.assertRaisesRegex(ValidationError, "订单锁库数据不一致"):
+            cancel_order(order=order, actor=self.user)
+
+        order.refresh_from_db()
+        line.refresh_from_db()
+        balance = StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku)
+        self.assertEqual(order.status, SalesOrder.Status.ALLOCATED)
+        self.assertEqual(line.quantity_reserved, Decimal("4"))
+        self.assertEqual(balance.reserved, Decimal("2"))
+        self.assertEqual(StockLedger.objects.filter(event_type=StockLedger.Type.RELEASE).count(), 0)
 
     def test_shipment_rejects_allocated_order_without_reservations(self):
         order = SalesOrder.objects.create(

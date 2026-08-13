@@ -272,6 +272,27 @@ test('warehouse modal APIs, cancellation restore, and partial transfer payloads 
   assert.equal(JSON.stringify(calls[5].options.body.quantities), JSON.stringify({ 'line-b': 1 }));
 });
 
+test('order creation uses one idempotent create-and-ship request and keeps shortage outcome', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.warehouseId = 'warehouse-1';
+  const calls = [];
+  gateway.request = async (path, options = {}) => {
+    calls.push({ path, options });
+    return { outcome: 'shortage', order: { id: 'order-1' }, shortages: [{ sku: 'SKU-A', shortage: '2' }] };
+  };
+  const result = await gateway.createOrder({
+    number: 'SO-ONE', platform: 'TikTok Shop', store: 'MY', orderedAt: '2026-08-13T10:00:00Z',
+    trackingNumber: '', note: '', lines: [{ skuId: 'sku-a', quantity: 5 }],
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, '/orders/create-and-ship/');
+  assert.equal(calls[0].options.body.lines[0].quantity, 5);
+  assert.ok(calls[0].options.body.idempotency_key);
+  assert.equal(result.shortage, true);
+  assert.equal(result.shipped, false);
+});
+
 test('transfer packages allow blank tracking while preserving exact SKU quantities before dispatch', async () => {
   const Team = await loadTeam();
   const gateway = new Team.TeamGateway({ apiBase: '/api' });
