@@ -478,6 +478,43 @@ class ReplenishmentTests(TestCase):
         self.assertEqual(inventory.inbound_total, Decimal("245.000"))
         self.assertEqual(inventory.inventory_position, Decimal("252.000"))
 
+    def test_inventory_position_uses_sources_when_historical_balance_missed_purchase(self):
+        StockBalance.objects.create(
+            organization=self.organization,
+            warehouse=self.warehouse,
+            sku=self.sku,
+            on_hand="7",
+            purchased_pending_shipment="0",
+            in_transit="95",
+        )
+        purchase = PurchaseOrder.objects.create(
+            organization=self.organization,
+            number="PO-HISTORICAL-150",
+            supplier=self.supplier,
+            warehouse=self.warehouse,
+            status=PurchaseOrder.Status.SUBMITTED,
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=purchase, sku=self.sku, quantity_ordered="150", unit_cost="10"
+        )
+        transfer = StockTransfer.objects.create(
+            organization=self.organization,
+            number="TR-HISTORICAL-95",
+            source_warehouse=self.other_warehouse,
+            destination_warehouse=self.warehouse,
+            status=StockTransfer.Status.IN_TRANSIT,
+        )
+        StockTransferLine.objects.create(transfer=transfer, sku=self.sku, quantity="95")
+
+        inventory = get_inventory_position(
+            organization=self.organization, sku=self.sku, warehouse=self.warehouse
+        )
+
+        self.assertEqual(inventory.purchased_pending_shipment, Decimal("150.000"))
+        self.assertEqual(inventory.in_transit, Decimal("95.000"))
+        self.assertEqual(inventory.inbound_total, Decimal("245.000"))
+        self.assertEqual(inventory.inventory_position, Decimal("252.000"))
+
     def test_calculation_rounds_up_to_moq_and_pack_size(self):
         forecast = calculate_replenishment(
             lead_time=self.lead(days=10, confidence="high"),

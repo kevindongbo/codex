@@ -249,6 +249,33 @@ test('unknown network outcome reuses the same inventory idempotency key', async 
   assert.equal(bodies[1].delta, 3);
 });
 
+test('team adapter preserves authoritative inbound total and all source rows', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.warehouseId = 'wh-1';
+  gateway.warehouses = [{ id: 'wh-1', code: 'MY', name: '马来仓', active: true }];
+  const raw = emptyRawState();
+  raw.products = [{
+    id: 'product-1', name: '豹纹托特-棕色', status: 'active', images: [],
+    skus: [{ id: 'sku-1', code: 'AI-BAG-BROWN-05', active: true }],
+  }];
+  raw.balances = [{
+    id: 'balance-1', warehouse: 'wh-1', sku: 'sku-1', on_hand: '7', reserved: '0',
+    purchased_pending_shipment: '150.000', in_transit: '95.000', inbound_total: '245.000',
+    purchased_pending_sources: [{ source_number: 'PO-20260805-2715', remaining_quantity: '150.000' }],
+    in_transit_sources: [{ source_number: 'TR-20260729-1510', remaining_quantity: '95.000' }],
+  }];
+
+  const state = gateway.adaptState(raw);
+  const balance = state.inventoryBalances[0];
+
+  assert.equal(balance.purchasedPendingShipment, 150);
+  assert.equal(balance.inTransit, 95);
+  assert.equal(balance.inboundTotal, 245);
+  assert.equal(balance.purchasedPendingSources[0].source_number, 'PO-20260805-2715');
+  assert.equal(balance.inTransitSources[0].source_number, 'TR-20260729-1510');
+});
+
 test('warehouse modal APIs, cancellation restore, and partial transfer payloads use the ERP endpoints once', async () => {
   const Team = await loadTeam();
   const gateway = new Team.TeamGateway({ apiBase: '/api' });

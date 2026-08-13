@@ -1064,6 +1064,20 @@ class ApiTests(TestCase):
         self.assertEqual(pending_sources[0]["remaining_quantity"], "3.000")
         self.assertEqual(balances.data["results"][0]["in_transit_sources"], [])
 
+        # Simulate a historical row created before purchase pending balances
+        # were maintained. The list total and source rows must still agree.
+        StockBalance.objects.filter(warehouse=warehouse, sku=sku).update(
+            purchased_pending_shipment="0"
+        )
+        historical = self.client.get("/api/stock-balances/", **headers)
+        row = historical.data["results"][0]
+        self.assertEqual(row["purchased_pending_shipment"], "3.000")
+        self.assertEqual(row["inbound_total"], "3.000")
+        self.assertEqual(
+            sum(Decimal(item["remaining_quantity"]) for item in row["purchased_pending_sources"] + row["in_transit_sources"]),
+            Decimal(row["inbound_total"]),
+        )
+
         adjusted = self.client.post(
             "/api/stock-balances/adjust/",
             {
@@ -2157,6 +2171,48 @@ class ApiTests(TestCase):
         balance = StockBalance.objects.get(warehouse=warehouse, sku=sku)
         self.assertEqual(balance.on_hand, 2)
         self.assertEqual(balance.reserved, 0)
+
+    def test_cancel_returns_safe_4xx_when_reservation_total_cannot_be_proven(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(
+            organization=self.organization, code="UNSAFE-CANCEL", name="异常锁库仓"
+        )
+        product = Product.objects.create(
+            organization=self.organization, name="异常锁库商品", status=Product.Status.ACTIVE
+        )
+        sku = SKU.objects.create(
+            organization=self.organization, product=product, code="UNSAFE-CANCEL-SKU"
+        )
+        balance = StockBalance.objects.create(
+            organization=self.organization, warehouse=warehouse, sku=sku,
+            on_hand="10", reserved="3",
+        )
+        order = SalesOrder.objects.create(
+            organization=self.organization, number="SO-UNSAFE-API", warehouse=warehouse,
+            status=SalesOrder.Status.ALLOCATED,
+        )
+        line = SalesOrderLine.objects.create(
+            order=order, sku=sku, quantity="4", quantity_reserved="4"
+        )
+        StockReservation.objects.create(
+            organization=self.organization, order_line=line, warehouse=warehouse,
+            sku=sku, quantity="4", idempotency_key="unsafe-api-reservation",
+        )
+
+        response = self.client.post(f"/api/orders/{order.pk}/cancel/", **headers)
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["code"], "reservation_reconciliation_unsafe")
+        self.assertRegex(response.data["diagnostic_id"], r"^[a-f0-9]{12}$")
+        order.refresh_from_db()
+        line.refresh_from_db()
+        balance.refresh_from_db()
+        self.assertEqual(order.status, SalesOrder.Status.ALLOCATED)
+        self.assertEqual(line.quantity_reserved, Decimal("4"))
+        self.assertEqual(balance.reserved, Decimal("3"))
+        self.assertEqual(StockReservation.objects.get(order_line=line).status, StockReservation.Status.ACTIVE)
+        self.assertFalse(StockLedger.objects.filter(event_type=StockLedger.Type.RELEASE).exists())
 
     def test_create_and_ship_endpoint_saves_shortage_or_atomically_ships_in_one_request(self):
         self.client.force_authenticate(self.user)

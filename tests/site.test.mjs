@@ -139,6 +139,7 @@ test("hides internal ledger references and wires sticky inventory, unified trans
   assert.match(appScript, /function updateInventoryStickyHeader/);
   assert.match(css, /\.inventory-sticky-header/);
   assert.match(appScript, /function inboundFor/);
+  assert.match(appScript, /balance\.inboundTotal == null[\s\S]*balance\.inboundTotal/);
   assert.match(teamScript, /purchasedPendingShipment[\s\S]*inTransit[\s\S]*inboundTotal/);
   assert.match(html, /id="transitSourceModal"/);
   assert.match(html, /id="orderSkuSearch"/);

@@ -1,6 +1,8 @@
 from copy import deepcopy
 from decimal import Decimal
 from hashlib import sha256
+import logging
+import uuid
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -33,6 +35,9 @@ from .models import (
     StockTransferPackage,
     StockTransferPackageLine,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowValidationError(ValidationError):
@@ -1414,37 +1419,122 @@ def cancel_order(*, order, actor=None):
         )
         for line in lines
     }
-    inconsistent = [
-        {
-            "order_line": str(line.pk),
-            "sku": line.sku.code if line.sku_id else line.external_sku_code,
-            "line_reserved": str(line.quantity_reserved),
-            "active_reservations": str(reserved_by_line[line.pk]),
-        }
-        for line in lines
-        if Decimal(line.quantity_reserved) != reserved_by_line[line.pk]
-    ]
+    diagnostic_id = uuid.uuid4().hex[:12]
+    unsafe = []
     for reservation in reservations:
         if (
             reservation.order_line.order_id != order.pk
             or reservation.sku_id != reservation.order_line.sku_id
             or reservation.warehouse_id != order.warehouse_id
+            or reservation.organization_id != order.organization_id
         ):
-            inconsistent.append({
+            unsafe.append({
                 "reservation": str(reservation.pk),
-                "detail": "锁库记录的订单行、SKU 或仓库与订单不一致",
+                "detail": "锁库记录的组织、订单行、SKU 或仓库与订单不一致",
             })
-    if inconsistent:
+    for line in lines:
+        active_reserved = reserved_by_line[line.pk]
+        remaining = Decimal(line.quantity) - Decimal(line.quantity_shipped)
+        if active_reserved > remaining:
+            unsafe.append({
+                "order_line": str(line.pk),
+                "detail": "有效锁库数量超过订单未出库数量",
+                "active_reservations": str(active_reserved),
+                "remaining_quantity": str(remaining),
+            })
+        if Decimal(line.quantity_reserved) > 0 and (not line.sku_id or not order.warehouse_id):
+            unsafe.append({
+                "order_line": str(line.pk),
+                "detail": "订单行声称已锁库，但缺少可核对的 SKU 或仓库",
+                "line_reserved": str(line.quantity_reserved),
+            })
+
+    # Lock each affected balance. Allocation also locks the balance before it
+    # creates a reservation, so the global active-reservation proof remains
+    # stable until this cancellation transaction commits.
+    balance_by_key = {}
+    if order.warehouse_id:
+        for line in lines:
+            if line.sku_id:
+                key = (order.warehouse_id, line.sku_id)
+                if key not in balance_by_key:
+                    balance_by_key[key] = StockBalance.objects.select_for_update().filter(
+                        organization=order.organization,
+                        warehouse_id=order.warehouse_id,
+                        sku_id=line.sku_id,
+                    ).first()
+    for reservation in reservations:
+        key = (reservation.warehouse_id, reservation.sku_id)
+        if key not in balance_by_key:
+            balance_by_key[key] = StockBalance.objects.select_for_update().filter(
+                organization=order.organization,
+                warehouse_id=reservation.warehouse_id,
+                sku_id=reservation.sku_id,
+            ).first()
+    for key, balance in balance_by_key.items():
+        warehouse_id, sku_id = key
+        current_order_reserved = sum(
+            (item.quantity for item in reservations if (item.warehouse_id, item.sku_id) == key),
+            Decimal("0"),
+        )
+        all_active_reserved = (
+            StockReservation.objects.filter(
+                organization=order.organization,
+                warehouse_id=warehouse_id,
+                sku_id=sku_id,
+                status=StockReservation.Status.ACTIVE,
+            ).aggregate(total=models.Sum("quantity"))["total"]
+            or Decimal("0")
+        )
+        stored_reserved = Decimal(balance.reserved) if balance is not None else Decimal("0")
+        other_orders_reserved = all_active_reserved - current_order_reserved
+        if (
+            balance is None
+            or current_order_reserved < 0
+            or other_orders_reserved < 0
+            or stored_reserved != all_active_reserved
+            or stored_reserved - current_order_reserved != other_orders_reserved
+        ):
+            unsafe.append({
+                "warehouse": str(warehouse_id),
+                "sku": str(sku_id),
+                "balance_reserved": str(stored_reserved),
+                "all_active_reservations": str(all_active_reserved),
+                "order_active_reservations": str(current_order_reserved),
+                "other_orders_active_reservations": str(other_orders_reserved),
+            })
+    if any(Decimal(line.quantity_shipped) != 0 for line in lines):
+        unsafe.append({"detail": "订单存在已出库明细，不能按未出库订单取消"})
+    if unsafe:
+        logger.warning(
+            "Unsafe order reservation reconciliation diagnostic_id=%s order=%s inconsistencies=%s",
+            diagnostic_id,
+            order.number,
+            unsafe,
+        )
         raise WorkflowValidationError({
-            "code": "reservation_inconsistent",
-            "detail": "订单锁库数据不一致，已停止取消且未改动库存，请按诊断明细排查",
+            "code": "reservation_reconciliation_unsafe",
+            "detail": "订单锁库数据不一致且无法安全自动校正，已停止取消且未改动库存，请联系管理员处理",
+            "diagnostic_id": diagnostic_id,
             "order_number": order.number,
-            "inconsistencies": inconsistent,
+            "inconsistencies": unsafe,
         })
+
+    corrections = []
+    for line in lines:
+        active_reserved = reserved_by_line[line.pk]
+        if Decimal(line.quantity_reserved) != active_reserved:
+            corrections.append({
+                "order_line": str(line.pk),
+                "sku": line.sku.code if line.sku_id else line.external_sku_code,
+                "before": str(line.quantity_reserved),
+                "after": str(active_reserved),
+            })
+            line.quantity_reserved = active_reserved
+            line.save(update_fields=["quantity_reserved", "updated_at"])
 
     for reservation in reservations:
         _validate_warehouse_and_sku(order.organization, reservation.warehouse, reservation.sku)
-        line = reservation.order_line
         post_stock(
             organization=order.organization,
             warehouse=reservation.warehouse,
@@ -1457,10 +1547,13 @@ def cancel_order(*, order, actor=None):
             actor=actor,
             reason="取消订单释放锁定库存",
         )
-        line.quantity_reserved -= reservation.quantity
-        line.save(update_fields=["quantity_reserved", "updated_at"])
         reservation.status = StockReservation.Status.RELEASED
         reservation.save(update_fields=["status", "updated_at"])
+
+    for line in lines:
+        if line.quantity_reserved:
+            line.quantity_reserved = Decimal("0")
+            line.save(update_fields=["quantity_reserved", "updated_at"])
 
     order.status = SalesOrder.Status.CANCELLED
     order.fulfillment_override = "erp_cancelled"
@@ -1468,7 +1561,15 @@ def cancel_order(*, order, actor=None):
     order.erp_cancelled_by = actor if getattr(actor, "is_authenticated", False) else None
     order.save(update_fields=["status", "fulfillment_override", "erp_cancelled_at", "erp_cancelled_by", "updated_at"])
     write_audit(
-        organization=order.organization, actor=actor, action="order.cancel", instance=order
+        organization=order.organization,
+        actor=actor,
+        action="order.cancel",
+        instance=order,
+        before={"reservation_corrections": corrections},
+        after={
+            "released_reservations": [str(item.pk) for item in reservations],
+            "released_quantity": str(sum((item.quantity for item in reservations), Decimal("0"))),
+        },
     )
     return order
 

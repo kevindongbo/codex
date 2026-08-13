@@ -258,6 +258,34 @@ class InventoryServiceTests(TestCase):
         self.assertIsNone(restored.warehouse)
         self.assertEqual(restored.fulfillment_override, "normal")
 
+    def test_cancel_shortage_order_without_warehouse_or_reservations(self):
+        order = SalesOrder.objects.create(
+            organization=self.organization,
+            number="SO-SHORTAGE-NO-WAREHOUSE",
+            status=SalesOrder.Status.DRAFT,
+        )
+        SalesOrderLine.objects.create(order=order, sku=self.sku, quantity="3")
+
+        cancel_order(order=order, actor=self.user)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, SalesOrder.Status.CANCELLED)
+        self.assertEqual(order.fulfillment_override, "erp_cancelled")
+        self.assertFalse(StockReservation.objects.filter(order_line__order=order).exists())
+
+    def test_cancel_historical_zero_line_order(self):
+        order = SalesOrder.objects.create(
+            organization=self.organization,
+            number="SO-HISTORICAL-ZERO-LINE",
+            status=SalesOrder.Status.DRAFT,
+        )
+
+        cancel_order(order=order, actor=self.user)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, SalesOrder.Status.CANCELLED)
+        self.assertEqual(order.fulfillment_override, "erp_cancelled")
+
     def test_cancel_purchase_closes_pending_and_confirmed_transit_without_receiving_stock(self):
         supplier = Supplier.objects.create(
             organization=self.organization, code="SUP-CLOSE", name="Transit supplier"
@@ -323,16 +351,108 @@ class InventoryServiceTests(TestCase):
             sku=self.sku, quantity="2", idempotency_key="dirty-reservation",
         )
 
-        with self.assertRaisesRegex(ValidationError, "订单锁库数据不一致"):
+        cancel_order(order=order, actor=self.user)
+
+        order.refresh_from_db()
+        line.refresh_from_db()
+        balance = StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku)
+        self.assertEqual(order.status, SalesOrder.Status.CANCELLED)
+        self.assertEqual(line.quantity_reserved, Decimal("0"))
+        self.assertEqual(balance.reserved, Decimal("0"))
+        self.assertEqual(StockLedger.objects.filter(event_type=StockLedger.Type.RELEASE).count(), 1)
+        audit = AuditLog.objects.get(action="order.cancel", object_id=str(order.pk))
+        self.assertEqual(audit.before["reservation_corrections"][0]["before"], "4.000")
+        self.assertEqual(audit.before["reservation_corrections"][0]["after"], "2.000")
+
+    def test_cancel_blocks_when_global_reserved_balance_cannot_be_proven(self):
+        adjust_inventory(
+            organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+            delta="10", reason="opening", idempotency_key="unsafe-cancel-opening", actor=self.user,
+        )
+        first = SalesOrder.objects.create(
+            organization=self.organization, number="SO-UNSAFE-CANCEL", warehouse=self.warehouse,
+            status=SalesOrder.Status.ALLOCATED,
+        )
+        first_line = SalesOrderLine.objects.create(
+            order=first, sku=self.sku, quantity="4", quantity_reserved="4",
+        )
+        second = SalesOrder.objects.create(
+            organization=self.organization, number="SO-OTHER-RESERVED", warehouse=self.warehouse,
+            status=SalesOrder.Status.ALLOCATED,
+        )
+        second_line = SalesOrderLine.objects.create(
+            order=second, sku=self.sku, quantity="3", quantity_reserved="3",
+        )
+        for line, quantity, key in ((first_line, "4", "unsafe-first"), (second_line, "3", "unsafe-second")):
+            StockReservation.objects.create(
+                organization=self.organization, order_line=line, warehouse=self.warehouse,
+                sku=self.sku, quantity=quantity, idempotency_key=key,
+            )
+        StockBalance.objects.filter(warehouse=self.warehouse, sku=self.sku).update(reserved="6")
+
+        with self.assertRaisesRegex(ValidationError, "无法安全自动校正"):
+            cancel_order(order=first, actor=self.user)
+
+        first.refresh_from_db()
+        first_line.refresh_from_db()
+        balance = StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku)
+        self.assertEqual(first.status, SalesOrder.Status.ALLOCATED)
+        self.assertEqual(first_line.quantity_reserved, Decimal("4"))
+        self.assertEqual(balance.reserved, Decimal("6"))
+        self.assertEqual(StockReservation.objects.filter(status=StockReservation.Status.ACTIVE).count(), 2)
+        self.assertEqual(StockLedger.objects.filter(event_type=StockLedger.Type.RELEASE).count(), 0)
+
+    def test_cancel_blocks_orphan_reserved_balance_without_active_reservation(self):
+        adjust_inventory(
+            organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+            delta="6", reason="opening", idempotency_key="orphan-cancel-opening", actor=self.user,
+        )
+        order = SalesOrder.objects.create(
+            organization=self.organization, number="SO-ORPHAN-CANCEL", warehouse=self.warehouse,
+            status=SalesOrder.Status.ALLOCATED,
+        )
+        line = SalesOrderLine.objects.create(
+            order=order, sku=self.sku, quantity="2", quantity_reserved="2",
+        )
+        StockBalance.objects.filter(warehouse=self.warehouse, sku=self.sku).update(reserved="2")
+
+        with self.assertRaisesRegex(ValidationError, "无法安全自动校正"):
             cancel_order(order=order, actor=self.user)
 
         order.refresh_from_db()
         line.refresh_from_db()
         balance = StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku)
         self.assertEqual(order.status, SalesOrder.Status.ALLOCATED)
-        self.assertEqual(line.quantity_reserved, Decimal("4"))
+        self.assertEqual(line.quantity_reserved, Decimal("2"))
         self.assertEqual(balance.reserved, Decimal("2"))
-        self.assertEqual(StockLedger.objects.filter(event_type=StockLedger.Type.RELEASE).count(), 0)
+        self.assertFalse(StockLedger.objects.filter(event_type=StockLedger.Type.RELEASE).exists())
+
+    def test_cancel_blocks_active_reservation_above_unshipped_quantity(self):
+        adjust_inventory(
+            organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+            delta="6", reason="opening", idempotency_key="over-reserved-opening", actor=self.user,
+        )
+        order = SalesOrder.objects.create(
+            organization=self.organization, number="SO-OVER-RESERVED", warehouse=self.warehouse,
+            status=SalesOrder.Status.ALLOCATED,
+        )
+        line = SalesOrderLine.objects.create(
+            order=order, sku=self.sku, quantity="2", quantity_reserved="2",
+        )
+        StockReservation.objects.create(
+            organization=self.organization, order_line=line, warehouse=self.warehouse,
+            sku=self.sku, quantity="3", idempotency_key="over-reserved-row",
+        )
+        StockBalance.objects.filter(warehouse=self.warehouse, sku=self.sku).update(reserved="3")
+
+        with self.assertRaisesRegex(ValidationError, "无法安全自动校正"):
+            cancel_order(order=order, actor=self.user)
+
+        order.refresh_from_db()
+        line.refresh_from_db()
+        self.assertEqual(order.status, SalesOrder.Status.ALLOCATED)
+        self.assertEqual(line.quantity_reserved, Decimal("2"))
+        self.assertEqual(StockReservation.objects.get(order_line=line).status, StockReservation.Status.ACTIVE)
 
     def test_shipment_rejects_allocated_order_without_reservations(self):
         order = SalesOrder.objects.create(
