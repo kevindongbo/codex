@@ -32,7 +32,7 @@ class FakeRateResponse:
         return False
 
     def read(self):
-        return ECB_FIXTURE
+        return ECB_FIXTURE.replace(b"2026-07-29", str(timezone.localdate()).encode("ascii"))
 
 
 class FakePayloadResponse:
@@ -68,7 +68,7 @@ class FakeRateResponse:
         return False
 
     def read(self):
-        return ECB_FIXTURE
+        return ECB_FIXTURE.replace(b"2026-07-29", str(timezone.localdate()).encode("ascii"))
 
 
 class ProfitCalculatorTests(TestCase):
@@ -473,7 +473,7 @@ class ProfitCalculatorApiTests(TestCase):
     def test_exchange_rates_are_derived_from_one_ecb_daily_snapshot(self, mocked_urlopen):
         response = self.client.get("/api/profit-calculator/exchange-rates/?refresh=1")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["date"], "2026-07-29")
+        self.assertEqual(response.data["date"], str(timezone.localdate()))
         self.assertEqual(response.data["cny_per_myr"], "1.680000")
         self.assertEqual(response.data["usd_per_myr"], "0.232000")
         self.assertEqual(response.data["source"], "European Central Bank")

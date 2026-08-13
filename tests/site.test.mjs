@@ -36,10 +36,10 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260812-erp-ui-workflow-fix-1/);
-  assert.match(html, /team\.js\?v=20260812-erp-ui-workflow-fix-1/);
+  assert.match(html, /styles\.css\?v=20260813-inventory-order-workflow-1/);
+  assert.match(html, /team\.js\?v=20260813-inventory-order-workflow-1/);
   assert.match(html, /profit-calculator\.js\?v=20260812-erp-ui-workflow-fix-1/);
-  assert.match(html, /app\.js\?v=20260812-erp-ui-workflow-fix-1/);
+  assert.match(html, /app\.js\?v=20260813-inventory-order-workflow-1/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
@@ -124,6 +124,28 @@ test("keeps ERP cancellation as one confirmed internal API call and supports res
   assert.match(teamScript, /\/orders\/' \+ order\.id \+ '\/cancel\/'/);
   assert.match(teamScript, /restore-fulfillment/);
   assert.doesNotMatch(teamScript, /tiktok.*cancel|shopee.*cancel|ozon.*cancel/i);
+});
+
+test("hides internal ledger references and wires sticky inventory, unified transit and order SKU cards", async () => {
+  const [html, appScript, teamScript, css] = await Promise.all([
+    (await fetchPath("/index.html")).text(), (await fetchPath("/app.js")).text(),
+    (await fetchPath("/team.js")).text(), (await fetchPath("/styles.css")).text(),
+  ]);
+  const movementHead = html.match(/id="movementPanel"[\s\S]*?<thead>([\s\S]*?)<\/thead>/)?.[1] || "";
+  assert.doesNotMatch(movementHead, /关联单据/);
+  assert.doesNotMatch(appScript, /afterOnHand\)[\s\S]{0,120}sourceNumber/);
+  assert.match(html, /id="inventoryTable"/);
+  assert.match(html, /id="inventoryTableWrap"[\s\S]*id="inventoryTable"[\s\S]*在途库存/);
+  assert.match(appScript, /function updateInventoryStickyHeader/);
+  assert.match(css, /\.inventory-sticky-header/);
+  assert.match(appScript, /function inboundFor/);
+  assert.match(teamScript, /purchasedPendingShipment[\s\S]*inTransit[\s\S]*inboundTotal/);
+  assert.match(html, /id="transitSourceModal"/);
+  assert.match(html, /id="orderSkuSearch"/);
+  assert.match(html, /id="orderSkuPicker"/);
+  assert.doesNotMatch(html, /id="orderLineProduct"|id="addOrderLine"/);
+  assert.match(appScript, /function renderOrderSkuPicker/);
+  assert.match(teamScript, /\/orders\/create-and-ship\//);
 });
 
 test("keeps profit rules on a dedicated route and collapses fee bases by default", async () => {

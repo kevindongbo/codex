@@ -825,6 +825,102 @@ def cancel_purchase(*, purchase_order, actor=None):
         supplier=purchase_order.supplier,
         warehouse=purchase_order.warehouse,
     )
+    # A submitted purchase contributes to one of two inventory stages:
+    # unconfirmed quantity is pending shipment, while confirmed packages are
+    # in transit.  Cancelling the remaining purchase must close both stages;
+    # changing only the PO status leaves stale quantities in StockBalance.
+    if purchase_order.status in {PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL}:
+        lines = list(
+            PurchaseOrderLine.objects.select_for_update()
+            .select_related("sku")
+            .filter(purchase_order=purchase_order)
+        )
+        for line in lines:
+            confirmed_lines = list(
+                PurchaseShipmentLine.objects.select_for_update()
+                .select_related("purchase_shipment")
+                .filter(
+                    purchase_line=line,
+                    purchase_shipment__confirmed_at__isnull=False,
+                )
+            )
+            confirmed_total = sum(
+                (Decimal(item.quantity_shipped) for item in confirmed_lines),
+                Decimal("0"),
+            )
+            direct_received = (
+                ReceiptLine.objects.filter(
+                    purchase_line=line,
+                    receipt__status=Receipt.Status.COMPLETED,
+                ).filter(
+                    models.Q(receipt__purchase_shipment__isnull=True)
+                    | models.Q(receipt__purchase_shipment__confirmed_at__isnull=True)
+                ).aggregate(total=models.Sum("quantity"))["total"]
+                or Decimal("0")
+            )
+            pending_remaining = max(
+                Decimal("0"),
+                Decimal(line.quantity_ordered)
+                - Decimal(line.quantity_unshipped_closed)
+                - confirmed_total
+                - Decimal(direct_received),
+            )
+            if pending_remaining:
+                post_stock(
+                    organization=purchase_order.organization,
+                    warehouse=purchase_order.warehouse,
+                    sku=line.sku,
+                    event_type=StockLedger.Type.PURCHASE_PENDING,
+                    pending_delta=-pending_remaining,
+                    reference_type="purchase_order_line",
+                    reference_id=line.pk,
+                    idempotency_key=f"purchase-cancel-pending:{purchase_order.pk}:{line.pk}",
+                    actor=actor,
+                    reason="取消采购单，关闭未发货数量",
+                )
+                line.quantity_unshipped_closed += pending_remaining
+                line.save(update_fields=["quantity_unshipped_closed", "updated_at"])
+
+            for shipment_line in confirmed_lines:
+                received = (
+                    ReceiptLine.objects.filter(
+                        purchase_line=line,
+                        receipt__status=Receipt.Status.COMPLETED,
+                        receipt__purchase_shipment=shipment_line.purchase_shipment,
+                    ).aggregate(total=models.Sum("quantity"))["total"]
+                    or Decimal("0")
+                )
+                transit_remaining = max(
+                    Decimal("0"),
+                    Decimal(shipment_line.quantity_shipped)
+                    - Decimal(shipment_line.quantity_exception_closed)
+                    - Decimal(received),
+                )
+                if not transit_remaining:
+                    continue
+                post_stock(
+                    organization=purchase_order.organization,
+                    warehouse=purchase_order.warehouse,
+                    sku=line.sku,
+                    event_type=StockLedger.Type.PURCHASE_TRANSIT,
+                    in_transit_delta=-transit_remaining,
+                    reference_type="purchase_shipment_line",
+                    reference_id=shipment_line.pk,
+                    idempotency_key=f"purchase-cancel-transit:{purchase_order.pk}:{shipment_line.pk}",
+                    actor=actor,
+                    reason="取消采购单，关闭采购在途数量",
+                )
+                shipment_line.quantity_exception_closed += transit_remaining
+                shipment_line.save(update_fields=["quantity_exception_closed", "updated_at"])
+
+        purchase_order.shipments.filter(
+            confirmed_at__isnull=False,
+            closed_at__isnull=True,
+        ).update(
+            closed_at=timezone.now(),
+            closed_reason="采购单已取消",
+            updated_at=timezone.now(),
+        )
     purchase_order.status = PurchaseOrder.Status.CANCELLED
     purchase_order.save(update_fields=["status", "updated_at"])
     write_audit(
@@ -1304,39 +1400,67 @@ def cancel_order(*, order, actor=None):
     }:
         raise ValidationError("当前订单状态不能取消")
 
-    if order.status in {
-        SalesOrder.Status.ALLOCATED,
-        SalesOrder.Status.PICKING,
-        SalesOrder.Status.VERIFIED,
-    }:
-        reservations = list(
-            StockReservation.objects.select_for_update()
-            .filter(order_line__order=order, status=StockReservation.Status.ACTIVE)
-            .select_related("order_line", "sku__product", "warehouse")
+    lines = list(SalesOrderLine.objects.select_for_update().filter(order=order).order_by("pk"))
+    reservations = list(
+        StockReservation.objects.select_for_update()
+        .filter(order_line__order=order, status=StockReservation.Status.ACTIVE)
+        .select_related("order_line", "sku__product", "warehouse")
+        .order_by("pk")
+    )
+    reserved_by_line = {
+        line.pk: sum(
+            (reservation.quantity for reservation in reservations if reservation.order_line_id == line.pk),
+            Decimal("0"),
         )
-        if not reservations:
-            raise ValidationError("已锁库订单缺少有效锁定记录")
-        for reservation in reservations:
-            _validate_warehouse_and_sku(order.organization, reservation.warehouse, reservation.sku)
-            line = SalesOrderLine.objects.select_for_update().get(pk=reservation.order_line_id)
-            if reservation.quantity > line.quantity_reserved:
-                raise ValidationError("订单锁定数量不一致")
-            post_stock(
-                organization=order.organization,
-                warehouse=reservation.warehouse,
-                sku=reservation.sku,
-                event_type=StockLedger.Type.RELEASE,
-                reserved_delta=-reservation.quantity,
-                reference_type="stock_reservation",
-                reference_id=reservation.pk,
-                idempotency_key=f"order-cancel:{order.pk}:{reservation.pk}",
-                actor=actor,
-                reason="取消订单释放锁定库存",
-            )
-            line.quantity_reserved -= reservation.quantity
-            line.save(update_fields=["quantity_reserved", "updated_at"])
-            reservation.status = StockReservation.Status.RELEASED
-            reservation.save(update_fields=["status", "updated_at"])
+        for line in lines
+    }
+    inconsistent = [
+        {
+            "order_line": str(line.pk),
+            "sku": line.sku.code if line.sku_id else line.external_sku_code,
+            "line_reserved": str(line.quantity_reserved),
+            "active_reservations": str(reserved_by_line[line.pk]),
+        }
+        for line in lines
+        if Decimal(line.quantity_reserved) != reserved_by_line[line.pk]
+    ]
+    for reservation in reservations:
+        if (
+            reservation.order_line.order_id != order.pk
+            or reservation.sku_id != reservation.order_line.sku_id
+            or reservation.warehouse_id != order.warehouse_id
+        ):
+            inconsistent.append({
+                "reservation": str(reservation.pk),
+                "detail": "锁库记录的订单行、SKU 或仓库与订单不一致",
+            })
+    if inconsistent:
+        raise WorkflowValidationError({
+            "code": "reservation_inconsistent",
+            "detail": "订单锁库数据不一致，已停止取消且未改动库存，请按诊断明细排查",
+            "order_number": order.number,
+            "inconsistencies": inconsistent,
+        })
+
+    for reservation in reservations:
+        _validate_warehouse_and_sku(order.organization, reservation.warehouse, reservation.sku)
+        line = reservation.order_line
+        post_stock(
+            organization=order.organization,
+            warehouse=reservation.warehouse,
+            sku=reservation.sku,
+            event_type=StockLedger.Type.RELEASE,
+            reserved_delta=-reservation.quantity,
+            reference_type="stock_reservation",
+            reference_id=reservation.pk,
+            idempotency_key=f"order-cancel:{order.pk}:{reservation.pk}",
+            actor=actor,
+            reason="取消订单释放锁定库存",
+        )
+        line.quantity_reserved -= reservation.quantity
+        line.save(update_fields=["quantity_reserved", "updated_at"])
+        reservation.status = StockReservation.Status.RELEASED
+        reservation.save(update_fields=["status", "updated_at"])
 
     order.status = SalesOrder.Status.CANCELLED
     order.fulfillment_override = "erp_cancelled"
@@ -1450,6 +1574,41 @@ def allocate_order(*, order, idempotency_key, actor=None):
         after={"idempotency_key": idempotency_key},
     )
     return order
+
+
+@transaction.atomic
+def confirm_and_ship_or_shortage(
+    *, order, idempotency_key, number="", tracking_number="", actor=None
+):
+    """Ship a complete order or keep the untouched draft with shortage facts."""
+    if not idempotency_key:
+        raise ValidationError("幂等键不能为空")
+    expected_organization = order.organization
+    order = SalesOrder.objects.select_for_update().select_related(
+        "organization", "warehouse"
+    ).get(pk=order.pk, organization=expected_organization)
+    if order.warehouse_id is None:
+        raise ValidationError("订单出库前必须指定仓库")
+    existing = Shipment.objects.filter(
+        organization=order.organization, idempotency_key=idempotency_key
+    ).first()
+    if existing:
+        if existing.order_id != order.pk:
+            raise ValidationError("幂等键已被其他订单的出库操作占用")
+        return order, existing, []
+    lines = _order_lines_or_raise(order, lock=True)
+    shortages = _order_stock_shortages(order, order.warehouse, lines)
+    if shortages:
+        return order, None, shortages
+    shipment = confirm_and_ship_order(
+        order=order,
+        idempotency_key=idempotency_key,
+        number=number,
+        tracking_number=tracking_number,
+        actor=actor,
+    )
+    order.refresh_from_db()
+    return order, shipment, []
 
 
 @transaction.atomic

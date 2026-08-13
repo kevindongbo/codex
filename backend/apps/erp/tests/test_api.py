@@ -22,7 +22,7 @@ from apps.erp.models import (
     AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct,
     CompetitorSellerGroup, CompetitorSellerSnapshot, CompetitorSnapshot, ExchangeRateSnapshot, LocalImport, Membership, Organization, OwnStore,
     Product, ProductImage, PurchaseOrder, ReplenishmentPolicy, ReplenishmentSettings, ReturnOrder, SalesOrder,
-    SalesOrderLine, Shipment, SKU, StockBalance, StockLedger, StockTransfer, TikTokShopConnection,
+    SalesOrderLine, Shipment, SKU, StockBalance, StockLedger, StockReservation, StockTransfer, TikTokShopConnection,
     TikTokShopOAuthState,
     StoreProduct, Supplier, Warehouse,
 )
@@ -1057,6 +1057,12 @@ class ApiTests(TestCase):
         self.assertEqual(balances.data["results"][0]["on_hand"], "0.000")
         self.assertEqual(balances.data["results"][0]["purchased_pending_shipment"], "3.000")
         self.assertEqual(balances.data["results"][0]["in_transit"], "0.000")
+        self.assertEqual(balances.data["results"][0]["inbound_total"], "3.000")
+        pending_sources = balances.data["results"][0]["purchased_pending_sources"]
+        self.assertEqual(len(pending_sources), 1)
+        self.assertEqual(pending_sources[0]["source_number"], "PO-FLOW")
+        self.assertEqual(pending_sources[0]["remaining_quantity"], "3.000")
+        self.assertEqual(balances.data["results"][0]["in_transit_sources"], [])
 
         adjusted = self.client.post(
             "/api/stock-balances/adjust/",
@@ -2151,6 +2157,54 @@ class ApiTests(TestCase):
         balance = StockBalance.objects.get(warehouse=warehouse, sku=sku)
         self.assertEqual(balance.on_hand, 2)
         self.assertEqual(balance.reserved, 0)
+
+    def test_create_and_ship_endpoint_saves_shortage_or_atomically_ships_in_one_request(self):
+        self.client.force_authenticate(self.user)
+        headers = {"HTTP_X_ORGANIZATION_ID": str(self.organization.pk)}
+        warehouse = Warehouse.objects.create(
+            organization=self.organization, code="CREATE-SHIP", name="创建出库仓"
+        )
+        product = Product.objects.create(
+            organization=self.organization, name="订单卡片商品", status=Product.Status.ACTIVE
+        )
+        sku = SKU.objects.create(
+            organization=self.organization, product=product, code="CARD-SKU", cost="9"
+        )
+        StockBalance.objects.create(
+            organization=self.organization, warehouse=warehouse, sku=sku, on_hand="5"
+        )
+        base = {
+            "warehouse": str(warehouse.pk),
+            "lines": [{"sku": str(sku.pk), "quantity": "3", "unit_price": "20"}],
+        }
+        shipped = self.client.post(
+            "/api/orders/create-and-ship/",
+            {**base, "number": "SO-ATOMIC-CREATE", "idempotency_key": "create-ship-once"},
+            format="json", **headers,
+        )
+        replay = self.client.post(
+            "/api/orders/create-and-ship/",
+            {**base, "number": "SO-ATOMIC-CREATE", "idempotency_key": "create-ship-once"},
+            format="json", **headers,
+        )
+        self.assertEqual(shipped.status_code, 201, shipped.data)
+        self.assertEqual(shipped.data["outcome"], "shipped")
+        self.assertEqual(replay.data["order"]["id"], shipped.data["order"]["id"])
+        self.assertEqual(Shipment.objects.filter(order_id=shipped.data["order"]["id"]).count(), 1)
+
+        shortage = self.client.post(
+            "/api/orders/create-and-ship/",
+            {**base, "number": "SO-ATOMIC-SHORTAGE", "idempotency_key": "create-shortage-once"},
+            format="json", **headers,
+        )
+        self.assertEqual(shortage.status_code, 201, shortage.data)
+        self.assertEqual(shortage.data["outcome"], "shortage")
+        shortage_order = SalesOrder.objects.get(pk=shortage.data["order"]["id"])
+        self.assertEqual(shortage_order.status, SalesOrder.Status.DRAFT)
+        self.assertFalse(StockReservation.objects.filter(order_line__order=shortage_order).exists())
+        balance = StockBalance.objects.get(warehouse=warehouse, sku=sku)
+        self.assertEqual(balance.on_hand, Decimal("2"))
+        self.assertEqual(balance.reserved, Decimal("0"))
 
     def test_unmapped_sku_order_actions_return_business_400_not_server_error(self):
         self.client.force_authenticate(self.user)

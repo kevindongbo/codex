@@ -103,6 +103,7 @@ let profitScrollTarget = 'profitInputPanel';
 let chartMetric = 'sales';
 let searchTerm = '';
 let pendingConfirm = null;
+let inventoryStickyHeader = null;
 let pendingProductImage = '';
 let tiktokConnections = [];
 let aiProviderConfigs = [];
@@ -317,7 +318,11 @@ function normalizeV5(saved) {
       productId: item.productId,
       onHand: integer(item.onHand),
       reserved: integer(item.reserved),
+      purchasedPendingShipment: integer(item.purchasedPendingShipment),
       inTransit: integer(item.inTransit),
+      inboundTotal: integer(item.inboundTotal),
+      purchasedPendingSources: Array.isArray(item.purchasedPendingSources) ? item.purchasedPendingSources : [],
+      inTransitSources: Array.isArray(item.inTransitSources) ? item.inTransitSources : [],
       updatedAt: item.updatedAt || ''
     };
   }) : [];
@@ -581,7 +586,20 @@ function balanceFor(productId, source, warehouseId) {
   const targetWarehouseId = warehouseId || currentWarehouseId(root);
   return root.inventoryBalances.find(function (item) {
     return item.productId === productId && item.warehouseId === targetWarehouseId;
-  }) || { warehouseId: targetWarehouseId, productId: productId, onHand: 0, reserved: 0, updatedAt: '' };
+  }) || { warehouseId: targetWarehouseId, productId: productId, onHand: 0, reserved: 0, purchasedPendingShipment: 0, inTransit: 0, inboundTotal: 0, purchasedPendingSources: [], inTransitSources: [], updatedAt: '' };
+}
+
+function inboundFor(productId, source, warehouseId) {
+  const balance = balanceFor(productId, source, warehouseId);
+  if (TEAM_MODE) return integer(balance.inboundTotal || (integer(balance.purchasedPendingShipment) + integer(balance.inTransit)));
+  return purchaseTransitFor(productId, source, warehouseId) + (source || state).stockTransfers.reduce(function (sum, transfer) {
+    const targetWarehouseId = warehouseId || currentWarehouseId(source || state);
+    if (!['in_transit', 'partially_received'].includes(transfer.status) || transfer.destinationWarehouseId !== targetWarehouseId) return sum;
+    return sum + transfer.lines.reduce(function (lineSum, line) {
+      const remaining = transferLineQuantity(line) - transferReceivedQuantity(line) - integer(line.exceptionClosedQty || line.exception_closed_quantity);
+      return line.productId === productId ? lineSum + Math.max(0, remaining) : lineSum;
+    }, 0);
+  }, 0);
 }
 function ensureBalance(source, productId, warehouseId) {
   const targetWarehouseId = warehouseId || currentWarehouseId(source);
@@ -1416,6 +1434,65 @@ function closeConfirm() {
   $('#confirmBar').classList.remove('show');
   $('#confirmBar').setAttribute('aria-hidden', 'true');
 }
+function transitSourceLabel(source) {
+  if (source.source_type === 'transfer') return '仓间调拨';
+  return source.source_stage === 'pending_shipment' ? '采购在途（待发货）' : '采购在途（已发货）';
+}
+function openTransitSources(productId) {
+  const product = productById(productId);
+  const balance = balanceFor(productId);
+  const sources = (balance.purchasedPendingSources || []).concat(balance.inTransitSources || []);
+  const total = sources.reduce(function (sum, source) { return sum + asNumber(source.remaining_quantity); }, 0);
+  setText('#transitSourceModalTitle', (product ? product.sku + ' · ' + product.name : 'SKU') + ' 在途来源');
+  setText('#transitSourceIntro', '来源剩余合计 ' + total + ' 件；库存列表显示 ' + inboundFor(productId) + ' 件。');
+  $('#transitSourceList').innerHTML = sources.length ? sources.map(function (source) {
+    return '<article class="transit-source-card"><header><strong>' + escapeHtml(transitSourceLabel(source) + ' · ' + (source.source_number || '未编号')) + '</strong><span>剩余 ' + asNumber(source.remaining_quantity) + '</span></header><dl>' +
+      '<div><dt>物流单号</dt><dd>' + escapeHtml(source.tracking_number || '未填写') + '</dd></div>' +
+      '<div><dt>原计划</dt><dd>' + asNumber(source.planned_quantity) + '</dd></div>' +
+      '<div><dt>已收</dt><dd>' + asNumber(source.received_quantity) + '</dd></div>' +
+      '<div><dt>异常关闭</dt><dd>' + asNumber(source.exception_closed_quantity) + '</dd></div>' +
+      '<div><dt>发出/确认时间</dt><dd>' + formatDate(source.started_at, true) + '</dd></div>' +
+      '<div><dt>预计到货</dt><dd>' + formatDate(source.expected_at, false) + '</dd></div>' +
+      '</dl></article>';
+  }).join('') : '<div class="last-value">当前没有可展开的在途来源；如合计不为 0，请使用服务器诊断检查历史阶段余额。</div>';
+  openModal('transitSourceModal');
+}
+function updateInventoryStickyHeader() {
+  const table = $('#inventoryTable');
+  const wrap = $('#inventoryTableWrap');
+  if (!table || !wrap || !table.tHead || table.closest('[hidden]')) {
+    if (inventoryStickyHeader) inventoryStickyHeader.hidden = true;
+    return;
+  }
+  const headerRect = $('.app-header').getBoundingClientRect();
+  const tableRect = table.getBoundingClientRect();
+  const sourceRect = table.tHead.getBoundingClientRect();
+  const top = Math.max(0, headerRect.bottom);
+  const visible = sourceRect.top < top && tableRect.bottom > top + sourceRect.height;
+  if (!visible) {
+    if (inventoryStickyHeader) inventoryStickyHeader.hidden = true;
+    return;
+  }
+  if (!inventoryStickyHeader) {
+    inventoryStickyHeader = document.createElement('div');
+    inventoryStickyHeader.className = 'inventory-sticky-header';
+    inventoryStickyHeader.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(inventoryStickyHeader);
+  }
+  inventoryStickyHeader.innerHTML = '<table><thead>' + table.tHead.innerHTML + '</thead></table>';
+  const cloneTable = inventoryStickyHeader.querySelector('table');
+  const cloneHeaders = inventoryStickyHeader.querySelectorAll('th');
+  Array.from(table.tHead.querySelectorAll('th')).forEach(function (th, index) {
+    if (cloneHeaders[index]) cloneHeaders[index].style.width = th.getBoundingClientRect().width + 'px';
+  });
+  inventoryStickyHeader.hidden = false;
+  inventoryStickyHeader.style.top = top + 'px';
+  inventoryStickyHeader.style.left = wrap.getBoundingClientRect().left + 'px';
+  inventoryStickyHeader.style.width = wrap.clientWidth + 'px';
+  inventoryStickyHeader.style.height = sourceRect.height + 'px';
+  cloneTable.style.width = table.scrollWidth + 'px';
+  cloneTable.style.transform = 'translateX(' + (-wrap.scrollLeft) + 'px)';
+}
 function setText(selector, value) {
   const node = $(selector);
   if (node) node.textContent = value;
@@ -1719,7 +1796,7 @@ function warehouseValueText() {
 function renderWarehouseSummary() {
   renderWarehouseSwitcher();
   const owns = ownProducts(state, true);
-  const transit = owns.reduce(function (sum, item) { return sum + purchaseTransitFor(item.id); }, 0);
+  const transit = owns.reduce(function (sum, item) { return sum + inboundFor(item.id); }, 0);
   const onHand = owns.reduce(function (sum, item) { return sum + balanceFor(item.id).onHand; }, 0);
   const reserved = owns.reduce(function (sum, item) { return sum + balanceFor(item.id).reserved; }, 0);
   const openPurchases = state.purchaseOrders.filter(function (item) { return isCurrentWarehouseRecord(item) && isPurchaseOpen(item); }).length;
@@ -1816,14 +1893,16 @@ function renderInventory() {
     const available = Math.max(0, balance.onHand - balance.reserved);
     const low = available < integer(product.safetyStock);
     const canDeleteBalance = TEAM_MODE && teamCapabilityAllowed('inventory') && balance.apiBalanceId;
+    const inbound = inboundFor(product.id);
     return '<tr><td>' + productMedia(product) + '</td><td>' + escapeHtml(product.sku || '待完善') + '</td>' +
       '<td><span class="stock-number instock">' + balance.onHand + '</span></td><td>' + balance.reserved + '</td>' +
-      '<td><span class="stock-number ' + (low ? 'low' : 'instock') + '">' + available + '</span></td><td><span class="stock-number transit">' + integer(balance.inTransit) + '</span></td><td>' + integer(product.safetyStock) + '</td>' +
+      '<td><span class="stock-number ' + (low ? 'low' : 'instock') + '">' + available + '</span></td><td><button class="stock-number transit transit-number-button" type="button" data-action="view-transit-sources" data-id="' + escapeHtml(product.id) + '" aria-label="查看在途库存来源">' + inbound + '</button></td><td>' + integer(product.safetyStock) + '</td>' +
       '<td>' + money(balance.onHand * nonNegative(product.standardCost), product.costCurrency) + '</td>' +
       '<td>' + (product.status === 'draft' ? statusPill('草稿 · 有库存', 'shortage') : (product.status === 'inactive' ? statusPill('已停用', 'inactive') : (product.needsReview ? statusPill('待完善', 'shortage') : (low ? statusPill('需补货', 'shortage') : statusPill('正常', 'active'))))) + '</td>' +
       '<td><div class="row-actions">' + (teamCapabilityAllowed('inventory') && product.status === 'active' && !product.needsReview ? rowButton('adjust-stock', product.id, '库存调整', 'primary') : (teamCapabilityAllowed('catalog') && product.needsReview ? rowButton('edit-product', product.id, '完善商品', 'primary') : '')) + rowButton('view-movements', product.id, '看流水') + (canDeleteBalance ? rowButton('delete-stock-balance', product.id, '彻底删除库存', 'danger') : '') + '</div></td></tr>';
   }).join('');
   toggleEmpty('#warehouseEmpty', products.length === 0);
+  requestAnimationFrame(updateInventoryStickyHeader);
 }
 
 function movementDeltaText(movement) {
@@ -1844,7 +1923,7 @@ function renderMovements() {
     const canRevoke = TEAM_MODE && teamCapabilityAllowed('inventory') && ['adjustment', 'manual_inbound', 'manual_outbound'].includes(movement.type) && !movement.isReversed;
     return '<tr><td>' + formatDate(movement.occurredAt, true) + '</td><td>' + escapeHtml(product ? product.sku + ' · ' + product.name : '未知商品') + '</td>' +
       '<td>' + escapeHtml(MOVEMENT_LABELS[movement.type] || movement.type) + '</td><td><span class="delta-pill ' + (positive ? 'up' : (negative ? 'down' : 'neutral')) + '">' + movementDeltaText(movement) + '</span></td>' +
-      '<td>' + integer(movement.afterOnHand) + '</td><td>' + escapeHtml(movement.sourceNumber || '—') + '</td><td>' + escapeHtml(movement.note || '—') + (movement.isReversed ? '（已撤回）' : '') + '</td>' + (canRevoke ? '<td><div class="row-actions">' + rowButton('revoke-movement', movement.id, '撤回', 'danger') + '</div></td>' : '<td></td>') + '</tr>';
+      '<td>' + integer(movement.afterOnHand) + '</td><td>' + escapeHtml(movement.note || '—') + (movement.isReversed ? '（已撤回）' : '') + '</td>' + (canRevoke ? '<td><div class="row-actions">' + rowButton('revoke-movement', movement.id, '撤回', 'danger') + '</div></td>' : '<td></td>') + '</tr>';
   }).join('');
   toggleEmpty('#movementEmpty', movements.length === 0);
 }
@@ -2059,7 +2138,7 @@ function localLeadSamples(productId, warehouseId) {
 function localVelocity(productId, warehouseId, days) {
   const threshold = Date.now() - days * 86400000;
   const quantity = state.inventoryMovements.reduce(function (sum, movement) {
-    if (movement.productId !== productId || movement.warehouseId !== warehouseId || movement.type !== 'outbound') return sum;
+    if (movement.productId !== productId || movement.warehouseId !== warehouseId || !['outbound', 'manual_outbound'].includes(movement.type) || movement.isReversed) return sum;
     if (new Date(movement.occurredAt).getTime() < threshold) return sum;
     return sum + Math.abs(Math.min(0, asNumber(movement.onHandDelta)));
   }, 0);
@@ -2130,13 +2209,13 @@ function normalizeTeamRecommendation(item) {
     velocity3: asNumber(demand.daily_3), velocity7: asNumber(demand.daily_7), velocity15: asNumber(demand.daily_15), velocity30: asNumber(demand.daily_30),
     leadDays: asNumber(lead.selected_days == null ? item.lead_days : lead.selected_days, 14),
     leadSource: lead.source || item.lead_source || 'fallback', available: integer(inventory.available == null ? item.available : inventory.available),
-    inbound: integer(inventory.in_transit == null ? item.in_transit : inventory.in_transit),
+    inbound: integer(inventory.inbound_total == null ? (inventory.in_transit == null ? item.in_transit : inventory.in_transit) : inventory.inbound_total),
     inventoryPosition: integer(inventory.inventory_position == null ? item.inventory_position : inventory.inventory_position),
     reorderPoint: integer(item.reorder_point), daysCover: item.available_days_of_cover == null ? Infinity : asNumber(item.available_days_of_cover),
     stockoutDate: item.projected_stockout_date || item.available_stockout_date || '', latestOrderDate: item.latest_order_date || '',
     suggestedQty: integer(item.suggested_order_quantity == null ? item.suggested_qty : item.suggested_order_quantity),
     safetyMarginRatio: asNumber(item.safety_margin_ratio, 0), safetyMarginUnits: asNumber(item.safety_margin_units, 0),
-    reasons: Array.isArray(item.reasons) ? item.reasons : [],
+    demandBreakdown: demand.breakdown || {}, reasons: Array.isArray(item.reasons) ? item.reasons : [],
     urgency: item.alert_level || item.urgency || 'healthy', confidence: item.confidence || lead.confidence || 'low', policy: item.policy || {}
   };
 }
@@ -2179,7 +2258,14 @@ function renderReplenishment() {
     if (teamCapabilityAllowed('replenishment') && hasPolicy) actions += rowButton('reset-replenishment', product.id, '恢复默认', 'danger');
     const basis = (item.reasons || []).map(function (reason) { return '<li>' + escapeHtml(reason) + '</li>'; }).join('');
     const selected = replenishmentSelectedSkuIds.has(String(item.skuId));
-    return '<tr><td><input type="checkbox" data-replenishment-select="' + escapeHtml(item.skuId) + '"' + (selected ? ' checked' : '') + ' aria-label="选择 ' + escapeHtml(product.sku || product.name) + '"></td><td>' + productMedia(product) + '</td><td><strong>' + item.velocity.toFixed(2) + '</strong><details class="replenishment-velocity-detail"><summary>查看周期明细</summary><span>3/7/15/30 天：' + item.velocity3.toFixed(2) + ' / ' + item.velocity7.toFixed(2) + ' / ' + item.velocity15.toFixed(2) + ' / ' + item.velocity30.toFixed(2) + '</span></details></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong><details class="replenishment-qty-detail"><summary>查看补货参数</summary><span>补货点 ' + item.reorderPoint + '；安全余量 ' + Math.round(item.safetyMarginUnits || 0) + '</span>' + (basis ? '<ul>' + basis + '</ul>' : '') + '</details></td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
+    const breakdown = item.demandBreakdown || {};
+    const breakdownHtml = ['3', '7', '15', '30'].map(function (windowDays) {
+      const detail = breakdown[windowDays];
+      if (!detail) return '';
+      return '<span>' + windowDays + ' 天：订单 ' + asNumber(detail.order_outbound).toFixed(0) + ' + 手动 ' + asNumber(detail.manual_outbound).toFixed(0) + ' - 退货 ' + asNumber(detail.returns_at_original_sale_date).toFixed(0) + ' = 净销量 ' + asNumber(detail.net_sales).toFixed(0) + '，日均 ' + asNumber(detail.daily_average).toFixed(2) + '</span>';
+    }).join('');
+    const noSalesReason = item.velocity === 0 ? '<span>近 30 天没有订单出库或手动销售出库，或已被原销售日退货完全冲减。</span>' : '';
+    return '<tr><td><input type="checkbox" data-replenishment-select="' + escapeHtml(item.skuId) + '"' + (selected ? ' checked' : '') + ' aria-label="选择 ' + escapeHtml(product.sku || product.name) + '"></td><td>' + productMedia(product) + '</td><td><strong>' + item.velocity.toFixed(2) + '</strong><details class="replenishment-velocity-detail"><summary>查看周期明细</summary><span>3/7/15/30 天日均：' + item.velocity3.toFixed(2) + ' / ' + item.velocity7.toFixed(2) + ' / ' + item.velocity15.toFixed(2) + ' / ' + item.velocity30.toFixed(2) + '</span>' + breakdownHtml + noSalesReason + '</details></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong><details class="replenishment-qty-detail"><summary>查看补货参数</summary><span>补货点 ' + item.reorderPoint + '；安全余量 ' + Math.round(item.safetyMarginUnits || 0) + '</span>' + (basis ? '<ul>' + basis + '</ul>' : '') + '</details></td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
   }).join('');
   toggleEmpty('#replenishmentEmpty', recommendations.length === 0);
   const needCount = recommendations.filter(function (item) { return ['urgent', 'soon', 'red', 'yellow'].includes(item.urgency); }).length;
@@ -2449,7 +2535,7 @@ function renderSelects() {
   const productOptions = warehouseProducts.map(function (product) {
     return '<option value="' + escapeHtml(product.id) + '">' + escapeHtml((product.sku || '无 SKU') + ' · ' + product.name) + '</option>';
   }).join('');
-  ['#stockProduct', '#orderLineProduct', '#transferLineProduct'].forEach(function (selector) {
+  ['#stockProduct', '#transferLineProduct'].forEach(function (selector) {
     const select = $(selector);
     if (!select) return;
     const previous = select.value;
@@ -3175,6 +3261,30 @@ function renderPurchaseSkuPicker() {
       '<button class="button secondary" data-add-purchase-sku="' + escapeHtml(product.id) + '" type="button">' + (inDraft ? '更新明细' : '加入明细') + '</button></div></article>';
   }).join('') || '<div class="last-value">没有符合条件的 SKU。请调整搜索条件或先完善商品资料。</div>';
 }
+function renderOrderSkuPicker() {
+  const container = $('#orderSkuPicker');
+  if (!container) return;
+  const term = String($('#orderSkuSearch') ? $('#orderSkuSearch').value : '').trim().toLowerCase();
+  const products = ownProducts(state).filter(function (product) {
+    if (product.needsReview || product.status === 'draft' || product.status === 'inactive') return false;
+    return !term || [product.sku, product.name, product.seller].join(' ').toLowerCase().includes(term);
+  });
+  setText('#orderSkuPickerHint', products.length ? '显示 ' + products.length + ' 个 SKU' : (term ? '未找到匹配 SKU' : '暂无可销售 SKU'));
+  container.innerHTML = products.map(function (product) {
+    const image = safeImageUrl(product.image);
+    const existing = draftOrderLines.find(function (line) { return line.productId === product.id; });
+    const available = availableFor(product.id);
+    const quantity = existing ? integer(existing.quantity) : 0;
+    const shortage = Math.max(0, quantity - available);
+    return '<article class="purchase-sku-card" data-order-sku-card="' + escapeHtml(product.id) + '">' +
+      '<div class="purchase-sku-image">' + (image ? '<img src="' + escapeHtml(image) + '" alt="' + escapeHtml(product.name) + '" loading="lazy" onerror="this.hidden=true">' : '暂无图片') + '</div>' +
+      '<div class="purchase-sku-copy"><strong title="' + escapeHtml(product.name) + '">' + escapeHtml(product.name) + '</strong><span class="sku-code">' + escapeHtml(product.sku || '无 SKU') + '</span>' +
+      '<div class="order-stock-copy"><span>当前仓：' + escapeHtml((selectedWarehouse() || {}).name || '未选择') + '</span><span>可用 <b>' + available + '</b></span>' + (shortage ? '<span class="shortage">预计缺口 ' + shortage + '</span>' : '') + '</div></div>' +
+      '<div class="purchase-sku-fields"><label>订单数量<input data-order-sku-quantity="' + escapeHtml(product.id) + '" type="number" min="1" step="1" value="' + (quantity || '') + '" placeholder="数量"></label>' +
+      '<button class="button secondary" data-add-order-sku="' + escapeHtml(product.id) + '" type="button">' + (existing ? '更新明细' : '加入明细') + '</button></div></article>';
+  }).join('') || '<div class="last-value">没有符合条件的 SKU。请调整搜索条件或先完善商品资料。</div>';
+}
+
 async function openPurchaseEditor(existingOrder) {
   if (!ownProducts(state).filter(function (item) { return !item.needsReview; }).length) {
     showToast('请先在商品中心新增并完善本店 SKU。');
@@ -3224,10 +3334,13 @@ async function openPurchaseEditor(existingOrder) {
 function renderOrderDraft() {
   $('#orderLineList').innerHTML = draftOrderLines.length ? draftOrderLines.map(function (line) {
     const product = productById(line.productId);
+    const available = availableFor(line.productId);
+    const shortage = Math.max(0, integer(line.quantity) - available);
     return '<div class="line-list-item"><strong>' + escapeHtml(product ? product.sku + ' · ' + product.name : '未知商品') + '</strong>' +
-      '<span>' + line.quantity + ' 件</span><span>可用 ' + availableFor(line.productId) + '</span>' +
+      '<span>' + line.quantity + ' 件</span><span>可用 ' + available + (shortage ? ' · 缺口 ' + shortage : '') + '</span>' +
       '<button class="line-remove" data-remove-order-line="' + escapeHtml(line.productId) + '" type="button">移除</button></div>';
   }).join('') : '<div class="last-value">请至少加入一条订单明细。</div>';
+  renderOrderSkuPicker();
 }
 function openOrderEditor() {
   const warehouse = selectedWarehouse();
@@ -3241,6 +3354,7 @@ function openOrderEditor() {
   draftOrderLines = [];
   $('#orderNumber').value = 'SO-' + today().replace(/-/g, '') + '-' + String(Date.now()).slice(-4);
   $('#orderAt').value = localDateTime(new Date());
+  $('#orderSkuSearch').value = '';
   renderOrderDraft();
   openModal('orderModal');
 }
@@ -4045,10 +4159,10 @@ async function handleOrderSubmit(event) {
   };
   if (TEAM_MODE) {
     let result = null;
-    const savedTeam = await executeTeamCommand(async function () { result = await teamGateway.createOrder(order); }, '', 'order');
+    const savedTeam = await executeTeamCommand(async function () { result = await teamGateway.createOrder(order); return result; }, '', 'order');
     if (savedTeam) {
       closeModal('orderModal');
-      showToast(result && result.shipped ? '订单已确认并一次完成出库。' : (result && result.draft ? '订单信息不完整，已保存为草稿。' : ('订单已保留，出库未完成：' + (result && result.error ? result.error : '请检查库存或订单状态后重试。'))));
+      showToast(result && result.shipped ? '订单已确认并一次完成出库。' : '订单已保存为库存不足，整单未锁库、未扣库。');
     }
     return;
   }
@@ -4385,6 +4499,7 @@ async function handleAction(action, id) {
     if (TEAM_MODE) return executeTeamCommand(function () { return teamGateway.restoreOrderFulfillment(order); }, '已恢复 ERP 履约，请重新选择仓库并锁库。', 'order');
     return showToast('本地演示模式不支持恢复履约。');
   }
+  if (action === 'view-transit-sources') return openTransitSources(id);
   if (action === 'delete-snapshot') return askConfirm('确认删除这条快照？趋势会重新计算。', function () {
     if (TEAM_MODE) {
       const snapshot = state.snapshots.find(function (item) { return item.id === id; });
@@ -5027,19 +5142,35 @@ function bindEvents() {
     showToast('补货建议已重新计算。');
   });
   $('#openOrderModal').addEventListener('click', openOrderEditor);
-  $('#addOrderLine').addEventListener('click', function () {
-    const productId = $('#orderLineProduct').value;
+  $('#orderSkuSearch').addEventListener('input', renderOrderSkuPicker);
+  $('#orderSkuPicker').addEventListener('input', function (event) {
+    const input = event.target.closest('[data-order-sku-quantity]');
+    if (!input) return;
+    const card = input.closest('[data-order-sku-card]');
+    const available = availableFor(input.dataset.orderSkuQuantity);
+    const shortage = Math.max(0, integer(input.value) - available);
+    const old = card && card.querySelector('.order-stock-copy .shortage');
+    if (old) old.remove();
+    if (shortage && card) card.querySelector('.order-stock-copy').insertAdjacentHTML('beforeend', '<span class="shortage">预计缺口 ' + shortage + '</span>');
+  });
+  $('#orderSkuPicker').addEventListener('click', function (event) {
+    const button = event.target.closest('[data-add-order-sku]');
+    if (!button) return;
+    const productId = button.dataset.addOrderSku;
     const product = productById(productId);
-    const quantity = integer($('#orderLineQty').value);
+    const input = $('#orderSkuPicker').querySelector('[data-order-sku-quantity="' + CSS.escape(productId) + '"]');
+    const quantity = integer(input && input.value);
     if (!product || product.kind !== 'own' || product.needsReview) return showToast('请选择已完善的本店 SKU。');
     if (!quantity) return showToast('订单数量必须大于 0。');
     const existing = draftOrderLines.find(function (line) { return line.productId === productId; });
-    if (existing) existing.quantity += quantity;
+    if (existing) existing.quantity = quantity;
     else draftOrderLines.push({ productId: productId, quantity: quantity });
-    $('#orderLineQty').value = '';
     renderOrderDraft();
   });
   $('#orderForm').addEventListener('submit', handleOrderSubmit);
+  window.addEventListener('scroll', updateInventoryStickyHeader, { passive: true });
+  window.addEventListener('resize', updateInventoryStickyHeader);
+  $('#inventoryTableWrap').addEventListener('scroll', updateInventoryStickyHeader, { passive: true });
   $('#openSnapshotModal').addEventListener('click', function () { openSnapshotEditor($('#historyProduct').value); });
   $('#snapshotProduct').addEventListener('change', fillSnapshotHint);
   $('#snapshotForm').addEventListener('submit', handleSnapshotSubmit);

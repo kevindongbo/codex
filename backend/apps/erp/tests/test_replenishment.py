@@ -12,11 +12,17 @@ from apps.erp.models import (
     PurchaseOrderLine,
     Receipt,
     ReceiptLine,
+    ReturnLine,
+    ReturnOrder,
+    ReturnReceipt,
+    ReturnReceiptLine,
     SalesOrder,
     SalesOrderLine,
     Shipment,
     ShipmentLine,
     StockLedger,
+    StockTransfer,
+    StockTransferLine,
     SKU,
     StockBalance,
     Supplier,
@@ -285,7 +291,7 @@ class ReplenishmentTests(TestCase):
         self.assertEqual(summary.median_days, Decimal("10.0000"))
         self.assertEqual(summary.p80_days, Decimal("12.0000"))
 
-    def test_weighted_velocity_uses_all_organization_shipments_for_the_sku(self):
+    def test_weighted_velocity_isolated_to_selected_warehouse(self):
         self.create_shipment(
             warehouse=self.warehouse, days_ago=2, quantity="14", sequence=1
         )
@@ -309,12 +315,12 @@ class ReplenishmentTests(TestCase):
             as_of=self.as_of,
         )
 
-        self.assertEqual(demand.quantity_7, Decimal("714.000"))
-        self.assertEqual(demand.quantity_15, Decimal("728.000"))
-        self.assertEqual(demand.quantity_30, Decimal("758.000"))
-        self.assertEqual(demand.shipment_count, 4)
+        self.assertEqual(demand.quantity_7, Decimal("14.000"))
+        self.assertEqual(demand.quantity_15, Decimal("28.000"))
+        self.assertEqual(demand.quantity_30, Decimal("58.000"))
+        self.assertEqual(demand.shipment_count, 3)
 
-    def test_weighted_velocity_excludes_manual_stock_movements(self):
+    def test_weighted_velocity_includes_manual_outbound_but_not_manual_inbound(self):
         manual = post_stock(
             organization=self.organization,
             warehouse=self.warehouse,
@@ -344,8 +350,39 @@ class ReplenishmentTests(TestCase):
             organization=self.organization, sku=self.sku, warehouse=self.warehouse, as_of=self.as_of
         )
 
-        self.assertEqual(demand.quantity_3, Decimal("0.000"))
-        self.assertEqual(demand.shipment_count, 0)
+        self.assertEqual(demand.quantity_3, Decimal("6.000"))
+        self.assertEqual(demand.shipment_count, 1)
+        self.assertEqual(demand.breakdown["3"]["order_outbound"], Decimal("0.000"))
+        self.assertEqual(demand.breakdown["3"]["manual_outbound"], Decimal("6.000"))
+        self.assertEqual(demand.breakdown["3"]["net_sales"], Decimal("6.000"))
+
+    def test_return_reduces_demand_on_original_shipment_date(self):
+        self.create_shipment(
+            warehouse=self.warehouse, days_ago=10, quantity="12", sequence=20
+        )
+        order = SalesOrder.objects.get(number="SO-20")
+        return_order = ReturnOrder.objects.create(
+            organization=self.organization, number="RET-VELOCITY", original_order=order,
+            warehouse=self.warehouse, status=ReturnOrder.Status.RECEIVED,
+        )
+        return_line = ReturnLine.objects.create(
+            return_order=return_order, sku=self.sku, quantity_expected="5", quantity_received="5",
+        )
+        receipt = ReturnReceipt.objects.create(
+            organization=self.organization, return_order=return_order, warehouse=self.warehouse,
+            idempotency_key="velocity-return", received_at=self.as_of - timedelta(days=1),
+        )
+        ReturnReceiptLine.objects.create(
+            receipt=receipt, return_line=return_line, sku=self.sku, quantity="5", condition=ReturnLine.Condition.RESTOCK,
+        )
+
+        demand = estimate_demand_velocity(
+            organization=self.organization, sku=self.sku, warehouse=self.warehouse, as_of=self.as_of
+        )
+
+        self.assertEqual(demand.quantity_7, Decimal("0.000"))
+        self.assertEqual(demand.quantity_15, Decimal("7.000"))
+        self.assertEqual(demand.breakdown["15"]["returns_at_original_sale_date"], Decimal("5.000"))
 
     def test_inventory_position_counts_only_target_warehouse_open_inbound(self):
         StockBalance.objects.create(
@@ -397,6 +434,49 @@ class ReplenishmentTests(TestCase):
         self.assertEqual(inventory.purchased_pending_shipment, Decimal("15.000"))
         self.assertEqual(inventory.inventory_position, Decimal("23.000"))
         self.assertEqual(inventory.open_purchase_count, 1)
+
+    def test_inventory_position_unifies_purchase_and_transfer_transit(self):
+        StockBalance.objects.create(
+            organization=self.organization,
+            warehouse=self.warehouse,
+            sku=self.sku,
+            on_hand="7",
+            purchased_pending_shipment="150",
+            in_transit="95",
+        )
+        purchase = PurchaseOrder.objects.create(
+            organization=self.organization,
+            number="PO-TRANSIT-150",
+            supplier=self.supplier,
+            warehouse=self.warehouse,
+            status=PurchaseOrder.Status.SUBMITTED,
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=purchase,
+            sku=self.sku,
+            quantity_ordered="150",
+            unit_cost="10",
+        )
+        transfer = StockTransfer.objects.create(
+            organization=self.organization,
+            number="TR-TRANSIT-95",
+            source_warehouse=self.other_warehouse,
+            destination_warehouse=self.warehouse,
+            status=StockTransfer.Status.IN_TRANSIT,
+        )
+        StockTransferLine.objects.create(transfer=transfer, sku=self.sku, quantity="95")
+
+        inventory = get_inventory_position(
+            organization=self.organization,
+            sku=self.sku,
+            warehouse=self.warehouse,
+        )
+
+        self.assertEqual(inventory.available, Decimal("7.000"))
+        self.assertEqual(inventory.purchased_pending_shipment, Decimal("150.000"))
+        self.assertEqual(inventory.in_transit, Decimal("95.000"))
+        self.assertEqual(inventory.inbound_total, Decimal("245.000"))
+        self.assertEqual(inventory.inventory_position, Decimal("252.000"))
 
     def test_calculation_rounds_up_to_moq_and_pack_size(self):
         forecast = calculate_replenishment(
