@@ -19,6 +19,7 @@ from .models import (
 )
 from .permissions import PERMISSION_CATALOG, request_organization
 from .secure_config import encrypt_secret
+from .inbound import calculate_inbound_snapshot
 
 
 SELECTION_PLATFORMS = ("tiktok", "amazon")
@@ -650,121 +651,55 @@ class ReceiveInputSerializer(OrganizationValidationMixin, serializers.Serializer
 
 class StockBalanceSerializer(ScopedSerializer):
     available = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
-    in_transit = serializers.DecimalField(max_digits=14, decimal_places=3, read_only=True)
+    purchased_pending_shipment = serializers.SerializerMethodField()
+    in_transit = serializers.SerializerMethodField()
     inbound_total = serializers.SerializerMethodField()
     purchased_pending_sources = serializers.SerializerMethodField()
     in_transit_sources = serializers.SerializerMethodField()
 
+    def _inbound_snapshot(self, balance):
+        cache = getattr(self, "_inbound_snapshot_cache", None)
+        if cache is None:
+            cache = self._inbound_snapshot_cache = {}
+        if balance.pk not in cache:
+            cache[balance.pk] = calculate_inbound_snapshot(
+                organization=balance.organization,
+                warehouse=balance.warehouse,
+                sku=balance.sku,
+                balance=balance,
+            )
+        return cache[balance.pk]
+
+    def get_purchased_pending_shipment(self, balance):
+        return self._quantity_text(self._inbound_snapshot(balance).purchased_pending_shipment)
+
+    def get_in_transit(self, balance):
+        return self._quantity_text(self._inbound_snapshot(balance).in_transit)
+
     def get_inbound_total(self, balance):
-        return str(balance.purchased_pending_shipment + balance.in_transit)
+        return self._quantity_text(self._inbound_snapshot(balance).inbound_total)
 
     def get_purchased_pending_sources(self, balance):
-        sources = []
-        lines = PurchaseOrderLine.objects.filter(
-            purchase_order__organization=balance.organization,
-            purchase_order__warehouse=balance.warehouse,
-            purchase_order__status__in=(PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL),
-            sku=balance.sku,
-        ).select_related("purchase_order").prefetch_related("shipment_lines", "receiptline_set")
-        for line in lines:
-            confirmed = sum(
-                (item.quantity_shipped for item in line.shipment_lines.all() if item.purchase_shipment.confirmed_at),
-                Decimal("0"),
-            )
-            direct_received = sum(
-                (
-                    item.quantity
-                    for item in line.receiptline_set.all()
-                    if item.receipt.status == Receipt.Status.COMPLETED
-                    and (
-                        item.receipt.purchase_shipment_id is None
-                        or item.receipt.purchase_shipment.confirmed_at is None
-                    )
-                ),
-                Decimal("0"),
-            )
-            remaining = max(
-                Decimal("0"),
-                line.quantity_ordered - confirmed - line.quantity_unshipped_closed - direct_received,
-            )
-            if remaining:
-                sources.append({
-                    "source_type": "purchase",
-                    "source_stage": "pending_shipment",
-                    "source_number": line.purchase_order.number,
-                    "tracking_number": "",
-                    "planned_quantity": str(line.quantity_ordered),
-                    "received_quantity": str(line.quantity_received),
-                    "exception_closed_quantity": str(line.quantity_unshipped_closed),
-                    "remaining_quantity": str(remaining),
-                    "started_at": line.purchase_order.ordered_at,
-                    "expected_at": line.purchase_order.expected_at,
-                })
-        return sources
+        return self._serialize_inbound_sources(self._inbound_snapshot(balance).pending_sources)
 
     def get_in_transit_sources(self, balance):
-        sources = []
-        purchase_lines = PurchaseShipmentLine.objects.filter(
-            purchase_shipment__purchase_order__organization=balance.organization,
-            purchase_shipment__purchase_order__warehouse=balance.warehouse,
-            purchase_shipment__confirmed_at__isnull=False,
-            purchase_line__sku=balance.sku,
-        ).select_related("purchase_shipment__purchase_order", "purchase_line")
-        for line in purchase_lines:
-            received = sum(
-                (
-                    item.quantity
-                    for receipt in line.purchase_shipment.receipts.all()
-                    if receipt.status == Receipt.Status.COMPLETED
-                    for item in receipt.lines.filter(purchase_line=line.purchase_line)
-                ),
-                Decimal("0"),
-            )
-            remaining = max(
-                Decimal("0"),
-                line.quantity_shipped - received - line.quantity_exception_closed,
-            )
-            if remaining:
-                sources.append({
-                    "source_type": "purchase",
-                    "source_stage": "in_transit",
-                    "source_number": line.purchase_shipment.purchase_order.number,
-                    "tracking_number": line.purchase_shipment.tracking_number,
-                    "planned_quantity": str(line.quantity_shipped),
-                    "received_quantity": str(received),
-                    "exception_closed_quantity": str(line.quantity_exception_closed),
-                    "remaining_quantity": str(remaining),
-                    "started_at": line.purchase_shipment.confirmed_at,
-                    "expected_at": line.purchase_shipment.purchase_order.expected_at,
-                })
-        transfer_lines = StockTransferLine.objects.filter(
-            transfer__organization=balance.organization,
-            transfer__destination_warehouse=balance.warehouse,
-            transfer__status__in=(StockTransfer.Status.IN_TRANSIT, StockTransfer.Status.PARTIALLY_RECEIVED),
-            sku=balance.sku,
-        ).select_related("transfer")
-        for line in transfer_lines:
-            remaining = max(
-                Decimal("0"),
-                line.quantity - line.received_quantity - line.exception_closed_quantity,
-            )
-            if remaining:
-                tracking = "、".join(
-                    value for value in line.transfer.packages.values_list("tracking_number", flat=True) if value
-                )
-                sources.append({
-                    "source_type": "transfer",
-                    "source_stage": "in_transit",
-                    "source_number": line.transfer.number,
-                    "tracking_number": tracking,
-                    "planned_quantity": str(line.quantity),
-                    "received_quantity": str(line.received_quantity),
-                    "exception_closed_quantity": str(line.exception_closed_quantity),
-                    "remaining_quantity": str(remaining),
-                    "started_at": line.transfer.dispatched_at,
-                    "expected_at": None,
-                })
-        return sources
+        return self._serialize_inbound_sources(self._inbound_snapshot(balance).transit_sources)
+
+    @staticmethod
+    def _serialize_inbound_sources(sources):
+        return [
+            {
+                key: StockBalanceSerializer._quantity_text(value) if key in {
+                    "planned_quantity", "received_quantity", "exception_closed_quantity", "remaining_quantity"
+                } else value
+                for key, value in source.items()
+            }
+            for source in sources
+        ]
+
+    @staticmethod
+    def _quantity_text(value):
+        return format(Decimal(value).quantize(Decimal("0.001")), "f")
 
     class Meta(ScopedSerializer.Meta):
         model = StockBalance

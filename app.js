@@ -591,7 +591,9 @@ function balanceFor(productId, source, warehouseId) {
 
 function inboundFor(productId, source, warehouseId) {
   const balance = balanceFor(productId, source, warehouseId);
-  if (TEAM_MODE) return integer(balance.inboundTotal || (integer(balance.purchasedPendingShipment) + integer(balance.inTransit)));
+  if (TEAM_MODE) return integer(balance.inboundTotal == null
+    ? (integer(balance.purchasedPendingShipment) + integer(balance.inTransit))
+    : balance.inboundTotal);
   return purchaseTransitFor(productId, source, warehouseId) + (source || state).stockTransfers.reduce(function (sum, transfer) {
     const targetWarehouseId = warehouseId || currentWarehouseId(source || state);
     if (!['in_transit', 'partially_received'].includes(transfer.status) || transfer.destinationWarehouseId !== targetWarehouseId) return sum;

@@ -32,6 +32,7 @@ from .models import (
     StockTransfer,
     StockTransferLine,
 )
+from .inbound import calculate_inbound_snapshot
 
 
 ZERO = Decimal("0")
@@ -514,44 +515,21 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
     reserved = _decimal(getattr(balance, "reserved", ZERO))
     available = max(ZERO, on_hand - reserved)
 
-    open_lines = list(PurchaseOrderLine.objects.filter(
-        purchase_order__organization=organization,
-        purchase_order__warehouse=warehouse,
-        purchase_order__status__in=(PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL),
-        sku=sku,
-    ).select_related("purchase_order"))
-    # Python subtraction keeps this compatible if either quantity later becomes a
-    # computed property rather than a concrete database field.
-    remaining_by_purchase: dict[object, Decimal] = defaultdict(lambda: ZERO)
-    expected_by_purchase: dict[object, datetime | None] = {}
-    for line in open_lines:
-        shipped = PurchaseShipmentLine.objects.filter(
-            purchase_line=line, purchase_shipment__confirmed_at__isnull=False
-        ).aggregate(total=Sum("quantity_shipped")).get("total") or ZERO
-        # A receipt is downstream from confirmed shipment.  Deducting it again
-        # here made "待发货" disappear twice after a partial receipt.
-        # Pre-stage historical records have receipts but no shipment batches. In
-        # that one legacy shape, received implies already-confirmed shipment;
-        # once batches exist the authoritative formula is ordered - confirmed.
-        confirmed_shipped = _decimal(shipped) if shipped else _decimal(line.quantity_received)
-        remaining = max(ZERO, _decimal(line.quantity_ordered) - confirmed_shipped)
-        if remaining:
-            remaining_by_purchase[line.purchase_order_id] += remaining
-            expected_by_purchase[line.purchase_order_id] = getattr(
-                line.purchase_order, "expected_at", None
-            )
-    calculated_pending = sum(remaining_by_purchase.values(), ZERO)
-    # StockBalance is the single authoritative stage balance.  Purchase and
-    # transfer services both post their in-transit delta here, so summing a
-    # query on top would double-count one source and if/else would lose another.
-    stored_pending = _decimal(getattr(balance, "purchased_pending_shipment", ZERO))
-    # Existing records created before stage accounting did not carry the balance;
-    # retain a read-only formula fallback for that historical data only.
-    purchase_pending = stored_pending if stored_pending else calculated_pending
-    in_transit = _decimal(getattr(balance, "in_transit", ZERO))
+    inbound = calculate_inbound_snapshot(
+        organization=organization, warehouse=warehouse, sku=sku, balance=balance
+    )
+    purchase_pending = inbound.purchased_pending_shipment
+    in_transit = inbound.in_transit
     expected_dates = [
-        value for value in expected_by_purchase.values() if value is not None
+        item["expected_at"]
+        for item in inbound.pending_sources + inbound.transit_sources
+        if item["expected_at"] is not None
     ]
+    open_purchase_count = len({
+        item["source_number"]
+        for item in inbound.pending_sources + inbound.transit_sources
+        if item["source_type"] == "purchase"
+    })
 
     return InventoryPosition(
         on_hand=_quantity(on_hand),
@@ -559,7 +537,7 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
         available=_quantity(available),
         in_transit=_quantity(in_transit),
         inventory_position=_quantity(available + purchase_pending + in_transit),
-        open_purchase_count=len(remaining_by_purchase),
+        open_purchase_count=open_purchase_count,
         next_expected_at=min(expected_dates) if expected_dates else None,
         purchased_pending_shipment=_quantity(purchase_pending),
         inbound_total=_quantity(purchase_pending + in_transit),
