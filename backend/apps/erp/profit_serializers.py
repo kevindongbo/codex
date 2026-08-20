@@ -35,6 +35,15 @@ class ProfitItemSerializer(serializers.Serializer):
         decimal_places=4,
         min_value=Decimal("0"),
     )
+    advertising_rebate_percent_override = serializers.DecimalField(
+        required=False,
+        allow_null=True,
+        default=None,
+        max_digits=5,
+        decimal_places=2,
+        min_value=Decimal("0"),
+        max_value=Decimal("100"),
+    )
     manual_commission_rate = serializers.DecimalField(
         required=False,
         allow_null=True,
@@ -68,6 +77,14 @@ class ProfitCalculationSerializer(serializers.Serializer):
     transaction_fee_adjustment = serializers.DecimalField(
         required=False, default=Decimal("0.00"), max_digits=6, decimal_places=2,
         min_value=Decimal("-100"), max_value=Decimal("100"),
+    )
+    advertising_rebate_percent = serializers.DecimalField(
+        required=False,
+        default=Decimal("0.00"),
+        max_digits=5,
+        decimal_places=2,
+        min_value=Decimal("0"),
+        max_value=Decimal("100"),
     )
     buyer_pays_shipping = serializers.BooleanField(required=False, default=False)
     buyer_shipping_region = serializers.ChoiceField(

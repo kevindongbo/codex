@@ -705,6 +705,15 @@ class StockTransfer(OrganizationScopedModel):
     )
     received_at = models.DateTimeField("收货时间", null=True, blank=True)
     received_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="received_stock_transfers", verbose_name="收货人")
+    closed_at = models.DateTimeField("异常结束时间", null=True, blank=True)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="closed_stock_transfers",
+        verbose_name="异常结束人",
+    )
 
     objects = StockTransferQuerySet.as_manager()
 
@@ -777,6 +786,12 @@ class StockTransferLine(TimeStampedModel):
         constraints = [
             models.UniqueConstraint(fields=["transfer", "sku"], name="uniq_transfer_sku"),
             models.CheckConstraint(condition=Q(quantity__gt=0), name="transfer_qty_positive"),
+            models.CheckConstraint(condition=Q(received_quantity__gte=0), name="transfer_received_nonnegative"),
+            models.CheckConstraint(condition=Q(exception_closed_quantity__gte=0), name="transfer_exception_nonnegative"),
+            models.CheckConstraint(
+                condition=Q(received_quantity__lte=F("quantity") - F("exception_closed_quantity")),
+                name="transfer_received_exception_lte_qty",
+            ),
         ]
 
     def delete(self, *args, **kwargs):
@@ -828,6 +843,36 @@ class StockTransferReceipt(OrganizationScopedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["organization", "idempotency_key"], name="uniq_org_transfer_receipt_idem"),
+        ]
+
+
+class StockTransferCompletionEvent(OrganizationScopedModel):
+    """Durable idempotency and audit fact for the final exception close."""
+
+    transfer = models.OneToOneField(
+        StockTransfer,
+        on_delete=models.PROTECT,
+        related_name="completion_event",
+    )
+    idempotency_key = models.CharField(max_length=120)
+    request_hash = models.CharField(max_length=64)
+    reason = models.CharField(max_length=240)
+    quantities = models.JSONField(default=dict)
+    result = models.JSONField(default=dict)
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="stock_transfer_completion_events",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "idempotency_key"],
+                name="uniq_org_transfer_completion_idem",
+            ),
         ]
 
 
@@ -1153,6 +1198,7 @@ class ProfitCalculationWorkingConfig(OrganizationScopedModel):
     rate_mode = models.CharField(max_length=12, default="auto")
     manual_cny_per_myr = models.DecimalField(max_digits=14, decimal_places=6, null=True, blank=True)
     manual_usd_per_myr = models.DecimalField(max_digits=14, decimal_places=6, null=True, blank=True)
+    revision = models.PositiveBigIntegerField(default=1)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="updated_profit_calculation_working_configs",
@@ -1163,6 +1209,251 @@ class ProfitCalculationWorkingConfig(OrganizationScopedModel):
             models.UniqueConstraint(fields=["organization"], name="uniq_org_profit_working_config"),
             models.CheckConstraint(condition=Q(rate_mode__in=["auto", "manual"]), name="profit_working_rate_mode_valid"),
         ]
+
+
+class CreatorProfile(OrganizationScopedModel):
+    class CooperationStatus(models.TextChoices):
+        PENDING = "pending", "待联系"
+        CONTACTED = "contacted", "已联系"
+        NEGOTIATING = "negotiating", "洽谈中"
+        SAMPLING = "sampling", "寄样中"
+        PUBLISHING = "publishing", "待发布"
+        PUBLISHED = "published", "已发布"
+        COMPLETED = "completed", "已完成"
+        PAUSED = "paused", "暂停"
+
+    display_name = models.CharField(max_length=160)
+    platform = models.CharField(max_length=40, blank=True)
+    account_name = models.CharField(max_length=160, blank=True)
+    profile_url = models.URLField(max_length=2000, blank=True)
+    country = models.CharField(max_length=80, blank=True)
+    language = models.CharField(max_length=80, blank=True)
+    contact = models.JSONField(default=dict, blank=True)
+    follower_count = models.PositiveBigIntegerField(null=True, blank=True)
+    tags = models.JSONField(default=list, blank=True)
+    category = models.CharField(max_length=160, blank=True)
+    responsible_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="responsible_creator_profiles",
+    )
+    cooperation_status = models.CharField(
+        max_length=24, choices=CooperationStatus.choices, default=CooperationStatus.PENDING
+    )
+    notes = models.TextField(blank=True)
+    is_archived = models.BooleanField(default=False)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="archived_creator_profiles",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="created_creator_profiles",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="updated_creator_profiles",
+    )
+
+    class Meta:
+        ordering = ["is_archived", "display_name", "id"]
+
+
+class CreatorCollaboration(OrganizationScopedModel):
+    class Stage(models.TextChoices):
+        PENDING = "pending", "待联系"
+        CONTACTED = "contacted", "已联系"
+        NEGOTIATING = "negotiating", "洽谈中"
+        SAMPLING = "sampling", "寄样中"
+        PUBLISHING = "publishing", "待发布"
+        PUBLISHED = "published", "已发布"
+        COMPLETED = "completed", "已完成"
+        PAUSED = "paused", "暂停"
+
+    creator = models.ForeignKey(CreatorProfile, on_delete=models.PROTECT, related_name="collaborations")
+    store = models.ForeignKey(OwnStore, null=True, blank=True, on_delete=models.PROTECT, related_name="creator_collaborations")
+    sku = models.ForeignKey(SKU, null=True, blank=True, on_delete=models.PROTECT, related_name="creator_collaborations")
+    stage = models.CharField(max_length=24, choices=Stage.choices, default=Stage.PENDING)
+    commission_percent = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    fixed_fee = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=3, default="MYR")
+    responsible_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="responsible_creator_collaborations",
+    )
+    notes = models.TextField(blank=True)
+    is_archived = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="created_creator_collaborations",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="updated_creator_collaborations",
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(commission_percent__isnull=True) | (Q(commission_percent__gte=0) & Q(commission_percent__lte=100)),
+                name="creator_collaboration_commission_range",
+            ),
+            models.CheckConstraint(condition=Q(fixed_fee__isnull=True) | Q(fixed_fee__gte=0), name="creator_collaboration_fee_nonnegative"),
+        ]
+
+
+class CreatorSample(OrganizationScopedModel):
+    class Status(models.TextChoices):
+        PENDING = "pending", "待寄出"
+        SHIPPED = "shipped", "已寄出"
+        RECEIVED = "received", "已签收"
+        EXCEPTION = "exception", "物流异常"
+
+    collaboration = models.ForeignKey(CreatorCollaboration, on_delete=models.PROTECT, related_name="samples")
+    sku = models.ForeignKey(SKU, null=True, blank=True, on_delete=models.PROTECT, related_name="creator_samples")
+    quantity = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("1"))
+    tracking_number = models.CharField(max_length=160, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    shipped_at = models.DateTimeField(null=True, blank=True)
+    signed_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=Q(quantity__gt=0), name="creator_sample_quantity_positive")]
+
+
+class CreatorContent(OrganizationScopedModel):
+    collaboration = models.ForeignKey(CreatorCollaboration, on_delete=models.PROTECT, related_name="contents")
+    content_type = models.CharField(max_length=40, blank=True)
+    url = models.URLField(max_length=2000, blank=True)
+    planned_at = models.DateTimeField(null=True, blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+
+class CreatorFollowUp(OrganizationScopedModel):
+    creator = models.ForeignKey(CreatorProfile, on_delete=models.PROTECT, related_name="follow_ups")
+    collaboration = models.ForeignKey(
+        CreatorCollaboration, null=True, blank=True, on_delete=models.PROTECT, related_name="follow_ups"
+    )
+    note = models.TextField(blank=True)
+    next_reminder_at = models.DateTimeField(null=True, blank=True)
+    responsible_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="responsible_creator_follow_ups",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="created_creator_follow_ups",
+    )
+
+
+class CreatorAttribution(OrganizationScopedModel):
+    class Source(models.TextChoices):
+        MANUAL = "manual", "手工录入"
+        AUTHORIZED = "authorized", "平台正式授权"
+
+    creator = models.ForeignKey(CreatorProfile, on_delete=models.PROTECT, related_name="attributions")
+    collaboration = models.ForeignKey(
+        CreatorCollaboration, null=True, blank=True, on_delete=models.PROTECT, related_name="attributions"
+    )
+    store = models.ForeignKey(OwnStore, null=True, blank=True, on_delete=models.PROTECT, related_name="creator_attributions")
+    source = models.CharField(max_length=16, choices=Source.choices)
+    order_count = models.PositiveIntegerField(default=0)
+    units = models.DecimalField(max_digits=14, decimal_places=3, default=Decimal("0"))
+    gmv = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=3, default="MYR")
+    attributed_on = models.DateField(null=True, blank=True)
+    source_reference = models.CharField(max_length=240, blank=True)
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="recorded_creator_attributions",
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=Q(units__gte=0), name="creator_attribution_units_nonnegative"),
+            models.CheckConstraint(condition=Q(gmv__isnull=True) | Q(gmv__gte=0), name="creator_attribution_gmv_nonnegative"),
+        ]
+
+
+class ProfitCalculationBatch(OrganizationScopedModel):
+    idempotency_key = models.CharField(max_length=120)
+    request_hash = models.CharField(max_length=64)
+    request_snapshot = models.JSONField(default=dict)
+    result = models.JSONField(default=dict)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="profit_calculation_batches",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "idempotency_key"], name="uniq_org_profit_batch_idem"),
+        ]
+
+
+class ProfitPlan(OrganizationScopedModel):
+    class Status(models.TextChoices):
+        ACTIVE = "active", "有效"
+        ARCHIVED = "archived", "已归档"
+
+    source_batch = models.ForeignKey(ProfitCalculationBatch, on_delete=models.PROTECT, related_name="plans")
+    sku = models.ForeignKey(SKU, null=True, blank=True, on_delete=models.PROTECT, related_name="profit_plans")
+    store = models.ForeignKey(OwnStore, null=True, blank=True, on_delete=models.PROTECT, related_name="profit_plans")
+    name = models.CharField(max_length=160)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+    sku_code_snapshot = models.CharField(max_length=160)
+    sku_name_snapshot = models.CharField(max_length=200, blank=True)
+    image_url_snapshot = models.TextField(blank=True)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="created_profit_plans",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="updated_profit_plans",
+    )
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="archived_profit_plans",
+    )
+
+    class Meta:
+        ordering = ["-updated_at", "id"]
+        indexes = [models.Index(fields=["organization", "sku_code_snapshot", "status"])]
+
+
+class ProfitPlanVersion(OrganizationScopedModel):
+    plan = models.ForeignKey(ProfitPlan, on_delete=models.CASCADE, related_name="versions")
+    batch = models.ForeignKey(ProfitCalculationBatch, on_delete=models.PROTECT, related_name="versions")
+    version_number = models.PositiveIntegerField()
+    input_snapshot = models.JSONField(default=dict)
+    result_snapshot = models.JSONField(default=dict)
+    exchange_rate_snapshot = models.JSONField(default=dict)
+    rule_version = models.CharField(max_length=80)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="created_profit_plan_versions",
+    )
+
+    objects = AppendOnlyManager()
+
+    class Meta:
+        ordering = ["-version_number"]
+        constraints = [
+            models.UniqueConstraint(fields=["plan", "version_number"], name="uniq_profit_plan_version_number"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("利润方案历史版本不可修改")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("利润方案历史版本不可单独删除")
 
 
 class TikTokShopOAuthState(TimeStampedModel):

@@ -5,7 +5,7 @@ const STATE_VERSION = 6;
 const DEFAULT_WAREHOUSE_ID = 'warehouse-default';
 const COLORS = ['#0F8B8D', '#F59E0B', '#3B82F6', '#E05252', '#5A8F62', '#8B6BB5'];
 const WAREHOUSE_TYPE_LABELS = { domestic: '国内仓', overseas: '海外仓', forwarder: '货代仓', school: '学校仓', other: '其他' };
-const TRANSFER_LABELS = { draft: '草稿', in_transit: '调拨在途', received: '已收货', cancelled: '已取消' };
+const TRANSFER_LABELS = { draft: '草稿', in_transit: '调拨在途', partially_received: '部分收货', received: '已收货', completed_with_exception: '已完成（有异常）', cancelled: '已取消' };
 const KIND_LABELS = { own: '本店商品', direct: '直接竞品', indirect: '间接竞品' };
 const CURRENCY = { CNY: '¥', MYR: 'RM', USD: '$', GBP: '£', SGD: 'S$', THB: '฿', VND: '₫', PHP: '₱', IDR: 'Rp' };
 const PURCHASE_LABELS = { draft: '草稿', ordered: '已下单', transit: '在途', partial: '部分收货', completed: '已完成', cancelled: '已取消' };
@@ -46,7 +46,7 @@ function emptyState() {
     legacyStockEvents: [],
     migrationIssues: [],
     selectedProductId: '',
-    ui: { module: 'products', warehouseTab: 'purchase', competitorTab: 'products', warehouseId: DEFAULT_WAREHOUSE_ID }
+    ui: { module: 'products', warehouseTab: 'purchase', competitorTab: 'overview', warehouseId: DEFAULT_WAREHOUSE_ID }
   };
 }
 
@@ -104,6 +104,7 @@ let chartMetric = 'sales';
 let searchTerm = '';
 let pendingConfirm = null;
 let inventoryStickyHeader = null;
+let replenishmentStickyHeader = null;
 let pendingProductImage = '';
 let tiktokConnections = [];
 let aiProviderConfigs = [];
@@ -121,7 +122,12 @@ let draftTransferLines = [];
 let draftTransferPackages = [];
 let activeOrderWarehouseSelection = null;
 let activeTransferWorkflow = null;
+let activeTransferCompletion = null;
+let transferCompletionBusy = false;
 let replenishmentSelectedSkuIds = new Set();
+let analyticsState = { overview: null, stores: [], skus: [], loading: '', loaded: {}, error: {} };
+let creatorState = { rows: [], loading: false, loaded: false, error: '', active: null };
+let profitPlanState = { rows: [], loading: false, loaded: false, error: '', active: null, versions: [] };
 let expandedProfitSkuIds = new Set();
 let monitoringPickerTerm = '';
 let monitoringPickerSelected = new Set();
@@ -338,9 +344,10 @@ function normalizeV5(saved) {
   base.migrationIssues = Array.isArray(saved.migrationIssues) ? saved.migrationIssues : [];
   base.selectedProductId = saved.selectedProductId || '';
   const savedUi = saved.ui && typeof saved.ui === 'object' ? saved.ui : {};
-  if (['products', 'selection', 'warehouse', 'competitors', 'profit'].includes(savedUi.module)) base.ui.module = savedUi.module;
+  if (savedUi.module === 'competitors') base.ui.module = 'analytics';
+  else if (['products', 'selection', 'warehouse', 'analytics', 'creators', 'profit'].includes(savedUi.module)) base.ui.module = savedUi.module;
   if (['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(savedUi.warehouseTab)) base.ui.warehouseTab = savedUi.warehouseTab;
-  if (['products', 'snapshots', 'trends', 'alerts'].includes(savedUi.competitorTab)) base.ui.competitorTab = savedUi.competitorTab;
+  if (['overview', 'stores', 'skus', 'products', 'snapshots', 'trends', 'alerts'].includes(savedUi.competitorTab)) base.ui.competitorTab = savedUi.competitorTab;
   const activeWarehouse = base.warehouses.find(function (item) { return item.active && item.id === savedUi.warehouseId; }) ||
     base.warehouses.find(function (item) { return item.active; }) || base.warehouses[0];
   base.ui.warehouseId = activeWarehouse ? activeWarehouse.id : DEFAULT_WAREHOUSE_ID;
@@ -543,10 +550,11 @@ function restoreUiPreferences() {
   if (!TEAM_MODE) return;
   try {
     const saved = JSON.parse(localStorage.getItem(UI_STORAGE_KEY) || '{}');
-    if (saved.ui && ['products', 'selection', 'warehouse', 'competitors', 'profit'].includes(saved.ui.module)) state.ui.module = saved.ui.module;
+    if (saved.ui && saved.ui.module === 'competitors') state.ui.module = 'analytics';
+    else if (saved.ui && ['products', 'selection', 'warehouse', 'analytics', 'creators', 'profit'].includes(saved.ui.module)) state.ui.module = saved.ui.module;
     if (saved.ui && ['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(saved.ui.warehouseTab)) state.ui.warehouseTab = saved.ui.warehouseTab;
     if (saved.ui && saved.ui.warehouseId) state.ui.warehouseId = saved.ui.warehouseId;
-    if (saved.ui && ['products', 'snapshots', 'trends', 'alerts'].includes(saved.ui.competitorTab)) state.ui.competitorTab = saved.ui.competitorTab;
+    if (saved.ui && ['overview', 'stores', 'skus', 'products', 'snapshots', 'trends', 'alerts'].includes(saved.ui.competitorTab)) state.ui.competitorTab = saved.ui.competitorTab;
     if (['all', 'own', 'direct', 'indirect', 'inactive'].includes(saved.productFilter)) productFilter = saved.productFilter;
     if (['open', 'overdue', 'all'].includes(saved.purchaseFilter)) purchaseFilter = saved.purchaseFilter;
     if (['open', 'closed', 'all'].includes(saved.transferFilter)) transferFilter = saved.transferFilter;
@@ -1459,41 +1467,70 @@ function openTransitSources(productId) {
   }).join('') : '<div class="last-value">当前没有可展开的在途来源；如合计不为 0，请使用服务器诊断检查历史阶段余额。</div>';
   openModal('transitSourceModal');
 }
-function updateInventoryStickyHeader() {
-  const table = $('#inventoryTable');
-  const wrap = $('#inventoryTableWrap');
+function stickyHeaderGeometry(appBottom, sourceRect, tableRect, wrapRect, wrapClientWidth, wrapScrollLeft, tableScrollWidth) {
+  const top = Math.max(0, asNumber(appBottom));
+  const height = Math.max(0, asNumber(sourceRect && sourceRect.height));
+  return {
+    visible: Boolean(sourceRect && tableRect && sourceRect.top < top && tableRect.bottom > top + height),
+    top: top,
+    left: asNumber(wrapRect && wrapRect.left),
+    width: Math.max(0, asNumber(wrapClientWidth)),
+    height: height,
+    tableWidth: Math.max(0, asNumber(tableScrollWidth)),
+    translateX: -Math.max(0, asNumber(wrapScrollLeft))
+  };
+}
+
+function updateClonedStickyHeader(table, wrap, current, className) {
   if (!table || !wrap || !table.tHead || table.closest('[hidden]')) {
-    if (inventoryStickyHeader) inventoryStickyHeader.hidden = true;
-    return;
+    if (current) current.hidden = true;
+    return current;
   }
-  const headerRect = $('.app-header').getBoundingClientRect();
-  const tableRect = table.getBoundingClientRect();
+  const appHeader = $('.app-header');
+  if (!appHeader) return current;
   const sourceRect = table.tHead.getBoundingClientRect();
-  const top = Math.max(0, headerRect.bottom);
-  const visible = sourceRect.top < top && tableRect.bottom > top + sourceRect.height;
-  if (!visible) {
-    if (inventoryStickyHeader) inventoryStickyHeader.hidden = true;
+  const geometry = stickyHeaderGeometry(appHeader.getBoundingClientRect().bottom, sourceRect, table.getBoundingClientRect(), wrap.getBoundingClientRect(), wrap.clientWidth, wrap.scrollLeft, table.scrollWidth);
+  if (!geometry.visible) {
+    if (current) current.hidden = true;
+    return current;
+  }
+  if (!current) {
+    current = document.createElement('div');
+    current.className = className;
+    current.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(current);
+  }
+  current.innerHTML = '<table><thead>' + table.tHead.innerHTML + '</thead></table>';
+  const cloneTable = current.querySelector('table');
+  const cloneHeaders = current.querySelectorAll('th');
+  Array.from(table.tHead.querySelectorAll('th')).forEach(function (th, index) {
+    if (!cloneHeaders[index]) return;
+    const width = th.getBoundingClientRect().width + 'px';
+    cloneHeaders[index].style.width = width;
+    cloneHeaders[index].style.minWidth = width;
+    cloneHeaders[index].style.maxWidth = width;
+  });
+  current.hidden = false;
+  current.style.top = geometry.top + 'px';
+  current.style.left = geometry.left + 'px';
+  current.style.width = geometry.width + 'px';
+  current.style.height = geometry.height + 'px';
+  cloneTable.style.width = geometry.tableWidth + 'px';
+  cloneTable.style.transform = 'translateX(' + geometry.translateX + 'px)';
+  return current;
+}
+
+function updateInventoryStickyHeader() {
+  inventoryStickyHeader = updateClonedStickyHeader($('#inventoryTable'), $('#inventoryTableWrap'), inventoryStickyHeader, 'inventory-sticky-header');
+}
+
+function updateReplenishmentStickyHeader() {
+  const active = state.ui.module === 'warehouse' && state.ui.warehouseTab === 'replenishment';
+  if (!active) {
+    if (replenishmentStickyHeader) replenishmentStickyHeader.hidden = true;
     return;
   }
-  if (!inventoryStickyHeader) {
-    inventoryStickyHeader = document.createElement('div');
-    inventoryStickyHeader.className = 'inventory-sticky-header';
-    inventoryStickyHeader.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(inventoryStickyHeader);
-  }
-  inventoryStickyHeader.innerHTML = '<table><thead>' + table.tHead.innerHTML + '</thead></table>';
-  const cloneTable = inventoryStickyHeader.querySelector('table');
-  const cloneHeaders = inventoryStickyHeader.querySelectorAll('th');
-  Array.from(table.tHead.querySelectorAll('th')).forEach(function (th, index) {
-    if (cloneHeaders[index]) cloneHeaders[index].style.width = th.getBoundingClientRect().width + 'px';
-  });
-  inventoryStickyHeader.hidden = false;
-  inventoryStickyHeader.style.top = top + 'px';
-  inventoryStickyHeader.style.left = wrap.getBoundingClientRect().left + 'px';
-  inventoryStickyHeader.style.width = wrap.clientWidth + 'px';
-  inventoryStickyHeader.style.height = sourceRect.height + 'px';
-  cloneTable.style.width = table.scrollWidth + 'px';
-  cloneTable.style.transform = 'translateX(' + (-wrap.scrollLeft) + 'px)';
+  replenishmentStickyHeader = updateClonedStickyHeader($('#replenishmentTable'), $('#replenishmentTableWrap'), replenishmentStickyHeader, 'inventory-sticky-header replenishment-sticky-header');
 }
 function setText(selector, value) {
   const node = $(selector);
@@ -1523,10 +1560,11 @@ function rowButton(action, id, label, className) {
 }
 
 function setRoute(module, subtab) {
+  if (module === 'competitors') module = 'analytics';
   state.ui.module = module;
   if (module === 'warehouse' && subtab) state.ui.warehouseTab = subtab;
-  if (module === 'competitors' && subtab) state.ui.competitorTab = subtab;
-  if (module === 'profit') profitView = ['calculator', 'rules'].includes(subtab) ? subtab : 'calculator';
+  if (module === 'analytics' && subtab) state.ui.competitorTab = subtab;
+  if (module === 'profit') profitView = ['calculator', 'plans', 'rules'].includes(subtab) ? subtab : 'calculator';
   let route = '#' + module;
   if (module === 'products' && productFilter !== 'all') route += '/' + productFilter;
   if (module === 'warehouse') {
@@ -1539,8 +1577,8 @@ function setRoute(module, subtab) {
       else if (inventorySection === 'movements') route += '/movements';
     }
   }
-  if (module === 'competitors') route += '/' + state.ui.competitorTab;
-  if (module === 'profit' && profitView === 'rules') route += '/rules';
+  if (module === 'analytics') route += '/' + state.ui.competitorTab;
+  if (module === 'profit' && profitView !== 'calculator') route += '/' + profitView;
   history.replaceState(null, '', route);
   saveUiQuietly();
   closeSidebar();
@@ -1548,7 +1586,10 @@ function setRoute(module, subtab) {
 }
 function applyHashRoute() {
   const parts = location.hash.replace(/^#/, '').split('/');
-  if (['products', 'selection', 'warehouse', 'competitors', 'profit'].includes(parts[0])) state.ui.module = parts[0];
+  if (parts[0] === 'competitors') {
+    state.ui.module = 'analytics';
+    if (typeof history !== 'undefined' && history.replaceState) history.replaceState(null, '', '#analytics/' + (parts[1] || 'products'));
+  } else if (['products', 'selection', 'warehouse', 'analytics', 'creators', 'profit'].includes(parts[0])) state.ui.module = parts[0];
   if (parts[0] === 'products') productFilter = ['own', 'direct', 'indirect', 'inactive'].includes(parts[1]) ? parts[1] : 'all';
   if (parts[0] === 'warehouse' && ['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(parts[1])) {
     state.ui.warehouseTab = parts[1];
@@ -1560,8 +1601,8 @@ function applyHashRoute() {
       inventorySection = parts[2] === 'movements' ? 'movements' : 'list';
     }
   }
-  if (parts[0] === 'competitors' && ['products', 'snapshots', 'trends', 'alerts'].includes(parts[1])) state.ui.competitorTab = parts[1];
-  if (parts[0] === 'profit') profitView = parts[1] === 'rules' ? 'rules' : 'calculator';
+  if (['competitors', 'analytics'].includes(parts[0]) && ['overview', 'stores', 'skus', 'products', 'snapshots', 'trends', 'alerts'].includes(parts[1])) state.ui.competitorTab = parts[1];
+  if (parts[0] === 'profit') profitView = ['plans', 'rules'].includes(parts[1]) ? parts[1] : 'calculator';
 }
 function renderNavigation() {
   $$('[data-module]').forEach(function (button) {
@@ -1615,9 +1656,10 @@ function renderSidebar() {
         else active = inventoryFilter === 'all' && inventorySection === 'list';
       } else if (['transfers', 'replenishment'].includes(state.ui.warehouseTab)) active = true;
     }
-    if (state.ui.module === 'competitors' && button.dataset.competitorView) {
+    if (state.ui.module === 'analytics' && button.dataset.competitorView) {
       active = button.dataset.competitorView === state.ui.competitorTab;
     }
+    if (state.ui.module === 'creators' && button.dataset.creatorView) active = true;
     if (state.ui.module === 'selection' && button.dataset.selectionScroll) {
       active = button.dataset.selectionScroll === 'selectionKeywordPanel';
     }
@@ -1695,7 +1737,12 @@ function handleSideLink(button) {
     scrollToPanel(scrollTarget);
     return;
   }
-  if (button.dataset.competitorView) setRoute('competitors', button.dataset.competitorView);
+  if (button.dataset.competitorView) setRoute('analytics', button.dataset.competitorView);
+  if (button.dataset.creatorView || button.dataset.creatorStage) {
+    setRoute('creators');
+    if (button.dataset.creatorStage && $('#creatorStageFilter')) $('#creatorStageFilter').value = button.dataset.creatorStage === 'sample' ? 'sampling' : 'published';
+    loadCreators(true);
+  }
   if (button.dataset.profitView) {
     profitScrollTarget = button.dataset.scrollTarget || 'profitInputPanel';
     setRoute('profit', button.dataset.profitView);
@@ -2063,14 +2110,69 @@ async function submitTransferWorkflow() {
   const saved = await executeTeamCommand(command, workflow.mode === 'exception' ? '异常数量已关闭，不会转入在库。' : '本次收货已入库。', 'transfer');
   if (saved) closeModal('transferWorkflowModal');
 }
+
+function openTransferCompletion(transfer) {
+  if (!transfer || !TEAM_MODE || !teamGateway) return showToast('结束调拨仅支持团队在线模式。');
+  const remainingLines = (transfer.lines || []).map(function (line) {
+    return { line: line, remaining: transferRemainingQuantity(line) };
+  }).filter(function (item) { return item.remaining > 0; });
+  if (!['in_transit', 'partially_received'].includes(transfer.status) || !remainingLines.length) return showToast('这张调拨单没有可结束的在途剩余。');
+  activeTransferCompletion = { transfer: transfer, remainingLines: remainingLines };
+  transferCompletionBusy = false;
+  $('#transferCompleteReason').value = '';
+  $('#submitTransferComplete').disabled = false;
+  $('#submitTransferComplete').textContent = '结束调拨';
+  $('#transferCompleteModalTitle').textContent = '结束调拨 · ' + (transfer.number || '未编号');
+  $('#transferCompleteIntro').textContent = '以下全部剩余数量将原子记为异常关闭；目的仓不增加在库，来源仓不恢复库存。';
+  $('#transferCompleteRows').innerHTML = remainingLines.map(function (item) {
+    const line = item.line;
+    const product = productById(line.productId || line.product_id);
+    const exceptionClosed = integer(line.exceptionClosedQty == null ? line.exception_closed_quantity : line.exceptionClosedQty);
+    return '<tr><td>' + escapeHtml(product ? product.sku + ' · ' + product.name : (line.skuId || line.sku || 'SKU')) + '</td><td>' + transferLineQuantity(line) + '</td><td>' + transferReceivedQuantity(line) + '</td><td>' + exceptionClosed + '</td><td><strong>' + item.remaining + '</strong></td></tr>';
+  }).join('');
+  openModal('transferCompleteModal');
+}
+
+async function confirmTransferCompletion() {
+  if (!activeTransferCompletion || transferCompletionBusy) return;
+  const reason = $('#transferCompleteReason').value.trim();
+  if (!reason) return showToast('请填写结束调拨的异常原因。');
+  const completion = activeTransferCompletion;
+  transferCompletionBusy = true;
+  $('#submitTransferComplete').disabled = true;
+  $('#submitTransferComplete').textContent = '正在结束…';
+  try {
+    const saved = await executeTeamCommand(function () {
+      return teamGateway.completeTransferWithException(completion.transfer, reason);
+    }, '调拨已结束：全部剩余已异常关闭，在途库存已同步减少。', 'transfer', { refreshOnError: false });
+    if (saved) {
+      closeModal('transferCompleteModal');
+      activeTransferCompletion = null;
+    }
+  } finally {
+    transferCompletionBusy = false;
+    const button = $('#submitTransferComplete');
+    if (button) { button.disabled = false; button.textContent = '结束调拨'; }
+  }
+}
+
+function handleTransferCompleteSubmit(event) {
+  event.preventDefault();
+  if (!activeTransferCompletion || transferCompletionBusy) return;
+  const reason = $('#transferCompleteReason').value.trim();
+  if (!reason) return showToast('请填写结束调拨的异常原因。');
+  const total = activeTransferCompletion.remainingLines.reduce(function (sum, item) { return sum + item.remaining; }, 0);
+  askConfirm('二次确认：结束调拨并异常关闭全部剩余 ' + total + ' 件？该动作不会恢复来源仓库存。', confirmTransferCompletion);
+}
+
 function renderTransfers() {
   const warehouseId = TEAM_MODE ? String(teamGateway && teamGateway.warehouseId || '') : currentWarehouseId();
   const allTransfers = state.stockTransfers.filter(function (transfer) {
     return transferTouchesWarehouse(transfer, warehouseId);
   });
   const transfers = allTransfers.filter(function (transfer) {
-    if (transferFilter === 'open') return ['draft', 'in_transit'].includes(transfer.status);
-    if (transferFilter === 'closed') return ['received', 'cancelled'].includes(transfer.status);
+    if (transferFilter === 'open') return ['draft', 'in_transit', 'partially_received'].includes(transfer.status);
+    if (transferFilter === 'closed') return ['received', 'completed_with_exception', 'cancelled'].includes(transfer.status);
     return true;
   })
     .sort(function (a, b) { return new Date(b.createdAt || b.created_at) - new Date(a.createdAt || a.created_at); });
@@ -2092,17 +2194,18 @@ function renderTransfers() {
     const isDestination = String(destinationId) === String(warehouseId);
     if (teamCapabilityAllowed('transfer') && transfer.status === 'draft' && isSource) actions += rowButton('manage-transfer-packages', transfer.id, '物流包裹', 'secondary');
     if (teamCapabilityAllowed('transfer') && transfer.status === 'draft' && isSource && sourceWarehouse && sourceWarehouse.canShip !== false && sourceWarehouse.can_ship !== false) actions += rowButton('dispatch-transfer', transfer.id, '发出调拨', 'primary');
-    if (teamCapabilityAllowed('transfer') && transfer.status === 'in_transit' && isDestination && destinationWarehouse && destinationWarehouse.canReceive !== false && destinationWarehouse.can_receive !== false) {
+    if (teamCapabilityAllowed('transfer') && ['in_transit', 'partially_received'].includes(transfer.status) && isDestination && destinationWarehouse && destinationWarehouse.canReceive !== false && destinationWarehouse.can_receive !== false) {
       actions += rowButton('manage-transfer-packages', transfer.id, '物流单号', 'secondary');
       actions += rowButton('receive-transfer', transfer.id, '办理收货', 'primary');
       actions += rowButton('close-transfer-exception', transfer.id, '异常关闭', 'danger');
+      if (lines.some(function (line) { return transferRemainingQuantity(line) > 0; })) actions += rowButton('complete-transfer-with-exception', transfer.id, '结束调拨', 'danger');
     }
     if (teamCapabilityAllowed('transfer') && transfer.status === 'draft' && isSource) actions += rowButton('cancel-transfer', transfer.id, '取消草稿', 'danger');
-    if (transfer.status === 'in_transit' && isSource && !actions) actions += '<span class="row-note">等待目标仓收货</span>';
+    if (['in_transit', 'partially_received'].includes(transfer.status) && isSource && !actions) actions += '<span class="row-note">等待目标仓收货或结束调拨</span>';
     return '<tr><td><strong>' + escapeHtml(transfer.number) + '</strong></td><td>' + escapeHtml(transferWarehouseName(sourceId)) + '</td><td>' + escapeHtml(transferWarehouseName(destinationId)) + '</td><td>' + lineText + '</td><td>' + total + '</td><td>' + formatDate(transfer.shippedAt || transfer.shipped_at, true) + '</td><td>' + statusPill(TRANSFER_LABELS[transfer.status] || transfer.status, transfer.status) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
   }).join('');
   toggleEmpty('#transferEmpty', transfers.length === 0);
-  const pending = allTransfers.filter(function (item) { return ['draft', 'in_transit'].includes(item.status); }).length;
+  const pending = allTransfers.filter(function (item) { return ['draft', 'in_transit', 'partially_received'].includes(item.status); }).length;
   setText('#transferTabCount', pending);
 }
 
@@ -2267,12 +2370,231 @@ function renderReplenishment() {
       return '<span>' + windowDays + ' 天：订单 ' + asNumber(detail.order_outbound).toFixed(0) + ' + 手动 ' + asNumber(detail.manual_outbound).toFixed(0) + ' - 退货 ' + asNumber(detail.returns_at_original_sale_date).toFixed(0) + ' = 净销量 ' + asNumber(detail.net_sales).toFixed(0) + '，日均 ' + asNumber(detail.daily_average).toFixed(2) + '</span>';
     }).join('');
     const noSalesReason = item.velocity === 0 ? '<span>近 30 天没有订单出库或手动销售出库，或已被原销售日退货完全冲减。</span>' : '';
-    return '<tr><td><input type="checkbox" data-replenishment-select="' + escapeHtml(item.skuId) + '"' + (selected ? ' checked' : '') + ' aria-label="选择 ' + escapeHtml(product.sku || product.name) + '"></td><td>' + productMedia(product) + '</td><td><strong>' + item.velocity.toFixed(2) + '</strong><details class="replenishment-velocity-detail"><summary>查看周期明细</summary><span>3/7/15/30 天日均：' + item.velocity3.toFixed(2) + ' / ' + item.velocity7.toFixed(2) + ' / ' + item.velocity15.toFixed(2) + ' / ' + item.velocity30.toFixed(2) + '</span>' + breakdownHtml + noSalesReason + '</details></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong><details class="replenishment-qty-detail"><summary>查看补货参数</summary><span>补货点 ' + item.reorderPoint + '；安全余量 ' + Math.round(item.safetyMarginUnits || 0) + '</span>' + (basis ? '<ul>' + basis + '</ul>' : '') + '</details></td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
+    return '<tr><td class="replenishment-select-column"><input type="checkbox" data-replenishment-select="' + escapeHtml(item.skuId) + '"' + (selected ? ' checked' : '') + ' aria-label="选择 ' + escapeHtml(product.sku || product.name) + '"></td><td class="replenishment-product-column">' + productMedia(product) + '</td><td><strong>' + item.velocity.toFixed(2) + '</strong><button class="replenishment-demand-link" type="button" data-action="view-demand-detail" data-id="' + escapeHtml(product.id) + '">查看周期明细</button>' + noSalesReason + '</td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong></td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
   }).join('');
   toggleEmpty('#replenishmentEmpty', recommendations.length === 0);
   const needCount = recommendations.filter(function (item) { return ['urgent', 'soon', 'red', 'yellow'].includes(item.urgency); }).length;
   setText('#replenishmentTabCount', needCount);
   setText('#replenishmentMetric', needCount);
+}
+
+function demandNumber(row, keys) {
+  for (const key of keys) {
+    if (row && row[key] != null && Number.isFinite(Number(row[key]))) return Number(row[key]);
+  }
+  return 0;
+}
+
+function normalizeDemandWarehouse(row) {
+  const orderOutbound = demandNumber(row, ['order_outbound_quantity', 'order_outbound', 'order_quantity', 'orders']);
+  const manualOutbound = demandNumber(row, ['manual_sales_outbound_quantity', 'manual_outbound', 'manual_quantity']);
+  const returns = demandNumber(row, ['return_quantity', 'returns', 'returned_quantity']);
+  const net = row && row.net_sales_outbound_quantity != null ? Number(row.net_sales_outbound_quantity) : orderOutbound + manualOutbound - returns;
+  return {
+    name: (row && (row.warehouse_name || row.name)) || '未命名仓库',
+    code: (row && (row.warehouse_code || row.code)) || '',
+    timezone: (row && row.timezone) || '',
+    orderOutbound: orderOutbound,
+    manualOutbound: manualOutbound,
+    returns: returns,
+    net: net,
+    average: row && (row.daily_average != null || row.average_daily_outbound != null)
+      ? demandNumber(row, ['daily_average', 'average_daily_outbound']) : net / 7
+  };
+}
+
+function renderReplenishmentDemandDetail(product, payload) {
+  const rawRows = Array.isArray(payload) ? payload : (payload.warehouses || payload.results || []);
+  const warehouses = rawRows.map(normalizeDemandWarehouse);
+  $('#replenishmentDemandTitle').textContent = (product.sku || 'SKU') + ' · 各仓库近 7 天出库';
+  $('#replenishmentDemandRows').innerHTML = warehouses.length ? warehouses.map(function (row) {
+    return '<tr><td><strong>' + escapeHtml(row.name) + '</strong><small>' + escapeHtml(row.code + (row.timezone ? ' · ' + row.timezone : '')) + '</small></td><td>' + row.orderOutbound + '</td><td>' + row.manualOutbound + '</td><td>− ' + row.returns + '</td><td><strong>' + row.net + '</strong></td><td>' + row.average.toFixed(2) + '</td></tr>';
+  }).join('') : '<tr><td colspan="6">所有可访问仓库近 7 天均无销售出库，数量为 0。</td></tr>';
+  const total = warehouses.reduce(function (sum, row) {
+    sum.orderOutbound += row.orderOutbound; sum.manualOutbound += row.manualOutbound;
+    sum.returns += row.returns; sum.net += row.net; return sum;
+  }, { orderOutbound: 0, manualOutbound: 0, returns: 0, net: 0 });
+  $('#replenishmentDemandTotal').innerHTML = '<tr><th>全部可见仓库合计</th><th>' + total.orderOutbound + '</th><th>' + total.manualOutbound + '</th><th>− ' + total.returns + '</th><th>' + total.net + '</th><th>' + (total.net / 7).toFixed(2) + '</th></tr>';
+  $('#replenishmentDemandMeta').textContent = '统计窗口：' + escapeHtml((payload && (payload.date_from || payload.started_at)) || '近 7 天') + ' 至 ' + escapeHtml((payload && (payload.date_to || payload.ended_at)) || '今天') + '；退货按原订单销售日与原出库仓回溯冲减。';
+}
+
+async function openReplenishmentDemandDetail(productId) {
+  const product = productById(productId);
+  if (!product) return showToast('商品不存在。');
+  if (!TEAM_MODE || !teamGateway) return showToast('各仓周期明细仅在团队在线模式下提供。');
+  if (!teamCapabilityAllowed('replenishment')) return showToast('当前账号没有查看补货明细的权限。');
+  $('#replenishmentDemandTitle').textContent = (product.sku || 'SKU') + ' · 正在读取';
+  $('#replenishmentDemandRows').innerHTML = '<tr><td colspan="6">正在读取各仓库近 7 天出库…</td></tr>';
+  $('#replenishmentDemandTotal').innerHTML = '';
+  $('#replenishmentDemandMeta').textContent = '';
+  openModal('replenishmentDemandModal');
+  try {
+    const payload = await teamGateway.getReplenishmentDemandDetail(product, 7);
+    renderReplenishmentDemandDetail(product, payload || {});
+  } catch (error) {
+    $('#replenishmentDemandRows').innerHTML = '<tr><td colspan="6">' + escapeHtml(error && error.message || '读取失败，请重试。') + '</td></tr>';
+    handleTeamError(error);
+  }
+}
+
+const CREATOR_STAGE_LABELS = { pending: '待联系', contacted: '已联系', negotiating: '洽谈中', sampling: '寄样中', publishing: '待发布', published: '已发布', completed: '已完成', paused: '暂停' };
+
+async function loadCreators() {
+  if (!TEAM_MODE || !teamGateway || analyticsState.loading === 'creators') return;
+  creatorState.loading = true;
+  creatorState.error = '';
+  try {
+    creatorState.rows = await teamGateway.listCreators({
+      search: $('#creatorSearch') ? $('#creatorSearch').value.trim() : '',
+      stage: $('#creatorStageFilter') ? $('#creatorStageFilter').value : '',
+      archived: $('#creatorArchivedFilter') ? $('#creatorArchivedFilter').value : 'false'
+    });
+    creatorState.loaded = true;
+  } catch (error) { creatorState.error = error.message || '读取达人档案失败。'; handleTeamError(error); }
+  finally { creatorState.loading = false; renderCreators(); }
+}
+
+function renderCreators() {
+  const rows = creatorState.rows || [];
+  const tbody = $('#creatorRows');
+  if (!tbody) return;
+  tbody.innerHTML = rows.map(function (item) {
+    const contact = item.contact && (item.contact.value || item.contact.phone || item.contact.email || item.contact.wechat) || '—';
+    const owner = item.responsible_by_name || item.responsible_by_username || '—';
+    const stage = CREATOR_STAGE_LABELS[item.cooperation_status] || item.cooperation_status || '待联系';
+    return '<tr><td><strong>' + escapeHtml(item.display_name) + '</strong><br><small>' + escapeHtml(item.account_name || '账号待补充') + '</small></td><td>' + escapeHtml((item.platform || '—') + (item.country ? ' · ' + item.country : '')) + '</td><td>' + escapeHtml(contact) + '</td><td>' + statusPill(stage, item.cooperation_status || 'pending') + '</td><td>' + escapeHtml(owner) + '</td><td>—</td><td>' + (item.incomplete ? '<span class="status-pill soon">待完善</span>' : '<span class="status-pill healthy">完整</span>') + '</td><td><div class="row-actions"><button class="row-action" type="button" data-creator-open="' + escapeHtml(item.id) + '">查看</button><button class="row-action" type="button" data-creator-edit="' + escapeHtml(item.id) + '">编辑</button>' + (item.is_archived ? '<button class="row-action" type="button" data-creator-restore="' + escapeHtml(item.id) + '">恢复</button>' : '<button class="row-action danger" type="button" data-creator-archive="' + escapeHtml(item.id) + '">归档</button>') + '</div></td></tr>';
+  }).join('');
+  toggleEmpty('#creatorEmpty', !rows.length);
+  if (!creatorState.loaded && TEAM_MODE && teamCapabilityAllowed('creator_view')) loadCreators();
+}
+
+function openCreatorEditor(id) {
+  const item = (creatorState.rows || []).find(function (row) { return String(row.id) === String(id); }) || {};
+  $('#creatorId').value = item.id || '';
+  $('#creatorName').value = item.display_name || '';
+  $('#creatorPlatform').value = item.platform || '';
+  $('#creatorHandle').value = item.account_name || '';
+  $('#creatorProfileUrl').value = item.profile_url || '';
+  $('#creatorMarket').value = item.country || '';
+  $('#creatorLanguage').value = item.language || '';
+  $('#creatorContact').value = item.contact && (item.contact.value || item.contact.phone || item.contact.email || item.contact.wechat) || '';
+  $('#creatorFollowers').value = item.follower_count == null ? '' : item.follower_count;
+  $('#creatorTags').value = Array.isArray(item.tags) ? item.tags.join(', ') : '';
+  $('#creatorOwner').value = '';
+  $('#creatorStage').value = item.cooperation_status || 'pending';
+  $('#creatorNotes').value = item.notes || '';
+  $('#creatorModalTitle').textContent = item.id ? '编辑达人' : '新建达人';
+  openModal('creatorModal');
+}
+
+async function saveCreatorFromForm(event) {
+  event.preventDefault();
+  if (!TEAM_MODE || !teamGateway) return showToast('达人档案仅支持团队在线模式。');
+  const id = $('#creatorId').value;
+  const contact = $('#creatorContact').value.trim();
+  const payload = {
+    display_name: $('#creatorName').value.trim(), platform: $('#creatorPlatform').value,
+    account_name: $('#creatorHandle').value.trim(), profile_url: $('#creatorProfileUrl').value.trim(),
+    country: $('#creatorMarket').value.trim(), language: $('#creatorLanguage').value.trim(),
+    contact: contact ? { value: contact } : {},
+    follower_count: $('#creatorFollowers').value === '' ? null : Number($('#creatorFollowers').value),
+    tags: $('#creatorTags').value.split(',').map(function (value) { return value.trim(); }).filter(Boolean),
+    cooperation_status: $('#creatorStage').value, notes: $('#creatorNotes').value.trim()
+  };
+  if (!payload.display_name) return showToast('达人名称或昵称不能为空。');
+  try {
+    await teamGateway.saveCreator(payload, id || null);
+    closeModal('creatorModal'); await loadCreators(); showToast(id ? '达人档案已更新。' : '达人档案已保存，可后续补充资料。');
+  } catch (error) { handleTeamError(error); }
+}
+
+function renderProfitPlans() {
+  const tbody = $('#profitPlanRows');
+  if (!tbody) return;
+  const rows = profitPlanState.rows || [];
+  tbody.innerHTML = rows.map(function (plan) {
+    const version = plan.latest_version || {};
+    const item = version.result_snapshot && version.result_snapshot.item || {};
+    const value = function (key) { return item[key] == null ? '—' : escapeHtml(String(item[key])); };
+    return '<tr><td><strong>' + escapeHtml(plan.sku_code_snapshot || '—') + '</strong><br><small>' + escapeHtml(plan.sku_name_snapshot || '') + '</small></td><td>' + escapeHtml(plan.name || '默认方案') + '</td><td>' + value('sale_price_myr') + ' / ' + value('product_cost_cny') + '</td><td>' + value('affiliate_commission_percent') + '% / ' + value('advertising_rebate_percent') + '%</td><td>' + value('gross_profit') + '</td><td>' + value('advertising_cost') + '</td><td>' + value('net_profit') + '</td><td>' + value('true_roi') + ' / ' + value('true_cpa_usd') + '</td><td>v' + escapeHtml(String(version.version_number || 0)) + '<br><small>' + formatDate(version.created_at, true) + '</small></td><td><div class="row-actions"><button class="row-action" type="button" data-profit-plan-history="' + escapeHtml(plan.id) + '">历史</button><button class="row-action" type="button" data-profit-plan-recalculate="' + escapeHtml(plan.id) + '">重新计算</button></div></td></tr>';
+  }).join('');
+  toggleEmpty('#profitPlansEmpty', !rows.length);
+  if (profitView === 'plans' && !profitPlanState.loaded && TEAM_MODE && teamCapabilityAllowed('profit_record_view')) loadProfitPlans();
+}
+
+async function loadProfitPlans() {
+  if (!TEAM_MODE || !teamGateway || profitPlanState.loading) return;
+  profitPlanState.loading = true;
+  try {
+    profitPlanState.rows = await teamGateway.listProfitPlans({ search: $('#profitPlanSearch') ? $('#profitPlanSearch').value.trim() : '', store: $('#profitPlanStoreFilter') ? $('#profitPlanStoreFilter').value : '', status: $('#profitPlanStatusFilter') ? $('#profitPlanStatusFilter').value : 'active' });
+    profitPlanState.loaded = true;
+  } catch (error) { handleTeamError(error); }
+  finally { profitPlanState.loading = false; renderProfitPlans(); }
+}
+
+async function openCreatorDetail(id) {
+  if (!TEAM_MODE || !teamGateway) return;
+  try {
+    const creator = await teamGateway.getCreator(id);
+    creatorState.active = creator;
+    $('#creatorDetailTitle').textContent = creator.display_name + ' · 业务记录';
+    $('#creatorDetailIntro').textContent = '档案、合作和后续记录均保留在当前组织内；业绩归因不会由销量自动推断。';
+    $('#creatorActivityCreatorId').value = creator.id;
+    const lists = await Promise.all(['collaborations', 'samples', 'contents', 'followups', 'attributions'].map(function (type) {
+      return teamGateway.request('/creators/' + creator.id + '/' + type + '/').catch(function () { return []; });
+    }));
+    const labels = ['合作', '寄样', '内容', '跟进', '归因'];
+    $('#creatorActivityRows').innerHTML = lists.flatMap(function (rows, index) {
+      return (rows || []).map(function (row) { return '<article class="transit-source-card"><strong>' + labels[index] + '</strong><p>' + escapeHtml(row.notes || row.note || row.status || row.stage || row.source || '已记录') + '</p><small>' + escapeHtml(formatDate(row.created_at, true)) + '</small></article>'; });
+    }).join('') || '<p class="last-value">暂无业务记录，可先新增合作或跟进。</p>';
+    openModal('creatorDetailModal');
+  } catch (error) { handleTeamError(error); }
+}
+
+async function openProfitPlanHistory(id) {
+  try {
+    const plan = await teamGateway.getProfitPlan(id);
+    const versions = await teamGateway.listProfitPlanVersions(id);
+    profitPlanState.active = plan; profitPlanState.versions = versions;
+    $('#profitPlanHistoryTitle').textContent = (plan.sku_code_snapshot || 'SKU') + ' · ' + (plan.name || '利润方案');
+    $('#profitPlanHistoryIntro').textContent = '历史版本为不可变快照；重新计算会按当前规则、当前汇率生成新版本。';
+    $('#profitPlanVersionRows').innerHTML = versions.map(function (version) {
+      const item = version.result_snapshot && version.result_snapshot.item || {};
+      return '<tr><td>v' + version.version_number + '</td><td>' + escapeHtml(version.rule_version || '—') + '<br><small>' + escapeHtml((version.exchange_rate_snapshot || {}).source || '—') + '</small></td><td>' + escapeHtml(String(item.advertising_rebate_percent == null ? '—' : item.advertising_rebate_percent)) + '%</td><td>' + escapeHtml(String(item.gross_profit == null ? '—' : item.gross_profit)) + ' / ' + escapeHtml(String(item.net_profit == null ? '—' : item.net_profit)) + '</td><td>' + escapeHtml(version.created_by_name || '—') + '<br><small>' + formatDate(version.created_at, true) + '</small></td><td><button class="row-action" type="button" data-profit-snapshot="' + escapeHtml(version.id) + '">查看快照</button></td></tr>';
+    }).join('');
+    openModal('profitPlanHistoryModal');
+  } catch (error) { handleTeamError(error); }
+}
+
+async function prepareProfitPlanRecalculation(id) {
+  try {
+    const payload = await teamGateway.prepareProfitPlanRecalculation(id);
+    if (!payload || !payload.calculation) throw new Error('服务器没有返回可重新计算的原始输入。');
+    if (window.DongboProfitCalculator && typeof window.DongboProfitCalculator.loadCalculation === 'function') {
+      window.DongboProfitCalculator.loadCalculation(payload.calculation);
+    }
+    setRoute('profit', 'calculator');
+    showToast('已带入历史输入；点击计算并保存会按当前规则和汇率生成新版本。');
+  } catch (error) { handleTeamError(error); }
+}
+
+async function saveCreatorActivityFromForm(event) {
+  event.preventDefault();
+  const creatorId = $('#creatorActivityCreatorId').value;
+  const type = $('#creatorActivityType').value;
+  if (!creatorId) return showToast('请先打开达人详情。');
+  if (type !== 'collaboration') return showToast('请先为该达人建立合作记录，再在该合作下登记寄样、内容或归因。');
+  const stores = (state.stores || []).filter(function (store) { return store.name === $('#creatorActivityStore').value.trim(); });
+  const product = (state.products || []).find(function (item) { return item.sku === $('#creatorActivitySku').value.trim(); });
+  const payload = {
+    stage: $('#creatorActivityStatus').value.trim() || 'pending', store: stores[0] && (stores[0].apiStoreId || stores[0].id) || null,
+    sku: product && (product.skuId || product.id) || null,
+    commission_percent: $('#creatorActivityCommission').value === '' ? null : Number($('#creatorActivityCommission').value),
+    fixed_fee: $('#creatorActivityFixedFee').value === '' ? null : Number($('#creatorActivityFixedFee').value),
+    notes: $('#creatorActivityNotes').value.trim()
+  };
+  try { await teamGateway.createCreatorActivity(creatorId, type, payload); await openCreatorDetail(creatorId); showToast('合作记录已保存。'); }
+  catch (error) { handleTeamError(error); }
 }
 
 function renderOrders() {
@@ -2499,6 +2821,139 @@ function renderAlerts() {
   }).join('') : '<div class="alert-empty">✓ 当前没有需要处理的变化提醒</div>';
 }
 
+function analyticsFilters() {
+  const days = $('#analyticsDays') ? $('#analyticsDays').value : '30';
+  return {
+    days: days === 'custom' ? '' : days,
+    date_from: days === 'custom' && $('#analyticsDateFrom') ? $('#analyticsDateFrom').value : '',
+    date_to: days === 'custom' && $('#analyticsDateTo') ? $('#analyticsDateTo').value : '',
+    store: $('#analyticsStoreFilter') ? $('#analyticsStoreFilter').value : '',
+    warehouse: $('#analyticsWarehouseFilter') ? $('#analyticsWarehouseFilter').value : '',
+    search: $('#analyticsSkuSearch') ? $('#analyticsSkuSearch').value.trim() : ''
+  };
+}
+
+function analyticsPayloadRows(payload, keys) {
+  if (Array.isArray(payload)) return payload;
+  for (const key of keys) if (payload && Array.isArray(payload[key])) return payload[key];
+  return payload && Array.isArray(payload.results) ? payload.results : [];
+}
+
+function analyticsMetric(payload, keys) {
+  const roots = [payload, payload && payload.summary, payload && payload.metrics].filter(Boolean);
+  for (const root of roots) for (const key of keys) if (root[key] != null) return root[key];
+  return null;
+}
+
+function analyticsMeta(payload) {
+  if (!payload) return '';
+  const period = payload.period || {};
+  const interval = [payload.date_from || payload.start_date || period.start, payload.date_to || payload.end_date || period.end].filter(Boolean).join(' 至 ');
+  const sources = Array.isArray(payload.data_sources) ? payload.data_sources.join('、') : (Array.isArray(payload.sources) ? payload.sources.join('、') : (payload.data_source || 'ERP 真实数据'));
+  return [interval, (payload.timezone || period.timezone) ? '报表时区 ' + (payload.timezone || period.timezone) : '', '来源：' + sources, payload.generated_at ? '生成于 ' + formatDate(payload.generated_at, true) : ''].filter(Boolean).join(' · ');
+}
+
+function analyticsMoney(value, currency) {
+  return value == null || value === '' ? '暂无数据' : money(value, currency || 'MYR');
+}
+
+async function loadAnalyticsTab(tab, force) {
+  if (!TEAM_MODE || !teamGateway || !['overview', 'stores', 'skus'].includes(tab)) return;
+  if (!teamCapabilityAllowed('analytics')) {
+    analyticsState.error[tab] = '当前账号没有数据分析查看权限。';
+    analyticsState.loaded[tab] = true;
+    return renderAnalytics();
+  }
+  if (analyticsState.loading || (!force && analyticsState.loaded[tab])) return;
+  analyticsState.loading = tab;
+  analyticsState.error[tab] = '';
+  renderAnalytics();
+  try {
+    const filters = analyticsFilters();
+    const payload = tab === 'overview' ? await teamGateway.getAnalyticsOverview(filters)
+      : (tab === 'stores' ? await teamGateway.getAnalyticsStores(filters) : await teamGateway.getAnalyticsSkus(filters));
+    analyticsState[tab] = payload;
+    analyticsState.loaded[tab] = true;
+  } catch (error) {
+    analyticsState.error[tab] = error && error.message || '统计读取失败，请重试。';
+    handleTeamError(error);
+  } finally {
+    analyticsState.loading = '';
+    renderAnalytics();
+  }
+}
+
+function renderAnalyticsOverview() {
+  const payload = analyticsState.overview;
+  const error = analyticsState.error.overview;
+  const fields = [
+    ['订单数', ['order_count', 'orders']], ['销售件数', ['sales_units', 'units_sold', 'unit_count']],
+    ['已出库', ['shipped_units', 'shipped_count']], ['库存不足', ['shortage_order_count', 'shortage_count', 'shortage_orders']],
+    ['已取消', ['cancelled_order_count', 'cancelled_count', 'cancelled_orders']], ['期间退货', ['return_units_period_occurrence', 'return_units', 'returns']],
+    ['GMV', ['gmv']], ['实际利润', ['profit', 'actual_profit']]
+  ];
+  $('#analyticsOverviewMetrics').innerHTML = fields.map(function (field, index) {
+    const value = analyticsMetric(payload, field[1]);
+    const amount = ['GMV', '实际利润'].includes(field[0]);
+    return '<article class="metric-card accent-' + ['teal', 'blue', 'amber', 'red'][index % 4] + '"><span>' + field[0] + '</span><strong>' + escapeHtml(amount ? analyticsMoney(value, payload && payload.currency) : (value == null ? '0' : value)) + '</strong><small>' + (amount && value == null ? '没有权威金额来源' : '按当前筛选统计') + '</small></article>';
+  }).join('');
+  const top = analyticsPayloadRows(payload, ['top_skus', 'top_products']);
+  $('#analyticsTopSkus').innerHTML = top.length ? top.map(function (row) {
+    return '<article><strong>' + escapeHtml(row.sku_code || row.sku || row.name || 'SKU') + '</strong><span>已出库 ' + nonNegative(row.shipped_units == null ? (row.sales_units == null ? row.units : row.sales_units) : row.shipped_units) + ' 件</span></article>';
+  }).join('') : '<p>' + (analyticsState.loading === 'overview' ? '正在读取…' : '暂无热销 SKU。') + '</p>';
+  const risks = analyticsPayloadRows(payload, ['inventory_risks', 'risks']).concat(analyticsPayloadRows(payload, ['anomalies', 'recent_anomalies', 'recent_exceptions']));
+  if (payload && payload.current_snapshot && Number(payload.current_snapshot.stock_risk_sku_count) > 0) risks.unshift({ title: '库存风险 SKU', detail: payload.current_snapshot.stock_risk_sku_count + ' 个 SKU 当前可用库存不足' });
+  $('#analyticsRisks').innerHTML = risks.length ? risks.slice(0, 12).map(function (row) {
+    return '<article><strong>' + escapeHtml(row.title || row.sku_code || row.sku || '库存提示') + '</strong><span>' + escapeHtml(row.detail || row.message || row.status || '') + '</span></article>';
+  }).join('') : '<p>暂无库存风险或近期异常。</p>';
+  $('#analyticsOverviewMeta').textContent = error || analyticsMeta(payload) || (analyticsState.loading === 'overview' ? '正在读取经营统计…' : '尚未读取统计。');
+  toggleEmpty('#analyticsOverviewEmpty', Boolean(error));
+}
+
+function renderAnalyticsStores() {
+  const payload = analyticsState.stores;
+  const rows = analyticsPayloadRows(payload, ['stores', 'items']);
+  $('#analyticsStoreCards').innerHTML = rows.map(function (row) {
+    const storeName = row.store_name || row.name || '未关联店铺';
+    const topSkus = Array.isArray(row.top_skus) ? row.top_skus.map(function (sku) { return sku.sku_code || sku.sku || sku.name; }).filter(Boolean).slice(0, 3).join('、') : '暂无';
+    return '<article class="analytics-store-card"><header><strong>' + escapeHtml(storeName) + '</strong><span>' + escapeHtml(row.platform || row.platform_code || 'ERP') + '</span></header><dl>' +
+      '<div><dt>订单 / 件数</dt><dd>' + nonNegative(row.order_count) + ' / ' + nonNegative(row.sales_units || row.unit_count) + '</dd></div>' +
+      '<div><dt>已出库 / 缺货</dt><dd>' + nonNegative(row.shipped_count || row.shipped_units) + ' / ' + nonNegative(row.shortage_order_count || row.shortage_count) + '</dd></div>' +
+      '<div><dt>取消 / 退货</dt><dd>' + nonNegative(row.cancelled_order_count || row.cancelled_count) + ' / ' + nonNegative(row.return_units || row.return_count) + '</dd></div>' +
+      '<div><dt>GMV / 利润</dt><dd>' + analyticsMoney(row.gmv, row.currency) + ' / ' + analyticsMoney(row.profit || row.actual_profit, row.currency) + '</dd></div>' +
+      '</dl><p>热销 SKU：' + escapeHtml(topSkus) + '</p><small>' + escapeHtml(row.data_source || 'ERP 真实数据') + '</small></article>';
+  }).join('');
+  $('#analyticsStoresMeta').textContent = analyticsState.error.stores || analyticsMeta(payload) || (analyticsState.loading === 'stores' ? '正在读取店铺分析…' : '');
+  toggleEmpty('#analyticsStoresEmpty', rows.length === 0 && analyticsState.loading !== 'stores');
+}
+
+function renderAnalyticsSkus() {
+  const payload = analyticsState.skus;
+  const rows = analyticsPayloadRows(payload, ['skus', 'items']);
+  $('#analyticsSkuRows').innerHTML = rows.map(function (row) {
+    const skuId = String(row.sku_id || row.sku || row.id || '');
+    const product = state.products.find(function (item) { return String(item.skuId) === skuId || String(item.sku) === String(row.sku_code || row.sku); });
+    const productCell = product ? productMedia(product) : '<div class="product-copy"><strong>' + escapeHtml(row.product_name || row.name || '未命名商品') + '</strong><span>' + escapeHtml(row.sku_code || row.sku || 'SKU') + '</span></div>';
+    const salesUnits = row.sales_units == null ? nonNegative(row.net_sales) : nonNegative(row.sales_units);
+    return '<tr><td>' + productCell + '</td><td>' + salesUnits + '</td><td>' + nonNegative(row.order_outbound_quantity || row.order_outbound) + ' / ' + nonNegative(row.manual_sales_outbound_quantity || row.manual_outbound) + '</td><td>' + nonNegative(row.return_quantity || row.returns_at_original_sale_date || row.returns) + ' / ' + nonNegative(row.net_sales || row.net_sales_outbound_quantity) + '</td><td>' + nonNegative(row.on_hand) + ' / ' + nonNegative(row.reserved) + ' / ' + nonNegative(row.available) + '</td><td>' + nonNegative(row.in_transit || row.inbound_total) + '</td><td>' + Number(row.daily_average || row.velocity || 0).toFixed(2) + ' / ' + ((row.days_cover == null && row.days_of_cover == null) ? '—' : Number(row.days_cover == null ? row.days_of_cover : row.days_cover).toFixed(1) + ' 天') + '</td><td>' + escapeHtml(row.replenishment_status || row.status || '—') + '</td><td><div class="row-actions"><button class="row-action" data-action="analytics-open-inventory" data-id="' + escapeHtml(skuId) + '">库存</button><button class="row-action" data-action="analytics-open-replenishment" data-id="' + escapeHtml(skuId) + '">补货</button><button class="row-action" data-action="analytics-open-profit-plan" data-id="' + escapeHtml(skuId) + '">利润表</button></div></td></tr>';
+  }).join('');
+  $('#analyticsSkusMeta').textContent = analyticsState.error.skus || analyticsMeta(payload) || (analyticsState.loading === 'skus' ? '正在读取 SKU 分析…' : '');
+  toggleEmpty('#analyticsSkusEmpty', rows.length === 0 && analyticsState.loading !== 'skus');
+}
+
+function renderAnalytics() {
+  const module = $('#module-analytics');
+  if (!module) return;
+  const competitorActions = module.querySelector('.page-heading .page-actions');
+  if (competitorActions) competitorActions.hidden = !['products', 'snapshots', 'trends', 'alerts'].includes(state.ui.competitorTab);
+  renderAnalyticsOverview();
+  renderAnalyticsStores();
+  renderAnalyticsSkus();
+  if (state.ui.module === 'analytics' && ['overview', 'stores', 'skus'].includes(state.ui.competitorTab) && !analyticsState.loaded[state.ui.competitorTab] && !analyticsState.loading) {
+    setTimeout(function () { loadAnalyticsTab(state.ui.competitorTab); }, 0);
+  }
+}
+
 function renderTrendMetrics() {
   const monitored = monitoredProducts(state);
   let product = productById(state.selectedProductId);
@@ -2596,7 +3051,7 @@ function renderChart() {
     return '<span><i style="background:' + entry.color + '"></i>' + escapeHtml(entry.product.name) + '</span>';
   }).join('');
   setText('#chartSubtitle', chartMetric === 'sales' ? '相邻快照的新增销量' : (chartMetric === 'price' ? '公开价格变化' : '评价总数变化'));
-  if (!visible || state.ui.module !== 'competitors' || state.ui.competitorTab !== 'trends') return;
+  if (!visible || state.ui.module !== 'analytics' || state.ui.competitorTab !== 'trends') return;
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(560, rect.width || 900);
   const height = 330;
@@ -2915,8 +3370,12 @@ function render() {
   renderHistory();
   renderTrendMetrics();
   renderAlerts();
+  renderAnalytics();
+  renderCreators();
+  renderProfitPlans();
   renderSelection();
-  if (state.ui.module === 'competitors' && state.ui.competitorTab === 'trends') requestAnimationFrame(renderChart);
+  if (state.ui.module === 'analytics' && state.ui.competitorTab === 'trends') requestAnimationFrame(renderChart);
+  requestAnimationFrame(updateReplenishmentStickyHeader);
   renderRuntimeState();
 }
 
@@ -4242,6 +4701,7 @@ async function handleAction(action, id) {
   if (action === 'manage-transfer-packages') return openTransferWorkflow(state.stockTransfers.find(function (item) { return item.id === id; }), 'packages');
   if (action === 'receive-transfer') return openTransferWorkflow(state.stockTransfers.find(function (item) { return item.id === id; }), 'receive');
   if (action === 'close-transfer-exception') return openTransferWorkflow(state.stockTransfers.find(function (item) { return item.id === id; }), 'exception');
+  if (action === 'complete-transfer-with-exception') return openTransferCompletion(state.stockTransfers.find(function (item) { return item.id === id; }));
   if (action === 'dispatch-transfer') return askConfirm('确认发出这张调拨单？发出后会立即扣减调出仓库存。', function () {
     const transfer = state.stockTransfers.find(function (item) { return item.id === id; });
     const source = transfer && warehouseById(transfer.sourceWarehouseId || transfer.source_warehouse);
@@ -4258,6 +4718,7 @@ async function handleAction(action, id) {
     commit(function (next) { cancelTransfer(next, id); }, '调拨草稿已取消。');
   });
   if (action === 'edit-replenishment') return openReplenishmentPolicy(id);
+  if (action === 'view-demand-detail') return openReplenishmentDemandDetail(id);
   if (action === 'reset-replenishment') return askConfirm('确认删除当前仓的自定义参数并恢复系统默认补货规则？', function () {
     const product = productById(id);
     if (!product) return showToast('商品不存在。');
@@ -4520,7 +4981,7 @@ function bindEvents() {
     const warehouseTab = event.target.closest('[data-warehouse-tab]');
     if (warehouseTab) return setRoute('warehouse', warehouseTab.dataset.warehouseTab);
     const competitorTab = event.target.closest('[data-competitor-tab]');
-    if (competitorTab) return setRoute('competitors', competitorTab.dataset.competitorTab);
+    if (competitorTab) return setRoute('analytics', competitorTab.dataset.competitorTab);
     const productChip = event.target.closest('[data-product-filter]');
     if (productChip) {
       productFilter = productChip.dataset.productFilter;
@@ -4557,6 +5018,18 @@ function bindEvents() {
     if (warehouseChoice) return chooseOrderWarehouse(warehouseChoice.dataset.chooseOrderWarehouse);
     const action = event.target.closest('[data-action]');
     if (action) return handleAction(action.dataset.action, action.dataset.id);
+    const creatorOpen = event.target.closest('[data-creator-open]');
+    if (creatorOpen) return openCreatorDetail(creatorOpen.dataset.creatorOpen);
+    const creatorEdit = event.target.closest('[data-creator-edit]');
+    if (creatorEdit) return openCreatorEditor(creatorEdit.dataset.creatorEdit);
+    const creatorArchive = event.target.closest('[data-creator-archive]');
+    if (creatorArchive) return askConfirm('确认归档该达人档案？历史合作记录会保留。', async function () { await teamGateway.setCreatorArchived(creatorArchive.dataset.creatorArchive, true); await loadCreators(); });
+    const creatorRestore = event.target.closest('[data-creator-restore]');
+    if (creatorRestore) return teamGateway.setCreatorArchived(creatorRestore.dataset.creatorRestore, false).then(loadCreators).catch(handleTeamError);
+    const planHistory = event.target.closest('[data-profit-plan-history]');
+    if (planHistory) return openProfitPlanHistory(planHistory.dataset.profitPlanHistory);
+    const planRecalculate = event.target.closest('[data-profit-plan-recalculate]');
+    if (planRecalculate) return prepareProfitPlanRecalculation(planRecalculate.dataset.profitPlanRecalculate);
     const close = event.target.closest('[data-close]');
     if (close) return closeModal(close.dataset.close);
     const removePurchase = event.target.closest('[data-remove-purchase-line]');
@@ -4590,6 +5063,17 @@ function bindEvents() {
   });
   if ($('#addStore')) $('#addStore').addEventListener('click', function () { openStoreEditor(''); });
   if ($('#storeForm')) $('#storeForm').addEventListener('submit', saveStoreFromForm);
+  if ($('#openCreatorModal')) $('#openCreatorModal').addEventListener('click', function () { openCreatorEditor(''); });
+  if ($('#creatorForm')) $('#creatorForm').addEventListener('submit', saveCreatorFromForm);
+  if ($('#creatorActivityForm')) $('#creatorActivityForm').addEventListener('submit', saveCreatorActivityFromForm);
+  if ($('#refreshCreators')) $('#refreshCreators').addEventListener('click', loadCreators);
+  if ($('#creatorSearch')) $('#creatorSearch').addEventListener('change', loadCreators);
+  if ($('#creatorStageFilter')) $('#creatorStageFilter').addEventListener('change', loadCreators);
+  if ($('#creatorArchivedFilter')) $('#creatorArchivedFilter').addEventListener('change', loadCreators);
+  if ($('#profitPlanSearch')) $('#profitPlanSearch').addEventListener('change', function () { profitPlanState.loaded = false; loadProfitPlans(); });
+  if ($('#profitPlanStoreFilter')) $('#profitPlanStoreFilter').addEventListener('change', function () { profitPlanState.loaded = false; loadProfitPlans(); });
+  if ($('#profitPlanStatusFilter')) $('#profitPlanStatusFilter').addEventListener('change', function () { profitPlanState.loaded = false; loadProfitPlans(); });
+  window.addEventListener('dongbo-profit-plans-saved', function () { profitPlanState.loaded = false; if (profitView === 'plans') loadProfitPlans(); });
   $$('.modal-backdrop').forEach(function (backdrop) {
     backdrop.addEventListener('mousedown', function (event) { if (event.target === backdrop) closeModal(backdrop.id); });
   });
@@ -5119,6 +5603,7 @@ function bindEvents() {
   });
   $('#transferForm').addEventListener('submit', handleTransferSubmit);
   $('#submitTransferWorkflow').addEventListener('click', submitTransferWorkflow);
+  $('#transferCompleteForm').addEventListener('submit', handleTransferCompleteSubmit);
   $('#replenishmentPolicyForm').addEventListener('submit', handleReplenishmentPolicySubmit);
   $('#replenishmentSettingsForm').addEventListener('submit', handleReplenishmentSettingsSubmit);
   $('#replenishmentBatchPolicyForm').addEventListener('submit', handleBatchReplenishmentPolicySubmit);
@@ -5170,9 +5655,10 @@ function bindEvents() {
     renderOrderDraft();
   });
   $('#orderForm').addEventListener('submit', handleOrderSubmit);
-  window.addEventListener('scroll', updateInventoryStickyHeader, { passive: true });
-  window.addEventListener('resize', updateInventoryStickyHeader);
+  window.addEventListener('scroll', function () { updateInventoryStickyHeader(); updateReplenishmentStickyHeader(); }, { passive: true });
+  window.addEventListener('resize', function () { updateInventoryStickyHeader(); updateReplenishmentStickyHeader(); });
   $('#inventoryTableWrap').addEventListener('scroll', updateInventoryStickyHeader, { passive: true });
+  if ($('#replenishmentTableWrap')) $('#replenishmentTableWrap').addEventListener('scroll', updateReplenishmentStickyHeader, { passive: true });
   $('#openSnapshotModal').addEventListener('click', function () { openSnapshotEditor($('#historyProduct').value); });
   $('#snapshotProduct').addEventListener('change', fillSnapshotHint);
   $('#snapshotForm').addEventListener('submit', handleSnapshotSubmit);
@@ -5261,7 +5747,7 @@ function bindEvents() {
   });
   window.addEventListener('resize', function () {
     if (window.innerWidth >= 900) closeSidebar();
-    if (state.ui.module === 'competitors' && state.ui.competitorTab === 'trends') renderChart();
+    if (state.ui.module === 'analytics' && state.ui.competitorTab === 'trends') renderChart();
   });
   window.addEventListener('hashchange', function () { applyHashRoute(); closeSidebar(); render(); });
   window.addEventListener('offline', function () {

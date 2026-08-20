@@ -31,6 +31,13 @@ router.register("shipments", views.ShipmentViewSet, basename="shipment")
 router.register("returns", views.ReturnOrderViewSet, basename="return")
 router.register("competitors", views.CompetitorProductViewSet, basename="competitor")
 router.register("profit-calculator/strategies", views.ProfitCalculationStrategyViewSet, basename="profit-calculation-strategy")
+router.register("profit-calculator/plans", views.ProfitPlanViewSet, basename="profit-plan")
+router.register("creators", views.CreatorProfileViewSet, basename="creator")
+router.register("creator-collaborations", views.CreatorCollaborationViewSet, basename="creator-collaboration")
+router.register("creator-samples", views.CreatorSampleViewSet, basename="creator-sample")
+router.register("creator-contents", views.CreatorContentViewSet, basename="creator-content")
+router.register("creator-followups", views.CreatorFollowUpViewSet, basename="creator-followup")
+router.register("creator-attributions", views.CreatorAttributionViewSet, basename="creator-attribution")
 router.register("competitor-snapshots", views.CompetitorSnapshotViewSet, basename="competitor-snapshot")
 router.register("audit-logs", views.AuditLogViewSet, basename="audit-log")
 router.register("local-imports", views.LocalImportViewSet, basename="local-import")
@@ -64,5 +71,9 @@ urlpatterns = [
     ),
     path("replenishment/batch-policy/", views.replenishment_batch_policy, name="replenishment-batch-policy"),
     path("replenishment/recompute/", views.replenishment_recompute, name="replenishment-recompute"),
+    path("replenishment/demand-detail/", views.ReplenishmentDemandDetailView.as_view(), name="replenishment-demand-detail"),
+    path("analytics/overview/", views.AnalyticsOverviewView.as_view(), name="analytics-overview"),
+    path("analytics/stores/", views.AnalyticsStoresView.as_view(), name="analytics-stores"),
+    path("analytics/skus/", views.AnalyticsSkusView.as_view(), name="analytics-skus"),
     path("", include(router.urls)),
 ]

@@ -188,7 +188,7 @@ def inclusive_lvg_tax(item_price: Decimal, seller_type: str) -> Decimal:
 
 
 def advertising_cost(item_revenue: Decimal, item: dict, usd_per_myr: Decimal) -> Decimal:
-    """Return optional actual ad cost in MYR without guessing missing inputs."""
+    """Return the pre-rebate ad cost in MYR without guessing missing inputs."""
     cost_type = item.get("ad_cost_type", "none")
     value = decimal(item.get("ad_cost_value"))
     if value <= 0 or cost_type == "none":
@@ -200,6 +200,66 @@ def advertising_cost(item_revenue: Decimal, item: dict, usd_per_myr: Decimal) ->
     if cost_type == "ratio":
         return rate_amount(item_revenue, value)
     return Decimal("0.00")
+
+
+def advertising_costs(
+    item_revenue: Decimal,
+    item: dict,
+    usd_per_myr: Decimal,
+    global_rebate_percent: Decimal,
+) -> dict:
+    """Calculate one SKU's auditable advertising amounts.
+
+    ``None`` is the only inheritance marker.  An explicit zero override must
+    therefore remain distinguishable from a missing override.  The gross cost
+    is rounded by the existing advertising conversion first, then rebate and
+    payable amounts are rounded at the SKU boundary before order aggregation.
+    """
+    override = item.get("advertising_rebate_percent_override")
+    if override is None:
+        rebate_percent = decimal(global_rebate_percent)
+        rebate_source = "global"
+    else:
+        rebate_percent = decimal(override)
+        rebate_source = "sku_override"
+    rebate_percent = min(PERCENT, max(Decimal("0"), rebate_percent))
+
+    before_rebate = advertising_cost(item_revenue, item, usd_per_myr)
+    has_ad_input = before_rebate > 0
+    rebate_amount = rate_amount(before_rebate, rebate_percent) if has_ad_input else Decimal("0.00")
+    # Subtract the rounded rebate from the rounded gross cost so every SKU and
+    # the order total reconcile to the cent even at half-cent boundaries.
+    actual_cost = money(before_rebate - rebate_amount) if has_ad_input else Decimal("0.00")
+
+    if not has_ad_input:
+        true_roi = None
+        true_roi_status = "unavailable"
+    elif actual_cost == 0:
+        true_roi = "Infinity"
+        true_roi_status = "infinite"
+    else:
+        true_roi = str(money(item_revenue / actual_cost))
+        true_roi_status = "available"
+
+    cost_type = item.get("ad_cost_type", "none")
+    value = decimal(item.get("ad_cost_value"))
+    true_cpa_usd = None
+    if has_ad_input and cost_type == "cpa_usd":
+        true_cpa_usd = str(money(value * (PERCENT - rebate_percent) / PERCENT))
+
+    return {
+        "has_ad_input": has_ad_input,
+        "advertising_cost_before_rebate": before_rebate,
+        "advertising_rebate_percent": rebate_percent,
+        "advertising_rebate_source": rebate_source,
+        "advertising_rebate_amount": rebate_amount,
+        "advertising_cost": actual_cost,
+        "original_roi": str(value) if has_ad_input and cost_type == "roi" else None,
+        "original_cpa_usd": str(value) if has_ad_input and cost_type == "cpa_usd" else None,
+        "true_roi": true_roi,
+        "true_roi_status": true_roi_status,
+        "true_cpa_usd": true_cpa_usd,
+    }
 
 
 def _allocate_order_support_fee(items: list[dict], delivered: bool) -> list[Decimal]:
@@ -666,6 +726,10 @@ def calculate_profit(payload: dict) -> dict:
     usd_per_myr = decimal(payload.get("usd_per_myr", "0.235"))
     commission_adjustment = decimal(payload.get("commission_adjustment", "0"))
     transaction_fee_adjustment = decimal(payload.get("transaction_fee_adjustment", "0"))
+    advertising_rebate_percent = min(
+        PERCENT,
+        max(Decimal("0"), decimal(payload.get("advertising_rebate_percent", "0"))),
+    )
     official_transaction_rate = TRANSACTION_RATE
     applied_transaction_rate = max(Decimal("0"), official_transaction_rate + transaction_fee_adjustment)
     customer_refund = money(payload.get("customer_refund", 0))
@@ -687,12 +751,16 @@ def calculate_profit(payload: dict) -> dict:
     fee_totals = {key: Decimal("0") for key in (
         "product_cost", "seller_shipping_cost", "platform_commission", "transaction_fee",
         "affiliate_commission", "bxp_fee", "platform_support_fee", "lvg_product_tax",
-        "other_platform_settlement_fee", "advertising_cost",
+        "other_platform_settlement_fee", "advertising_cost_before_rebate",
+        "advertising_rebate_amount", "advertising_cost",
     )}
     bases = {"commission": Decimal("0"), "commission_weighted_rate": Decimal("0"), "affiliate": Decimal("0"), "affiliate_weighted_rate": Decimal("0")}
     sales_revenue = Decimal("0")
     item_results = []
     has_ad_cost = False
+    ad_attributed_revenue = Decimal("0")
+    cpa_true_values = []
+    ad_input_types = []
     has_manual_commission_rate = False
 
     for index, item in enumerate(items):
@@ -712,8 +780,15 @@ def calculate_profit(payload: dict) -> dict:
             raise ValueError("所选三级类目没有官方佣金率，请在费用明细中手动填写类目佣金率。")
         system_rate = min(PERCENT, max(Decimal("0"), official_rate + commission_adjustment)) if official_rate is not None else None
         commission_rate = manual_rate if manual_rate is not None else system_rate
-        ad_cost = advertising_cost(item_price, item, usd_per_myr)
-        has_ad_cost = has_ad_cost or ad_cost > 0
+        ad = advertising_costs(
+            item_price, item, usd_per_myr, advertising_rebate_percent
+        )
+        if ad["has_ad_input"]:
+            has_ad_cost = True
+            ad_attributed_revenue += item_price
+            ad_input_types.append(item.get("ad_cost_type", "none"))
+            if ad["true_cpa_usd"] is not None:
+                cpa_true_values.append(decimal(ad["true_cpa_usd"]))
         line_fees = {
             "product_cost": money(decimal(item.get("product_cost_cny", 0)) / cny_per_myr),
             "seller_shipping_cost": seller_shipping,
@@ -725,7 +800,9 @@ def calculate_profit(payload: dict) -> dict:
             "platform_support_fee": support_allocations[index],
             "lvg_product_tax": product_tax,
             "other_platform_settlement_fee": Decimal("0.00"),
-            "advertising_cost": ad_cost,
+            "advertising_cost_before_rebate": ad["advertising_cost_before_rebate"],
+            "advertising_rebate_amount": ad["advertising_rebate_amount"],
+            "advertising_cost": ad["advertising_cost"],
         }
         sales_revenue += item_price
         bases["commission"] += item_price
@@ -750,6 +827,16 @@ def calculate_profit(payload: dict) -> dict:
             "commission_rate_source": "manual" if manual_rate is not None else "official_adjusted",
             "affiliate_rate": str(decimal(item.get("affiliate_rate", 0))),
             "ad_cost_type": item.get("ad_cost_type", "none"), "ad_cost_value": str(decimal(item.get("ad_cost_value"))),
+            "advertising_cost_before_rebate": str(ad["advertising_cost_before_rebate"]),
+            "advertising_rebate_percent": str(money(ad["advertising_rebate_percent"])),
+            "advertising_rebate_source": ad["advertising_rebate_source"],
+            "advertising_rebate_amount": str(ad["advertising_rebate_amount"]),
+            "advertising_cost": str(ad["advertising_cost"]),
+            "original_roi": ad["original_roi"],
+            "original_cpa_usd": ad["original_cpa_usd"],
+            "true_roi": ad["true_roi"],
+            "true_roi_status": ad["true_roi_status"],
+            "true_cpa_usd": ad["true_cpa_usd"],
             "fees": {key: str(money(value)) for key, value in line_fees.items()},
         })
 
@@ -762,16 +849,60 @@ def calculate_profit(payload: dict) -> dict:
     if item_results:
         item_results[0]["fees"]["transaction_fee"] = str(fee_totals["transaction_fee"])
     fee_totals = {key: money(value) for key, value in fee_totals.items()}
+
+    item_cost_keys = (
+        "product_cost", "seller_shipping_cost", "platform_commission",
+        "transaction_fee", "affiliate_commission", "bxp_fee",
+        "platform_support_fee", "lvg_product_tax",
+        "other_platform_settlement_fee",
+    )
+    for item_result in item_results:
+        item_revenue = decimal(item_result["revenue"])
+        item_costs_before_ads = money(sum(
+            (decimal(item_result["fees"].get(key, "0")) for key in item_cost_keys),
+            Decimal("0"),
+        ))
+        item_gross_profit = money(item_revenue - item_costs_before_ads)
+        item_actual_ad_cost = decimal(item_result["advertising_cost"])
+        item_net_profit = (
+            money(item_gross_profit - item_actual_ad_cost)
+            if item_result["true_roi_status"] != "unavailable"
+            else None
+        )
+        item_result.update({
+            "costs_before_ads": str(item_costs_before_ads),
+            "gross_profit": str(item_gross_profit),
+            "gross_margin": str(percentage(item_gross_profit, item_revenue)),
+            "net_profit": str(item_net_profit) if item_net_profit is not None else None,
+            "net_margin": (
+                str(percentage(item_net_profit, item_revenue))
+                if item_net_profit is not None else None
+            ),
+        })
     platform_fee_total = money(sum((fee_totals[key] for key in ("platform_commission", "transaction_fee", "bxp_fee", "platform_support_fee", "other_platform_settlement_fee")), Decimal("0")))
     total_fees = money(platform_fee_total + fee_totals["affiliate_commission"] + fee_totals["lvg_product_tax"] + fee_totals["seller_shipping_cost"])
     settlement_amount = money(sales_revenue - total_fees)
     costs_before_ads = money(total_fees + fee_totals["product_cost"])
     gross_profit = money(sales_revenue - costs_before_ads)
     gross_margin = percentage(gross_profit, sales_revenue)
+    advertising_cost_before_rebate_total = fee_totals["advertising_cost_before_rebate"]
+    advertising_rebate_amount_total = fee_totals["advertising_rebate_amount"]
     advertising_cost_total = fee_totals["advertising_cost"]
     costs_after_ads = money(costs_before_ads + advertising_cost_total) if has_ad_cost else None
     net_profit = money(sales_revenue - costs_after_ads) if costs_after_ads is not None else None
     net_margin = percentage(net_profit, sales_revenue) if net_profit is not None else None
+    if not has_ad_cost:
+        true_roi = None
+        true_roi_status = "unavailable"
+    elif advertising_cost_total == 0:
+        true_roi = "Infinity"
+        true_roi_status = "infinite"
+    else:
+        true_roi = str(money(ad_attributed_revenue / advertising_cost_total))
+        true_roi_status = "available"
+    true_cpa_usd = None
+    if ad_input_types and all(value == "cpa_usd" for value in ad_input_types):
+        true_cpa_usd = str(money(sum(cpa_true_values, Decimal("0")) / len(cpa_true_values)))
     weighted_commission_rate = bases["commission_weighted_rate"] / bases["commission"] if bases["commission"] else None
     weighted_affiliate_rate = bases["affiliate_weighted_rate"] / bases["affiliate"] if bases["affiliate"] else None
 
@@ -793,7 +924,9 @@ def calculate_profit(payload: dict) -> dict:
         row("platform_support_fee", "每单平台支持费", fee_totals["platform_support_fee"], "fee", "每个已送达订单收取 RM0.54，按 SKU 分摊", "平台代扣", source=SUPPORT_FEE_SOURCE),
         row("affiliate_commission", "达人推广佣金", fee_totals["affiliate_commission"], "fee", "含税售价 − 自动拆分的 LVG 商品税", "推广代扣", rate=weighted_affiliate_rate, source=AFFILIATE_SOURCE),
         row("lvg_product_tax", "LVG 商品税（售价内含）", fee_totals["lvg_product_tax"], "fee", "跨境且单件原始售价 ≤ RM500：售价 × 10/110；已在售价内含但作为结算扣费计入一次", "税费", rate=LVG_RATE if seller_type == "cross_border" else Decimal("0"), source=LVG_TAX_SOURCE),
-        row("advertising_cost", "实际广告投入", advertising_cost_total, "cost", "仅在填写有效 ROI、CPA 或广告占比后计入", "广告投放"),
+        row("advertising_cost_before_rebate", "返点前广告成本", advertising_cost_before_rebate_total, "reference", "按 ROI、CPA 或广告占比换算；逐 SKU 舍入后汇总", "广告投放", exclude_from_group_total=True),
+        row("advertising_rebate_amount", "广告返点金额", advertising_rebate_amount_total, "reference", "返点前广告成本 × 每个 SKU 的有效返点比例", "广告投放", exclude_from_group_total=True),
+        row("advertising_cost", "实际广告投入", advertising_cost_total, "cost", "返点前广告成本 − 广告返点金额", "广告投放"),
     ]
     business_order = {"收入": 0, "商品": 1, "物流": 2, "平台代扣": 3, "推广代扣": 4, "税费": 5, "广告投放": 6}
     item_order = {item["key"]: index for index, item in enumerate(rows)}
@@ -813,12 +946,18 @@ def calculate_profit(payload: dict) -> dict:
     return {
         "currency": "MYR", "revenue": str(sales_revenue), "total_fees": str(total_fees), "settlement_amount": str(settlement_amount),
         "total_costs": str(costs_after_ads) if costs_after_ads is not None else str(costs_before_ads), "costs_before_ads": str(costs_before_ads),
-        "costs_after_ads": str(costs_after_ads) if costs_after_ads is not None else None, "advertising_cost": str(advertising_cost_total),
+        "costs_after_ads": str(costs_after_ads) if costs_after_ads is not None else None,
+        "advertising_cost_before_rebate": str(advertising_cost_before_rebate_total),
+        "advertising_rebate_percent": str(money(advertising_rebate_percent)),
+        "advertising_rebate_amount": str(advertising_rebate_amount_total),
+        "advertising_cost": str(advertising_cost_total),
+        "true_roi": true_roi, "true_roi_status": true_roi_status,
+        "true_cpa_usd": true_cpa_usd,
         "gross_profit": str(gross_profit), "gross_margin": str(gross_margin), "net_profit": str(net_profit) if net_profit is not None else None,
         "net_margin": str(net_margin) if net_margin is not None else None, "has_ad_cost": has_ad_cost, "profit": str(gross_profit), "profit_rate": str(gross_margin),
         "break_even_cpa": str(gross_profit), "break_even_cpa_usd": str(money(gross_profit * usd_per_myr)), "break_even_roi": str(money(sales_revenue / gross_profit)) if gross_profit > 0 else None,
         "items": item_results, "breakdown_groups": breakdown_groups, "breakdown": [item for group in breakdown_groups for item in group["items"]],
-        "amount_summary": {"total_revenue": str(sales_revenue), "total_fees": str(total_fees), "settlement_amount": str(settlement_amount), "costs_before_ads": str(costs_before_ads), "gross_profit": str(gross_profit), "gross_margin": str(gross_margin), "costs_after_ads": str(costs_after_ads) if costs_after_ads is not None else None, "net_profit": str(net_profit) if net_profit is not None else None, "net_margin": str(net_margin) if net_margin is not None else None},
+        "amount_summary": {"total_revenue": str(sales_revenue), "total_fees": str(total_fees), "settlement_amount": str(settlement_amount), "costs_before_ads": str(costs_before_ads), "gross_profit": str(gross_profit), "gross_margin": str(gross_margin), "advertising_cost_before_rebate": str(advertising_cost_before_rebate_total), "advertising_rebate_amount": str(advertising_rebate_amount_total), "advertising_cost": str(advertising_cost_total), "true_roi": true_roi, "true_roi_status": true_roi_status, "true_cpa_usd": true_cpa_usd, "costs_after_ads": str(costs_after_ads) if costs_after_ads is not None else None, "net_profit": str(net_profit) if net_profit is not None else None, "net_margin": str(net_margin) if net_margin is not None else None},
         "shipping": {"buyer_pays_shipping": buyer_pays_shipping, "buyer_shipping_region": buyer_shipping_region, "buyer_shipping_amount": str(buyer_shipping_total), "buyer_shipping_rate_version": MALAYSIA_STANDARD_BUYER_SHIPPING_RATE_VERSION},
         "transaction_fee": {"official_rate": str(money(official_transaction_rate)), "adjustment": str(money(transaction_fee_adjustment)), "applied_rate": str(money(applied_transaction_rate)), "base": str(transaction_base), "amount": str(fee_totals["transaction_fee"])},
         "commission_adjustment": str(commission_adjustment), "customer_refund": str(customer_refund),

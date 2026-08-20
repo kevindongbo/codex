@@ -11,10 +11,11 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from statistics import median
 from typing import Callable, Iterable, Sequence
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.db.models import Q, Sum
 from django.utils import timezone
@@ -542,6 +543,111 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
         purchased_pending_shipment=_quantity(purchase_pending),
         inbound_total=_quantity(purchase_pending + in_transit),
     )
+
+
+def warehouse_demand_detail(*, organization, sku, warehouse, days=7, as_of=None):
+    """Return exact warehouse-local sales demand for a half-open calendar window."""
+
+    if days != 7:
+        raise ValueError("当前周期明细只支持近 7 天")
+    try:
+        warehouse_zone = ZoneInfo(str(warehouse.timezone or ""))
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise ValueError(f"仓库 {warehouse.code} 的时区配置无效：{warehouse.timezone}") from exc
+
+    current = _as_aware(as_of)
+    local_now = current.astimezone(warehouse_zone)
+    local_start_date = local_now.date() - timedelta(days=days - 1)
+    local_end_date = local_now.date() + timedelta(days=1)
+    start_at = datetime.combine(local_start_date, time.min, tzinfo=warehouse_zone)
+    end_at = datetime.combine(local_end_date, time.min, tzinfo=warehouse_zone)
+
+    outbound = StockLedger.objects.filter(
+        organization=organization,
+        warehouse=warehouse,
+        sku=sku,
+        occurred_at__gte=start_at,
+        occurred_at__lt=end_at,
+        on_hand_delta__lt=0,
+        reversal__isnull=True,
+        event_type__in=(StockLedger.Type.SHIPMENT, StockLedger.Type.MANUAL_OUTBOUND),
+    )
+    order_outbound = -_decimal(
+        outbound.filter(event_type=StockLedger.Type.SHIPMENT).aggregate(total=Sum("on_hand_delta"))["total"]
+    )
+    manual_outbound = -_decimal(
+        outbound.filter(event_type=StockLedger.Type.MANUAL_OUTBOUND).aggregate(total=Sum("on_hand_delta"))["total"]
+    )
+
+    returns = ZERO
+    return_lines = ReturnReceiptLine.objects.filter(
+        receipt__organization=organization,
+        sku=sku,
+        receipt__return_order__warehouse=warehouse,
+        receipt__return_order__original_order__isnull=False,
+    ).select_related("receipt__return_order__original_order")
+    for return_line in return_lines:
+        original_shipment = (
+            ShipmentLine.objects.filter(
+                shipment__organization=organization,
+                shipment__warehouse=warehouse,
+                shipment__order=return_line.receipt.return_order.original_order,
+                sku=sku,
+            )
+            .select_related("shipment")
+            .order_by("shipment__shipped_at", "id")
+            .first()
+        )
+        if original_shipment is not None and start_at <= original_shipment.shipment.shipped_at < end_at:
+            returns += _decimal(return_line.quantity)
+
+    net_sales = max(ZERO, order_outbound + manual_outbound - returns)
+    return {
+        "warehouse": str(warehouse.pk),
+        "warehouse_code": warehouse.code,
+        "warehouse_name": warehouse.name,
+        "timezone": str(warehouse_zone),
+        "window_start": start_at.isoformat(),
+        "window_end": end_at.isoformat(),
+        "days": days,
+        "order_outbound": str(_quantity(order_outbound)),
+        "manual_outbound": str(_quantity(manual_outbound)),
+        "returns_at_original_sale_date": str(_quantity(returns)),
+        "net_sales": str(_quantity(net_sales)),
+        "daily_average": str(_rate(net_sales / Decimal(days))),
+    }
+
+
+def multi_warehouse_demand_detail(*, organization, sku, warehouses, days=7, as_of=None):
+    rows = [
+        warehouse_demand_detail(
+            organization=organization,
+            sku=sku,
+            warehouse=warehouse,
+            days=days,
+            as_of=as_of,
+        )
+        for warehouse in warehouses
+    ]
+    total = {
+        key: sum((_decimal(row[key]) for row in rows), ZERO)
+        for key in (
+            "order_outbound",
+            "manual_outbound",
+            "returns_at_original_sale_date",
+            "net_sales",
+        )
+    }
+    return {
+        "sku": str(sku.pk),
+        "sku_code": sku.code,
+        "days": days,
+        "warehouses": rows,
+        "total": {
+            **{key: str(_quantity(value)) for key, value in total.items()},
+            "daily_average": str(_rate(total["net_sales"] / Decimal(days))),
+        },
+    }
 
 
 @dataclass(frozen=True)

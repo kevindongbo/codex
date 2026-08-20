@@ -22,6 +22,11 @@ PERMISSION_CATALOG = {
     "product_status": "启用或停用商品与 SKU",
     "product_delete": "删除商品与 SKU",
     "exchange_manual": "修改手动汇率",
+    "analytics_view": "查看数据分析",
+    "creator_view": "查看达人管家",
+    "creator_edit": "维护达人管家",
+    "profit_record_view": "查看商品利润表",
+    "profit_record_edit": "维护商品利润表",
 }
 
 LEGACY_ROLE_PERMISSIONS = {
@@ -103,3 +108,26 @@ class OrganizationRolePermission(BasePermission):
         if getattr(view, "owner_only", False):
             return is_owner(request.user)
         return True
+
+
+class CapabilityPermission(BasePermission):
+    """Require an explicit capability for both safe and mutating requests."""
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        organization = request_organization(request)
+        view.organization = organization
+        membership = active_internal_membership(request.user)
+        view.membership = membership
+        capability = (
+            getattr(view, "read_capability", None)
+            if request.method in SAFE_METHODS
+            else getattr(view, "write_capability", None)
+        )
+        if not capability:
+            return False
+        return user_has_capability(request.user, membership, capability)
+
+    def has_object_permission(self, request, view, obj):
+        return getattr(obj, "organization_id", None) == getattr(view, "organization", None).pk

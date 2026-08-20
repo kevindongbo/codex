@@ -1,5 +1,9 @@
 from decimal import Decimal
 from dataclasses import replace
+from pathlib import Path
+import shutil
+import subprocess
+import sys
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -174,6 +178,103 @@ class ProfitCalculatorTests(TestCase):
         self.assertEqual(result["advertising_cost"], "21.28")
         self.assertEqual(result["net_profit"], "10.20")
 
+    def test_global_advertising_rebate_recalculates_roi_and_net_profit(self):
+        payload = self.base_payload(advertising_rebate_percent=Decimal("10"))
+        payload["items"][0].update({"ad_cost_type": "roi", "ad_cost_value": Decimal("4")})
+
+        result = calculate_profit(payload)
+        item = result["items"][0]
+
+        self.assertEqual(result["advertising_cost_before_rebate"], "19.98")
+        self.assertEqual(result["advertising_rebate_amount"], "2.00")
+        self.assertEqual(result["advertising_cost"], "17.98")
+        self.assertEqual(result["true_roi"], "4.44")
+        self.assertEqual(result["true_roi_status"], "available")
+        self.assertIsNone(result["true_cpa_usd"])
+        self.assertEqual(result["net_profit"], "13.50")
+        self.assertEqual(item["advertising_rebate_percent"], "10.00")
+        self.assertEqual(item["advertising_rebate_source"], "global")
+        self.assertEqual(item["original_roi"], "4")
+        self.assertEqual(item["true_roi"], "4.44")
+        self.assertEqual(item["gross_profit"], "31.48")
+        self.assertEqual(item["net_profit"], "13.50")
+
+    def test_sku_zero_rebate_override_does_not_inherit_global_rebate(self):
+        payload = self.base_payload(advertising_rebate_percent=Decimal("25"))
+        payload["items"][0].update({
+            "ad_cost_type": "roi",
+            "ad_cost_value": Decimal("4"),
+            "advertising_rebate_percent_override": Decimal("0"),
+        })
+
+        item = calculate_profit(payload)["items"][0]
+
+        self.assertEqual(item["advertising_rebate_percent"], "0.00")
+        self.assertEqual(item["advertising_rebate_source"], "sku_override")
+        self.assertEqual(item["advertising_rebate_amount"], "0.00")
+        self.assertEqual(item["advertising_cost"], "19.98")
+
+    def test_null_sku_rebate_inherits_global_and_cpa_returns_true_cpa(self):
+        payload = self.base_payload(advertising_rebate_percent=Decimal("10"))
+        payload["items"][0].update({
+            "ad_cost_type": "cpa_usd",
+            "ad_cost_value": Decimal("5"),
+            "advertising_rebate_percent_override": None,
+        })
+
+        result = calculate_profit(payload)
+        item = result["items"][0]
+
+        self.assertEqual(item["advertising_cost_before_rebate"], "21.28")
+        self.assertEqual(item["advertising_rebate_amount"], "2.13")
+        self.assertEqual(item["advertising_cost"], "19.15")
+        self.assertEqual(item["original_cpa_usd"], "5")
+        self.assertEqual(item["true_cpa_usd"], "4.50")
+        self.assertEqual(item["true_roi"], "4.17")
+        self.assertEqual(result["true_cpa_usd"], "4.50")
+
+    def test_full_rebate_is_free_advertising_without_division_by_zero(self):
+        payload = self.base_payload(advertising_rebate_percent=Decimal("100"))
+        payload["items"][0].update({"ad_cost_type": "roi", "ad_cost_value": Decimal("4")})
+
+        result = calculate_profit(payload)
+
+        self.assertTrue(result["has_ad_cost"])
+        self.assertEqual(result["advertising_cost_before_rebate"], "19.98")
+        self.assertEqual(result["advertising_rebate_amount"], "19.98")
+        self.assertEqual(result["advertising_cost"], "0.00")
+        self.assertEqual(result["true_roi"], "Infinity")
+        self.assertEqual(result["true_roi_status"], "infinite")
+        self.assertEqual(result["net_profit"], result["gross_profit"])
+
+    def test_multi_sku_ad_totals_equal_sum_of_rounded_sku_amounts(self):
+        payload = self.base_payload(advertising_rebate_percent=Decimal("12.50"))
+        payload["items"][0].update({"ad_cost_type": "ratio", "ad_cost_value": Decimal("17.35")})
+        payload["items"].append(dict(
+            payload["items"][0],
+            sku_name="第二件",
+            item_price=Decimal("43.27"),
+            advertising_rebate_percent_override=Decimal("0"),
+        ))
+
+        result = calculate_profit(payload)
+
+        for field in (
+            "advertising_cost_before_rebate", "advertising_rebate_amount", "advertising_cost"
+        ):
+            self.assertEqual(
+                Decimal(result[field]),
+                sum((Decimal(item[field]) for item in result["items"]), Decimal("0")),
+            )
+        self.assertEqual(
+            Decimal(result["gross_profit"]),
+            sum((Decimal(item["gross_profit"]) for item in result["items"]), Decimal("0")),
+        )
+        self.assertEqual(
+            Decimal(result["net_profit"]),
+            sum((Decimal(item["net_profit"]) for item in result["items"]), Decimal("0")),
+        )
+
     def test_lvg_threshold_uses_original_single_item_price(self):
         payload = self.base_payload()
         payload["items"][0]["item_price"] = Decimal("500.00")
@@ -329,6 +430,54 @@ class ProfitCalculatorTests(TestCase):
         self.assertGreaterEqual(sum(len(node["children"]) for node in beauty["children"]), 120)
 
 
+class ProfitCalculatorFrontendModuleTests(TestCase):
+    def test_rebate_override_and_revision_helpers_execute_in_node(self):
+        node = shutil.which("node")
+        if not node:
+            bundled_node = (
+                Path(sys.executable).resolve().parent.parent / "node" / "bin" /
+                ("node.exe" if sys.platform == "win32" else "node")
+            )
+            if bundled_node.exists():
+                node = str(bundled_node)
+        if not node:
+            self.skipTest("Node.js is not available in this backend test environment")
+        repository = Path(__file__).resolve().parents[4]
+        script = """
+const assert = require('node:assert/strict');
+require('./profit-calculator.js');
+const hooks = globalThis.DongboProfitCalculatorTestHooks;
+assert.equal(hooks.nullablePercent(''), null);
+assert.equal(hooks.nullablePercent(null), null);
+assert.equal(hooks.nullablePercent('0'), '0.00');
+assert.equal(hooks.nullablePercent('12.345'), '12.35');
+assert.deepEqual(hooks.advertisingRebateConfig(''), {advertising_rebate_percent: '0.00'});
+assert.deepEqual(hooks.advertisingRebateConfig('15'), {advertising_rebate_percent: '15.00'});
+assert.equal(hooks.revisionFrom({revision: 3}), 3);
+assert.equal(hooks.revisionFrom({revision: 3, current_revision: 4}), 4);
+assert.equal(hooks.revisionFrom({server_revision: 5}), 5);
+assert.deepEqual(
+  hooks.buildWorkingConfigPayload({advertising_rebate_percent: '10.00'}, 'auto', '1.68', '0.235', 6),
+  {config: {advertising_rebate_percent: '10.00'}, rate_mode: 'auto', manual_cny_per_myr: null, manual_usd_per_myr: null, revision: 6}
+);
+assert.deepEqual(
+  hooks.buildWorkingConfigPayload({advertising_rebate_percent: '0.00'}, 'manual', '1.68', '0.235', 7),
+  {config: {advertising_rebate_percent: '0.00'}, rate_mode: 'manual', manual_cny_per_myr: '1.68', manual_usd_per_myr: '0.235', revision: 7}
+);
+assert.deepEqual(hooks.workingConfigFailure({status: 500}), {retry_mode: 'save', current_revision: null});
+assert.deepEqual(hooks.workingConfigFailure({status: 409, data: {current_revision: 9}}), {retry_mode: 'conflict', current_revision: 9});
+assert.deepEqual(hooks.strategyActivationPayload(9), {working_revision: 9});
+"""
+        completed = subprocess.run(
+            [node, "-e", script],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr or completed.stdout)
+
+
 class ProfitCalculatorApiTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="calculator", password="test-pass-123")
@@ -361,12 +510,17 @@ class ProfitCalculatorApiTests(TestCase):
             "commission_adjustment": "2.00", "buyer_pays_shipping": False,
             "buyer_shipping_region": "west_malaysia", "transaction_fee_adjustment": "1.00", "display_currency": "CNY",
         }
+        initial = self.client.get("/api/profit-calculator/working-config/")
+        self.assertEqual(initial.status_code, 200, initial.data)
+        self.assertEqual(initial.data["revision"], 0)
         saved = self.client.put("/api/profit-calculator/working-config/", {
             "config": config, "rate_mode": "manual", "manual_cny_per_myr": "1.680000", "manual_usd_per_myr": "0.235000",
+            "revision": initial.data["revision"],
         }, format="json")
         self.assertEqual(saved.status_code, 200, saved.data)
         self.assertEqual(saved.data["config"]["seller_type"], "local")
         self.assertEqual(saved.data["rate_mode"], "manual")
+        self.assertEqual(saved.data["revision"], 1)
         refreshed = self.client.get("/api/profit-calculator/working-config/")
         self.assertEqual(refreshed.status_code, 200, refreshed.data)
         self.assertEqual(refreshed.data["manual_cny_per_myr"], "1.680000")
@@ -410,8 +564,12 @@ class ProfitCalculatorApiTests(TestCase):
         config = {"country": "MY", "seller_type": "cross_border", "shop_identity": "marketplace", "bxp": False, "commission_adjustment": "1", "buyer_pays_shipping": True, "buyer_shipping_region": "west_malaysia", "transaction_fee_adjustment": "0", "display_currency": "MYR"}
         first = self.client.post("/api/profit-calculator/strategies/", {"name": "A 西马", "config": config}, format="json")
         second = self.client.post("/api/profit-calculator/strategies/", {"name": "B 东马", "config": {**config, "buyer_shipping_region": "east_malaysia"}}, format="json")
-        activated = self.client.post("/api/profit-calculator/strategies/%s/activate/" % first.data["id"], format="json")
+        activated = self.client.post(
+            "/api/profit-calculator/strategies/%s/activate/" % first.data["id"],
+            {"working_revision": 0}, format="json",
+        )
         self.assertEqual(activated.status_code, 200, activated.data)
+        self.assertEqual(activated.data["working_revision"], 1)
         self.assertEqual(ProfitCalculationStrategy.objects.filter(organization=self.organization, is_default=True).count(), 1)
         self.assertEqual(str(ProfitCalculationStrategy.objects.get(organization=self.organization, is_default=True).pk), str(first.data["id"]))
         self.assertTrue(AuditLog.objects.filter(organization=self.organization, action="profit_strategy.activate").exists())
@@ -421,6 +579,42 @@ class ProfitCalculatorApiTests(TestCase):
         self.assertEqual(self.client.delete("/api/profit-calculator/strategies/%s/" % second.data["id"]).status_code, 204)
         self.assertFalse(ProfitCalculationStrategy.objects.filter(organization=self.organization).exists())
         self.assertTrue(AuditLog.objects.filter(organization=self.organization, action="profit_strategy.delete").exists())
+
+    def test_working_config_and_strategy_activation_reject_stale_revisions(self):
+        initial = self.client.get("/api/profit-calculator/working-config/")
+        config = {
+            "country": "MY", "seller_type": "cross_border", "shop_identity": "marketplace",
+            "bxp": False, "commission_adjustment": "1.00", "buyer_pays_shipping": False,
+            "buyer_shipping_region": "west_malaysia", "transaction_fee_adjustment": "0.00",
+            "advertising_rebate_percent": "10.00", "display_currency": "MYR",
+        }
+        saved = self.client.put(
+            "/api/profit-calculator/working-config/",
+            {"config": config, "rate_mode": "auto", "revision": initial.data["revision"]},
+            format="json",
+        )
+        self.assertEqual(saved.status_code, 200, saved.data)
+
+        stale = self.client.put(
+            "/api/profit-calculator/working-config/",
+            {"config": {**config, "advertising_rebate_percent": "20.00"}, "revision": 0},
+            format="json",
+        )
+        self.assertEqual(stale.status_code, 409, stale.data)
+        self.assertEqual(int(stale.data["current_revision"]), 1)
+        refreshed = self.client.get("/api/profit-calculator/working-config/")
+        self.assertEqual(refreshed.data["config"]["advertising_rebate_percent"], "10.00")
+
+        strategy = self.client.post(
+            "/api/profit-calculator/strategies/", {"name": "并发策略", "config": config}, format="json"
+        )
+        self.assertEqual(strategy.status_code, 201, strategy.data)
+        activation = self.client.post(
+            "/api/profit-calculator/strategies/%s/activate/" % strategy.data["id"],
+            {"working_revision": 0}, format="json",
+        )
+        self.assertEqual(activation.status_code, 409, activation.data)
+        self.assertEqual(int(activation.data["current_revision"]), 1)
 
     def test_strategy_writes_are_organization_scoped_and_disabled_shipping_uses_west_malaysia(self):
         config = {"country": "MY", "seller_type": "cross_border", "shop_identity": "marketplace", "bxp": False, "commission_adjustment": "1", "buyer_pays_shipping": False, "buyer_shipping_region": "east_malaysia", "transaction_fee_adjustment": "0", "display_currency": "MYR"}
@@ -453,6 +647,47 @@ class ProfitCalculatorApiTests(TestCase):
         }, format="json")
         self.assertEqual(response.status_code, 400)
         self.assertIn("weight_g", response.data["items"][0])
+
+    def test_calculate_validates_rebate_ranges_and_preserves_null_vs_zero(self):
+        item = {
+            "category_code": "bag-womens-womens-tote-bags",
+            "weight_g": "200",
+            "item_price": "79.90",
+            "ad_cost_type": "roi",
+            "ad_cost_value": "4",
+            "advertising_rebate_percent_override": None,
+        }
+        payload = {
+            "country": "MY",
+            "seller_type": "cross_border",
+            "shop_identity": "marketplace",
+            "cny_per_myr": "1.68",
+            "usd_per_myr": "0.235",
+            "advertising_rebate_percent": "10",
+            "items": [item],
+        }
+
+        inherited = self.client.post(
+            "/api/profit-calculator/calculate/", payload, format="json"
+        )
+        self.assertEqual(inherited.status_code, 200, inherited.data)
+        self.assertEqual(inherited.data["items"][0]["advertising_rebate_source"], "global")
+        self.assertEqual(inherited.data["items"][0]["advertising_rebate_percent"], "10.00")
+
+        payload["items"][0]["advertising_rebate_percent_override"] = "0"
+        overridden = self.client.post(
+            "/api/profit-calculator/calculate/", payload, format="json"
+        )
+        self.assertEqual(overridden.status_code, 200, overridden.data)
+        self.assertEqual(overridden.data["items"][0]["advertising_rebate_source"], "sku_override")
+        self.assertEqual(overridden.data["items"][0]["advertising_rebate_percent"], "0.00")
+
+        payload["advertising_rebate_percent"] = "100.01"
+        rejected = self.client.post(
+            "/api/profit-calculator/calculate/", payload, format="json"
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn("advertising_rebate_percent", rejected.data)
 
     def test_calculate_rejects_weight_outside_shipping_price_list(self):
         response = self.client.post("/api/profit-calculator/calculate/", {

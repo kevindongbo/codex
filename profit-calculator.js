@@ -25,7 +25,10 @@
   let loadedStrategies = [];
   let strategyModalMode = 'create';
   let workingConfigSaveTimer = null;
-  let workingConfigHydrating = false;
+  let workingConfigHydrating = true;
+  let workingConfigReady = false;
+  let workingConfigRevision = null;
+  let workingConfigRetryMode = 'load';
   let workingConfigSaveFailed = false;
   const manualCommissionByRow = new Map();
 
@@ -40,6 +43,35 @@
     return Number.isFinite(parsed) ? parsed : 0;
   }
   function fixed(value) { return number(value).toFixed(2); }
+  function nullablePercent(value) {
+    return value == null || String(value).trim() === '' ? null : fixed(value);
+  }
+  function revisionFrom(payload) {
+    if (!payload) return null;
+    const value = payload.current_revision == null
+      ? (payload.server_revision == null ? payload.revision : payload.server_revision)
+      : payload.current_revision;
+    return value == null || value === '' ? null : Number(value);
+  }
+  function buildWorkingConfigPayload(config, selectedRateMode, cnyRate, usdRate, revision) {
+    return {
+      config: config,
+      rate_mode: selectedRateMode,
+      manual_cny_per_myr: selectedRateMode === 'manual' ? cnyRate : null,
+      manual_usd_per_myr: selectedRateMode === 'manual' ? usdRate : null,
+      revision: revision
+    };
+  }
+  function workingConfigFailure(error) {
+    const status = Number(error && (error.status || (error.data && error.data.status)));
+    return {
+      retry_mode: status === 409 ? 'conflict' : 'save',
+      current_revision: status === 409 ? revisionFrom(error && error.data) : null
+    };
+  }
+  function strategyActivationPayload(revision) {
+    return { working_revision: revision };
+  }
   function formatSingleMoney(value, currency) {
     const target = currency || displayCurrency;
     const amount = target === 'CNY' ? number(value) * number(el('profitExchangeRate').value) : number(value);
@@ -72,6 +104,7 @@
     if (!response.ok) {
       const error = new Error(payload.detail || '请求失败');
       error.data = payload;
+      error.status = response.status;
       throw error;
     }
     return payload;
@@ -177,7 +210,7 @@
     const item = Object.assign({
       sku_name: 'SKU-' + String(rowSequence).padStart(3, '0'),
       category_code: 'bag-womens-womens-tote-bags',
-      weight_g: '200', product_cost_cny: '18.90', item_price: '79.90', affiliate_rate: '15.00', ad_cost_type: 'none', ad_cost_value: '', buyer_shipping_fee: '0.00'
+      weight_g: '200', product_cost_cny: '18.90', item_price: '79.90', affiliate_rate: '15.00', ad_cost_type: 'none', ad_cost_value: '', advertising_rebate_percent_override: null, buyer_shipping_fee: '0.00'
     }, seed || {});
     manualCommissionByRow.set(rowId, item.manual_commission_rate == null ? '' : fixed(item.manual_commission_rate));
     const tr = document.createElement('tr');
@@ -191,7 +224,7 @@
       '<td><input aria-label="商品成本" data-profit-field="product_cost_cny" type="number" min="0" step="0.01" value="' + escapeHtml(item.product_cost_cny) + '" /></td>' +
       '<td><input aria-label="售价" data-profit-field="item_price" type="number" min="0" step="0.01" value="' + escapeHtml(item.item_price) + '" required /></td>' +
       '<td><div class="profit-percent-input"><input aria-label="达人佣金率" data-profit-field="affiliate_rate" type="number" min="0" max="100" step="0.01" value="' + escapeHtml(item.affiliate_rate) + '" /><span>%</span></div></td>' +
-      '<td class="profit-ad-cell"><div class="profit-ad-input"><select aria-label="实际广告数据类型" data-profit-field="ad_cost_type"><option value="none">不计广告</option><option value="roi">实际 ROI</option><option value="cpa_usd">单件 CPA（USD）</option><option value="ratio">广告费占收入（%）</option></select><input aria-label="实际广告数据" data-profit-field="ad_cost_value" type="number" min="0" step="0.01" value="' + escapeHtml(item.ad_cost_value) + '" placeholder="留空不计入" disabled /></div></td>' +
+      '<td class="profit-ad-cell"><div class="profit-ad-input" style="height:auto;min-height:96px;grid-template-rows:42px 42px;overflow:visible"><select aria-label="实际广告数据类型" data-profit-field="ad_cost_type"><option value="none">不计广告</option><option value="roi">实际 ROI</option><option value="cpa_usd">单件 CPA（USD）</option><option value="ratio">广告费占收入（%）</option></select><input aria-label="实际广告数据" data-profit-field="ad_cost_value" type="number" min="0" step="0.01" value="' + escapeHtml(item.ad_cost_value) + '" placeholder="留空不计入" disabled /><label style="grid-column:1 / -1;display:grid;grid-template-columns:auto minmax(120px,1fr);align-items:center;gap:8px;padding:0 8px;font-size:11px;color:#52677d">返点覆盖（%）<input style="margin:0!important;min-height:36px" aria-label="SKU 广告返点覆盖" data-profit-field="advertising_rebate_percent_override" type="number" min="0" max="100" step="0.01" value="' + escapeHtml(item.advertising_rebate_percent_override == null ? '' : item.advertising_rebate_percent_override) + '" placeholder="留空继承全局" /></label></div></td>' +
       '<td><button class="row-action danger" type="button" data-profit-remove="' + rowId + '" aria-label="删除此 SKU">删除</button></td>';
     el('profitSkuRows').appendChild(tr);
     populateCategoryPicker(tr, item.category_code);
@@ -201,6 +234,7 @@
     row.querySelectorAll('[data-profit-field]').forEach(function (field) { result[field.dataset.profitField] = field.value; });
     result.manual_commission_rate = manualCommissionByRow.get(row.dataset.profitRow) || null;
     if (result.ad_cost_type === 'none' || result.ad_cost_value === '') result.ad_cost_value = null;
+    result.advertising_rebate_percent_override = nullablePercent(result.advertising_rebate_percent_override);
     return result;
   }
   function setStatus(message, isError) {
@@ -308,16 +342,30 @@
     el('profitProductCost').textContent = formatCost(summary.product_cost || 0);
     el('profitCostsBeforeAds').textContent = formatSingleMoney(result.costs_before_ads);
     el('profitGross').textContent = formatSingleMoney(result.gross_profit);
-    el('profitAdCost').textContent = result.has_ad_cost ? formatSingleMoney(result.advertising_cost) : '未填写';
+    el('profitAdCost').textContent = result.has_ad_cost
+      ? formatSingleMoney(result.advertising_cost) + '（返点前 ' + formatSingleMoney(result.advertising_cost_before_rebate) + '，返点 ' + formatSingleMoney(result.advertising_rebate_amount) + '）'
+      : '未填写';
     el('profitFormulaNet').textContent = result.has_ad_cost ? formatSingleMoney(result.net_profit) : '未计算';
     el('profitFormulaNetMargin').textContent = result.has_ad_cost ? fixed(result.net_margin) + '%' : '未计算';
-    function settlement(id) { return document.querySelector('.profit-settlement-summary #' + id); }
+    function settlement(id) {
+      return el(id) || document.querySelector('.profit-settlement-summary #' + id);
+    }
     settlement('profitTotalRevenue').textContent = formatDualMoney(summary.total_revenue == null ? result.revenue : summary.total_revenue);
     settlement('profitTotalFees').textContent = formatDualMoney(summary.total_fees == null ? result.total_fees : summary.total_fees);
     settlement('profitSettlementAmount').textContent = formatDualMoney(summary.settlement_amount == null ? result.settlement_amount : summary.settlement_amount);
     settlement('profitSettlementCostsBeforeAds').textContent = formatDualMoney(summary.costs_before_ads == null ? result.costs_before_ads : summary.costs_before_ads);
     settlement('profitSettlementGross').textContent = formatDualMoney(summary.gross_profit == null ? result.gross_profit : summary.gross_profit);
     settlement('profitGrossMargin').textContent = fixed(summary.gross_margin == null ? result.gross_margin : summary.gross_margin) + '%';
+    const beforeRebate = settlement('profitAdCostBeforeRebate');
+    if (beforeRebate) beforeRebate.textContent = result.has_ad_cost ? formatDualMoney(result.advertising_cost_before_rebate) : '未填写广告';
+    const rebateAmount = settlement('profitAdRebateAmount');
+    if (rebateAmount) rebateAmount.textContent = result.has_ad_cost ? formatDualMoney(result.advertising_rebate_amount) : '未填写广告';
+    const actualAdCost = settlement('profitActualAdCost');
+    if (actualAdCost) actualAdCost.textContent = result.has_ad_cost ? formatDualMoney(result.advertising_cost) : '未填写广告';
+    const trueRoi = settlement('profitTrueRoi');
+    if (trueRoi) trueRoi.textContent = !result.has_ad_cost ? '暂无数据' : (result.true_roi_status === 'infinite' ? '∞ / 无需付费' : fixed(result.true_roi));
+    const trueCpa = settlement('profitTrueCpa');
+    if (trueCpa) trueCpa.textContent = !result.has_ad_cost ? '暂无数据' : (result.true_cpa_usd == null ? '不适用' : '$ ' + fixed(result.true_cpa_usd));
     settlement('profitCostsAfterAds').textContent = result.has_ad_cost ? formatDualMoney(summary.costs_after_ads) : '未填写广告';
     settlement('profitSettlementNet').textContent = result.has_ad_cost ? formatDualMoney(summary.net_profit) : '未填写广告';
     settlement('profitSettlementNetMargin').textContent = result.has_ad_cost ? fixed(summary.net_margin) + '%' : '未填写广告';
@@ -385,6 +433,10 @@
   }
 
   let loadedStrategyId = '';
+  function globalRebateValue() {
+    const field = el('profitAdvertisingRebatePercent');
+    return field && field.value !== '' ? fixed(field.value) : '0.00';
+  }
   function strategyConfig() {
     return {
       country: el('profitCountry').value, seller_type: el('profitSellerType').value,
@@ -393,6 +445,7 @@
       buyer_pays_shipping: el('profitBuyerPaysShipping').checked,
       buyer_shipping_region: el('profitBuyerPaysShipping').checked ? buyerShippingRegion : 'west_malaysia',
       transaction_fee_adjustment: el('profitTransactionFeeAdjustment').value || '0',
+      advertising_rebate_percent: globalRebateValue(),
       display_currency: displayCurrency
     };
   }
@@ -400,7 +453,8 @@
     return {
       country: 'MY', seller_type: 'cross_border', shop_identity: 'marketplace', bxp: false,
       commission_adjustment: '1.00', buyer_pays_shipping: false,
-      buyer_shipping_region: 'west_malaysia', transaction_fee_adjustment: '0.00', display_currency: 'MYR'
+      buyer_shipping_region: 'west_malaysia', transaction_fee_adjustment: '0.00',
+      advertising_rebate_percent: '0.00', display_currency: 'MYR'
     };
   }
   function applyStrategyConfig(config) {
@@ -410,47 +464,58 @@
     });
     el('profitBxp').checked = Boolean(config.bxp);
     el('profitBuyerPaysShipping').checked = Boolean(config.buyer_pays_shipping);
+    if (el('profitAdvertisingRebatePercent')) {
+      el('profitAdvertisingRebatePercent').value = config.advertising_rebate_percent == null ? '0.00' : fixed(config.advertising_rebate_percent);
+    }
     buyerShippingRegion = config.buyer_shipping_region || 'west_malaysia';
     displayCurrency = config.display_currency || 'MYR';
     document.querySelectorAll('[data-profit-currency]').forEach(function (button) { button.classList.toggle('active', button.dataset.profitCurrency === displayCurrency); });
     updateBuyerShippingUi();
   }
   function workingConfigPayload() {
-    return {
-      config: strategyConfig(), rate_mode: rateMode,
-      manual_cny_per_myr: rateMode === 'manual' ? el('profitExchangeRate').value : null,
-      manual_usd_per_myr: rateMode === 'manual' ? el('profitUsdRate').value : null
-    };
+    return buildWorkingConfigPayload(
+      strategyConfig(), rateMode, el('profitExchangeRate').value,
+      el('profitUsdRate').value, workingConfigRevision
+    );
   }
-  function setWorkingConfigStatus(message, failed) {
+  function setWorkingConfigStatus(message, failed, retryMode) {
     const target = el('profitWorkingConfigStatus');
     if (!target) return;
     target.textContent = message;
     target.classList.toggle('error', Boolean(failed));
     target.dataset.retry = failed ? 'true' : 'false';
     workingConfigSaveFailed = Boolean(failed);
+    if (retryMode) workingConfigRetryMode = retryMode;
   }
   async function saveWorkingConfig() {
-    if (workingConfigHydrating) return;
+    if (workingConfigHydrating || !workingConfigReady) return;
     setWorkingConfigStatus('当前配置保存中…');
     try {
       const saved = await request('/profit-calculator/working-config/', { method: 'PUT', body: workingConfigPayload() });
+      workingConfigRevision = revisionFrom(saved);
       const editor = saved.updated_by_name ? '，由 ' + saved.updated_by_name + ' 更新' : '';
       setWorkingConfigStatus('当前配置已保存' + editor);
     } catch (error) {
-      setWorkingConfigStatus('保存失败，点击重试', true);
+      const failure = workingConfigFailure(error);
+      if (failure.retry_mode === 'conflict') {
+        if (failure.current_revision != null) workingConfigRevision = failure.current_revision;
+        setWorkingConfigStatus('配置版本冲突，已保留本页输入；点击重试后以新版本保存', true, 'conflict');
+      } else {
+        setWorkingConfigStatus('保存失败，已保留本页输入；点击重试', true, 'save');
+      }
     }
   }
   function scheduleWorkingConfigSave() {
-    if (workingConfigHydrating) return;
+    if (workingConfigHydrating || !workingConfigReady) return;
     if (workingConfigSaveTimer) root.clearTimeout(workingConfigSaveTimer);
     setWorkingConfigStatus('当前配置待保存…');
     workingConfigSaveTimer = root.setTimeout(function () { saveWorkingConfig(); }, 650);
   }
   async function loadWorkingConfig() {
-    const saved = await request('/profit-calculator/working-config/');
     workingConfigHydrating = true;
     try {
+      const saved = await request('/profit-calculator/working-config/');
+      workingConfigRevision = revisionFrom(saved);
       applyStrategyConfig(saved.config || {});
       rateMode = saved.rate_mode === 'manual' ? 'manual' : 'auto';
       if (rateMode === 'manual') {
@@ -460,10 +525,24 @@
       } else {
         await loadExchangeRates(false, true);
       }
+      workingConfigReady = true;
       setWorkingConfigStatus('已恢复组织共享的当前配置。');
+      return saved;
+    } catch (error) {
+      workingConfigReady = false;
+      setWorkingConfigStatus('当前配置加载失败，点击重试', true, 'load');
+      throw error;
     } finally {
       workingConfigHydrating = false;
     }
+  }
+  async function retryWorkingConfig() {
+    if (workingConfigRetryMode === 'load') return loadWorkingConfig();
+    if (workingConfigRetryMode === 'conflict' && workingConfigRevision == null) {
+      const current = await request('/profit-calculator/working-config/');
+      workingConfigRevision = revisionFrom(current);
+    }
+    return saveWorkingConfig();
   }
   function applyStrategy(strategy) {
     applyStrategyConfig(strategy.config || {});
@@ -534,15 +613,40 @@
     loadedStrategyId = strategy.id;
     await loadStrategies();
     applyStrategy(strategy);
+    scheduleWorkingConfigSave();
     closeStrategyModal('profitStrategyModal');
     setStatus('策略已保存并设为默认策略。');
   }
   async function activateStrategy(id) {
-    const strategy = await request('/profit-calculator/strategies/' + id + '/activate/', { method: 'POST' });
+    if (!workingConfigReady || workingConfigRevision == null) {
+      throw new Error('组织共享当前配置尚未加载，不能安全激活策略。请先点击当前配置状态重试。');
+    }
+    let strategy;
+    try {
+      strategy = await request('/profit-calculator/strategies/' + id + '/activate/', {
+        method: 'POST', body: strategyActivationPayload(workingConfigRevision)
+      });
+    } catch (error) {
+      const failure = workingConfigFailure(error);
+      if (failure.retry_mode === 'conflict') {
+        if (failure.current_revision != null) workingConfigRevision = failure.current_revision;
+        setWorkingConfigStatus('策略激活冲突，未覆盖其他成员配置；本页输入已保留', true, 'conflict');
+      }
+      throw error;
+    }
+    const activatedRevision = strategy.working_revision == null
+      ? revisionFrom(strategy.working_config)
+      : Number(strategy.working_revision);
+    if (activatedRevision == null) {
+      const current = await request('/profit-calculator/working-config/');
+      workingConfigRevision = revisionFrom(current);
+    } else {
+      workingConfigRevision = activatedRevision;
+    }
     loadedStrategyId = strategy.id;
     await loadStrategies();
     applyStrategy(strategy);
-    scheduleWorkingConfigSave();
+    setWorkingConfigStatus('策略已激活，并同步为组织共享当前配置。');
     setStatus('已加载并设为默认策略：' + strategy.name + '。');
   }
   async function deleteStrategy() {
@@ -565,23 +669,68 @@
     }
   }
 
-  async function loadConfig() {
-    try {
-      const config = await request('/profit-calculator/config/');
-      categories = config.categories || [];
-      categoryTree = config.category_tree || fallbackTree;
-      const adjustment = config.default_commission_adjustment || '0.00';
-      el('profitCommissionAdjustment').value = adjustment;
-      document.querySelectorAll('[data-profit-row]').forEach(function (row) {
-        populateCategoryPicker(row, row.querySelector('[data-profit-field="category_code"]').value);
+  function ensureAdvertisingRebateUi() {
+    if (!el('profitAdvertisingRebatePercent')) {
+      const grid = document.querySelector('.profit-config-grid');
+      const label = document.createElement('label');
+      label.className = 'profit-adjustment-field';
+      label.innerHTML = '广告返点（全局默认）<div class="profit-adjustment-input"><input id="profitAdvertisingRebatePercent" type="number" min="0" max="100" step="0.01" value="0.00" inputmode="decimal" /><span>%</span></div>';
+      grid.appendChild(label);
+    }
+    const settlementList = document.querySelector('.profit-settlement-summary dl');
+    if (settlementList && !el('profitAdCostBeforeRebate')) {
+      const marker = el('profitCostsAfterAds').parentElement;
+      [
+        ['返点前广告成本', 'profitAdCostBeforeRebate', '未填写广告'],
+        ['广告返点金额', 'profitAdRebateAmount', '未填写广告'],
+        ['实际广告成本', 'profitActualAdCost', '未填写广告'],
+        ['真实 ROI', 'profitTrueRoi', '暂无数据'],
+        ['真实 CPA（USD）', 'profitTrueCpa', '不适用']
+      ].forEach(function (definition) {
+        const row = document.createElement('div');
+        row.innerHTML = '<dt>' + definition[0] + '</dt><dd id="' + definition[1] + '">' + definition[2] + '</dd>';
+        settlementList.insertBefore(row, marker);
       });
+    }
+  }
+
+  async function loadStaticConfig() {
+    const config = await request('/profit-calculator/config/');
+    categories = config.categories || [];
+    categoryTree = config.category_tree || fallbackTree;
+    const adjustment = config.default_commission_adjustment || '0.00';
+    el('profitCommissionAdjustment').value = adjustment;
+    document.querySelectorAll('[data-profit-row]').forEach(function (row) {
+      populateCategoryPicker(row, row.querySelector('[data-profit-field="category_code"]').value);
+    });
+    return config;
+  }
+
+  async function loadConfig() {
+    const failures = [];
+    try {
+      await loadStaticConfig();
       const groupCount = categoryTree.reduce(function (total, item) { return total + item.children.length; }, 0);
       const leafCount = categoryTree.reduce(function (total, item) { return total + item.children.reduce(function (subtotal, group) { return subtotal + group.children.length; }, 0); }, 0);
       setStatus('已加载箱包、美妆个护完整三级类目（' + groupCount + ' 个二级、' + leafCount + ' 个三级）及马来西亚跨境运费配置。');
+    } catch (_) {
+      failures.push('基础费率');
+    }
+    try {
       await loadStrategies();
+    } catch (_) {
+      failures.push('命名策略');
+      el('profitStrategyList').innerHTML = '<span class="session-help error">命名策略加载失败</span>';
+    }
+    try {
       await loadWorkingConfig();
     } catch (_) {
-      setStatus('费率配置暂时无法读取，请确认已登录团队服务器后重试。', true);
+      failures.push('组织共享当前配置');
+      // Rate availability is independent from the working-config endpoint.
+      await loadExchangeRates(false);
+    }
+    if (failures.length) {
+      setStatus('以下数据加载失败：' + failures.join('、') + '；其他已成功数据仍可使用。', true);
     }
   }
   async function calculate(shouldScroll) {
@@ -601,6 +750,7 @@
           delivered: true,
           commission_adjustment: el('profitCommissionAdjustment').value || '0',
           transaction_fee_adjustment: el('profitTransactionFeeAdjustment').value || '0',
+          advertising_rebate_percent: globalRebateValue(),
           buyer_pays_shipping: el('profitBuyerPaysShipping').checked,
           buyer_shipping_region: el('profitBuyerPaysShipping').checked ? buyerShippingRegion : 'west_malaysia',
           cny_per_myr: el('profitExchangeRate').value,
@@ -618,11 +768,45 @@
     }
   }
 
+  async function saveToProfitPlans() {
+    const panel = el('profitResultPanel');
+    if (!panel || panel.hidden || !panel.dataset.lastResult) return setStatus('请先完成利润计算，再保存到商品利润表。', true);
+    const rows = Array.from(document.querySelectorAll('[data-profit-row]'));
+    const button = el('profitSaveToPlans');
+    button.disabled = true;
+    try {
+      const payload = {
+        country: el('profitCountry').value, seller_type: el('profitSellerType').value,
+        shop_identity: el('profitShopIdentity').value, bxp: el('profitBxp').checked, delivered: true,
+        commission_adjustment: el('profitCommissionAdjustment').value || '0',
+        transaction_fee_adjustment: el('profitTransactionFeeAdjustment').value || '0',
+        advertising_rebate_percent: globalRebateValue(), buyer_pays_shipping: el('profitBuyerPaysShipping').checked,
+        buyer_shipping_region: el('profitBuyerPaysShipping').checked ? buyerShippingRegion : 'west_malaysia',
+        items: rows.map(function (row) {
+          const item = collectRow(row);
+          item.sku_code = item.sku_name;
+          item.plan_name = item.sku_name + ' · 利润方案';
+          item.action = 'new_plan';
+          return item;
+        }),
+        idempotency_key: 'profit-save-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
+      };
+      const result = await request('/profit-calculator/plans/', { method: 'POST', body: payload });
+      setStatus('已保存 ' + ((result.plans || []).length || rows.length) + ' 个商品利润方案；以后可在“利润方案”查看并按当前规则重新计算。');
+      root.dispatchEvent(new CustomEvent('dongbo-profit-plans-saved'));
+    } catch (error) {
+      const detail = error && error.data ? JSON.stringify(error.data) : (error.message || '保存失败');
+      setStatus('保存失败：' + detail, true);
+    } finally { button.disabled = false; }
+  }
+
   function init() {
     const form = el('profitCalculatorForm');
     if (!form) return;
+    ensureAdvertisingRebateUi();
     addRow();
     form.addEventListener('submit', function (event) { event.preventDefault(); calculate(true); });
+    el('profitSaveToPlans').addEventListener('click', saveToProfitPlans);
     el('profitAddSku').addEventListener('click', function () { addRow({ product_cost_cny: '0.00', item_price: '0.00', affiliate_rate: '0.00' }); });
     el('profitBasisToggle').addEventListener('click', function () {
       const table = el('profitBreakdownTable');
@@ -664,10 +848,10 @@
         if (rateMode === 'manual') scheduleWorkingConfigSave();
         rerenderLastResult();
       }
-      if (event.target.matches('#profitCountry, #profitShopIdentity, #profitBxp, #profitCommissionAdjustment, #profitTransactionFeeAdjustment')) scheduleWorkingConfigSave();
+      if (event.target.matches('#profitCountry, #profitShopIdentity, #profitBxp, #profitCommissionAdjustment, #profitTransactionFeeAdjustment, #profitAdvertisingRebatePercent')) scheduleWorkingConfigSave();
     });
     document.addEventListener('input', function (event) {
-      if (event.target.matches('#profitCommissionAdjustment, #profitTransactionFeeAdjustment, #profitExchangeRate, #profitUsdRate') && (rateMode === 'manual' || !event.target.matches('#profitExchangeRate, #profitUsdRate'))) scheduleWorkingConfigSave();
+      if (event.target.matches('#profitCommissionAdjustment, #profitTransactionFeeAdjustment, #profitAdvertisingRebatePercent, #profitExchangeRate, #profitUsdRate') && (rateMode === 'manual' || !event.target.matches('#profitExchangeRate, #profitUsdRate'))) scheduleWorkingConfigSave();
     });
     document.addEventListener('click', function (event) {
       const currency = event.target.closest('[data-profit-currency]');
@@ -690,7 +874,7 @@
         setGroupExpanded(group, !expanded);
         return;
       }
-      if (event.target.closest('#profitWorkingConfigStatus') && workingConfigSaveFailed) return saveWorkingConfig();
+      if (event.target.closest('#profitWorkingConfigStatus') && workingConfigSaveFailed) return retryWorkingConfig().catch(function () { /* status already explains the retry */ });
       const categoryOption = event.target.closest('[data-category-option]');
       if (categoryOption) return chooseCategory(categoryOption.closest('[data-profit-row]'), Number(categoryOption.dataset.categoryOption), categoryOption.dataset.categoryValue);
       const categoryOpen = event.target.closest('[data-category-open]');
@@ -737,8 +921,16 @@
     });
     loadConfig();
     updateBuyerShippingUi();
-    loadExchangeRates(false);
   }
 
+  root.DongboProfitCalculatorTestHooks = {
+    nullablePercent: nullablePercent,
+    revisionFrom: revisionFrom,
+    buildWorkingConfigPayload: buildWorkingConfigPayload,
+    workingConfigFailure: workingConfigFailure,
+    strategyActivationPayload: strategyActivationPayload,
+    advertisingRebateConfig: function (value) { return { advertising_rebate_percent: value == null || value === '' ? '0.00' : fixed(value) }; }
+  };
+  if (!root.document) return;
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
-})(window);
+})(typeof window === 'undefined' ? globalThis : window);
