@@ -1359,7 +1359,11 @@
     }
 
     async listProfitPlans(filters) {
-      return this.listAll('/profit-calculator/plans/' + queryString(filters, ['search', 'store', 'status']));
+      const source = filters || {};
+      return this.listAll('/profit-calculator/plans/' + queryString({
+        q: source.search, store: source.store,
+        archived: source.status === 'archived' ? 'true' : (source.status === 'all' ? 'all' : '')
+      }, ['q', 'store', 'archived']));
     }
 
     async getProfitPlan(id) { return this.request('/profit-calculator/plans/' + id + '/'); }
@@ -1369,7 +1373,7 @@
     }
     async prepareProfitPlanRecalculation(id, versionId) {
       return this.request('/profit-calculator/plans/' + id + '/recalculate/', {
-        method: 'POST', body: { version_id: versionId || null }
+        method: 'POST', body: { version: versionId || null }
       });
     }
 

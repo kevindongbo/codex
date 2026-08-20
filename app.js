@@ -2516,7 +2516,12 @@ function renderProfitPlans() {
     const version = plan.latest_version || {};
     const item = version.result_snapshot && version.result_snapshot.item || {};
     const value = function (key) { return item[key] == null ? '—' : escapeHtml(String(item[key])); };
-    return '<tr><td><strong>' + escapeHtml(plan.sku_code_snapshot || '—') + '</strong><br><small>' + escapeHtml(plan.sku_name_snapshot || '') + '</small></td><td>' + escapeHtml(plan.name || '默认方案') + '</td><td>' + value('sale_price_myr') + ' / ' + value('product_cost_cny') + '</td><td>' + value('affiliate_commission_percent') + '% / ' + value('advertising_rebate_percent') + '%</td><td>' + value('gross_profit') + '</td><td>' + value('advertising_cost') + '</td><td>' + value('net_profit') + '</td><td>' + value('true_roi') + ' / ' + value('true_cpa_usd') + '</td><td>v' + escapeHtml(String(version.version_number || 0)) + '<br><small>' + formatDate(version.created_at, true) + '</small></td><td><div class="row-actions"><button class="row-action" type="button" data-profit-plan-history="' + escapeHtml(plan.id) + '">历史</button><button class="row-action" type="button" data-profit-plan-recalculate="' + escapeHtml(plan.id) + '">重新计算</button></div></td></tr>';
+    const feeValue = function (key) { return !item.fees || item.fees[key] == null ? '—' : escapeHtml(String(item.fees[key])); };
+    const image = plan.image_url_snapshot ? '<img class="thumb" src="' + escapeHtml(plan.image_url_snapshot) + '" alt="" />' : '';
+    const store = (state.stores || []).find(function (row) { return String(row.apiStoreId || row.id) === String(plan.store || ''); });
+    const rate = version.exchange_rate_snapshot || {};
+    const lifecycle = plan.status === 'archived' ? '<button class="row-action" type="button" data-profit-plan-restore="' + escapeHtml(plan.id) + '">恢复</button>' : '<button class="row-action danger" type="button" data-profit-plan-archive="' + escapeHtml(plan.id) + '">归档</button>';
+    return '<tr><td><div class="product-cell">' + image + '<div><strong>' + escapeHtml(plan.sku_name_snapshot || '—') + '</strong><br><small>' + escapeHtml(plan.sku_code_snapshot || '—') + '</small></div></div></td><td>' + escapeHtml(store && store.name || '未关联店铺') + '<br><small>' + escapeHtml(plan.name || '默认方案') + '</small></td><td>' + value('revenue') + ' / ' + feeValue('product_cost') + '</td><td>' + value('affiliate_rate') + '% / ' + value('advertising_rebate_percent') + '%</td><td>' + value('gross_profit') + ' / ' + value('gross_margin') + '%</td><td>' + value('advertising_cost') + '</td><td>' + value('net_profit') + ' / ' + value('net_margin') + '%</td><td>' + value('true_roi') + ' / ' + value('true_cpa_usd') + '</td><td>v' + escapeHtml(String(version.version_number || 0)) + ' · ' + escapeHtml(version.rule_version || '—') + '<br><small>' + escapeHtml(rate.effective_date || rate.source || '—') + ' · ' + escapeHtml(version.created_by_name || plan.updated_by_name || '—') + ' · ' + formatDate(version.created_at, true) + '</small></td><td><div class="row-actions"><button class="row-action" type="button" data-profit-plan-history="' + escapeHtml(plan.id) + '">历史</button><button class="row-action" type="button" data-profit-plan-recalculate="' + escapeHtml(plan.id) + '">重新计算</button>' + lifecycle + '</div></td></tr>';
   }).join('');
   toggleEmpty('#profitPlansEmpty', !rows.length);
   if (profitView === 'plans' && !profitPlanState.loaded && TEAM_MODE && teamCapabilityAllowed('profit_record_view')) loadProfitPlans();
@@ -2544,11 +2549,42 @@ async function openCreatorDetail(id) {
       return teamGateway.request('/creators/' + creator.id + '/' + type + '/').catch(function () { return []; });
     }));
     const labels = ['合作', '寄样', '内容', '跟进', '归因'];
+    const collaborations = lists[0] || [];
+    $('#creatorActivityCollaboration').innerHTML = '<option value="">不关联 / 请先建立合作</option>' + collaborations.map(function (row) {
+      const label = CREATOR_STAGE_LABELS[row.stage] || row.stage || '合作';
+      return '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(label + (row.notes ? ' · ' + row.notes : '')) + '</option>';
+    }).join('');
+    $('#creatorActivityStore').innerHTML = '<option value="">不关联店铺</option>' + (state.stores || []).map(function (store) {
+      return '<option value="' + escapeHtml(store.apiStoreId || store.id) + '">' + escapeHtml(store.name || store.code || '未命名店铺') + '</option>';
+    }).join('');
+    $('#creatorActivitySku').innerHTML = '<option value="">不关联商品</option>' + (state.products || []).map(function (product) {
+      return '<option value="' + escapeHtml(product.skuId || product.id) + '">' + escapeHtml((product.sku || '—') + ' · ' + (product.name || '未命名商品')) + '</option>';
+    }).join('');
+    configureCreatorActivityForm();
     $('#creatorActivityRows').innerHTML = lists.flatMap(function (rows, index) {
-      return (rows || []).map(function (row) { return '<article class="transit-source-card"><strong>' + labels[index] + '</strong><p>' + escapeHtml(row.notes || row.note || row.status || row.stage || row.source || '已记录') + '</p><small>' + escapeHtml(formatDate(row.created_at, true)) + '</small></article>'; });
+      return (rows || []).map(function (row) {
+        const operator = row.recorded_by_name || row.created_by_name || '';
+        const meta = formatDate(row.created_at, true) + (operator ? ' · 操作人：' + operator : '');
+        return '<article class="transit-source-card"><strong>' + labels[index] + '</strong><p>' + escapeHtml(row.notes || row.note || row.status || row.stage || row.source || '已记录') + '</p><small>' + escapeHtml(meta) + '</small></article>';
+      });
     }).join('') || '<p class="last-value">暂无业务记录，可先新增合作或跟进。</p>';
     openModal('creatorDetailModal');
   } catch (error) { handleTeamError(error); }
+}
+
+function configureCreatorActivityForm() {
+  const type = $('#creatorActivityType') ? $('#creatorActivityType').value : 'collaboration';
+  const options = {
+    collaboration: [['pending', '待联系'], ['contacted', '已联系'], ['negotiating', '洽谈中'], ['sampling', '寄样中'], ['publishing', '待发布'], ['published', '已发布'], ['completed', '已完成'], ['paused', '暂停']],
+    sample: [['pending', '待发货'], ['shipped', '已发货'], ['received', '已签收'], ['exception', '异常']],
+    content: [['video', '视频'], ['live', '直播'], ['post', '图文'], ['other', '其他内容']],
+    followup: [['pending', '待跟进']],
+    attribution: [['unattributed', '未归因']]
+  };
+  const status = $('#creatorActivityStatus');
+  if (status) status.innerHTML = (options[type] || options.collaboration).map(function (option) {
+    return '<option value="' + option[0] + '">' + option[1] + '</option>';
+  }).join('');
 }
 
 async function openProfitPlanHistory(id) {
@@ -2560,19 +2596,21 @@ async function openProfitPlanHistory(id) {
     $('#profitPlanHistoryIntro').textContent = '历史版本为不可变快照；重新计算会按当前规则、当前汇率生成新版本。';
     $('#profitPlanVersionRows').innerHTML = versions.map(function (version) {
       const item = version.result_snapshot && version.result_snapshot.item || {};
-      return '<tr><td>v' + version.version_number + '</td><td>' + escapeHtml(version.rule_version || '—') + '<br><small>' + escapeHtml((version.exchange_rate_snapshot || {}).source || '—') + '</small></td><td>' + escapeHtml(String(item.advertising_rebate_percent == null ? '—' : item.advertising_rebate_percent)) + '%</td><td>' + escapeHtml(String(item.gross_profit == null ? '—' : item.gross_profit)) + ' / ' + escapeHtml(String(item.net_profit == null ? '—' : item.net_profit)) + '</td><td>' + escapeHtml(version.created_by_name || '—') + '<br><small>' + formatDate(version.created_at, true) + '</small></td><td><button class="row-action" type="button" data-profit-snapshot="' + escapeHtml(version.id) + '">查看快照</button></td></tr>';
+      return '<tr><td>v' + version.version_number + '</td><td>' + escapeHtml(version.rule_version || '—') + '<br><small>' + escapeHtml((version.exchange_rate_snapshot || {}).source || '—') + '</small></td><td>' + escapeHtml(String(item.advertising_rebate_percent == null ? '—' : item.advertising_rebate_percent)) + '%</td><td>' + escapeHtml(String(item.gross_profit == null ? '—' : item.gross_profit)) + ' / ' + escapeHtml(String(item.net_profit == null ? '—' : item.net_profit)) + '</td><td>' + escapeHtml(version.created_by_name || '—') + '<br><small>' + formatDate(version.created_at, true) + '</small></td><td><div class="row-actions"><button class="row-action" type="button" data-profit-snapshot="' + escapeHtml(version.id) + '">查看原结果</button><button class="row-action" type="button" data-profit-version-recalculate="' + escapeHtml(version.id) + '">按当前规则重算</button></div></td></tr>';
     }).join('');
     openModal('profitPlanHistoryModal');
   } catch (error) { handleTeamError(error); }
 }
 
-async function prepareProfitPlanRecalculation(id) {
+async function prepareProfitPlanRecalculation(id, versionId) {
   try {
-    const payload = await teamGateway.prepareProfitPlanRecalculation(id);
+    const payload = await teamGateway.prepareProfitPlanRecalculation(id, versionId);
     if (!payload || !payload.calculation) throw new Error('服务器没有返回可重新计算的原始输入。');
-    if (window.DongboProfitCalculator && typeof window.DongboProfitCalculator.loadCalculation === 'function') {
-      window.DongboProfitCalculator.loadCalculation(payload.calculation);
-    }
+    if (!window.DongboProfitCalculator || typeof window.DongboProfitCalculator.loadCalculation !== 'function') throw new Error('利润试算页面尚未初始化。');
+    window.DongboProfitCalculator.loadCalculation(payload.calculation, {
+      action: 'new_version', targetPlan: payload.target_plan,
+      sourceVersion: payload.source_version, sourceRuleVersion: payload.source_rule_version
+    });
     setRoute('profit', 'calculator');
     showToast('已带入历史输入；点击计算并保存会按当前规则和汇率生成新版本。');
   } catch (error) { handleTeamError(error); }
@@ -2583,17 +2621,38 @@ async function saveCreatorActivityFromForm(event) {
   const creatorId = $('#creatorActivityCreatorId').value;
   const type = $('#creatorActivityType').value;
   if (!creatorId) return showToast('请先打开达人详情。');
-  if (type !== 'collaboration') return showToast('请先为该达人建立合作记录，再在该合作下登记寄样、内容或归因。');
-  const stores = (state.stores || []).filter(function (store) { return store.name === $('#creatorActivityStore').value.trim(); });
-  const product = (state.products || []).find(function (item) { return item.sku === $('#creatorActivitySku').value.trim(); });
-  const payload = {
-    stage: $('#creatorActivityStatus').value.trim() || 'pending', store: stores[0] && (stores[0].apiStoreId || stores[0].id) || null,
-    sku: product && (product.skuId || product.id) || null,
+  const collaboration = $('#creatorActivityCollaboration').value || null;
+  const notes = $('#creatorActivityNotes').value.trim();
+  const occurredAt = $('#creatorActivityOccurredAt').value ? new Date($('#creatorActivityOccurredAt').value).toISOString() : null;
+  const plannedAt = $('#creatorActivityPlannedAt').value ? new Date($('#creatorActivityPlannedAt').value).toISOString() : null;
+  const common = {
+    stage: $('#creatorActivityStatus').value || 'pending', store: $('#creatorActivityStore').value || null,
+    sku: $('#creatorActivitySku').value || null,
     commission_percent: $('#creatorActivityCommission').value === '' ? null : Number($('#creatorActivityCommission').value),
     fixed_fee: $('#creatorActivityFixedFee').value === '' ? null : Number($('#creatorActivityFixedFee').value),
-    notes: $('#creatorActivityNotes').value.trim()
+    notes: notes
   };
-  try { await teamGateway.createCreatorActivity(creatorId, type, payload); await openCreatorDetail(creatorId); showToast('合作记录已保存。'); }
+  let payload;
+  if (type === 'collaboration') payload = common;
+  if (type === 'sample') {
+    if (!collaboration) return showToast('寄样记录必须选择一条合作。');
+    const sampleStatus = common.stage || 'pending';
+    payload = { collaboration: collaboration, sku: common.sku, quantity: Number($('#creatorActivityQuantity').value || 1), tracking_number: $('#creatorActivityTracking').value.trim(), status: sampleStatus, notes: notes };
+    if (occurredAt && sampleStatus === 'shipped') payload.shipped_at = occurredAt;
+    if (occurredAt && sampleStatus === 'received') payload.signed_at = occurredAt;
+  }
+  if (type === 'content') {
+    if (!collaboration) return showToast('内容记录必须选择一条合作。');
+    payload = { collaboration: collaboration, content_type: common.stage === 'pending' ? '' : common.stage, url: $('#creatorActivityUrl').value.trim(), planned_at: plannedAt, published_at: occurredAt, notes: notes };
+  }
+  if (type === 'followup') payload = { collaboration: collaboration, note: notes, next_reminder_at: plannedAt };
+  if (type === 'attribution') payload = {
+    collaboration: collaboration, store: common.store, source: $('#creatorActivitySource').value || 'unattributed',
+    order_count: Number($('#creatorActivityOrders').value || 0), units: Number($('#creatorActivityUnits').value || 0),
+    gmv: $('#creatorActivityGmv').value === '' ? null : Number($('#creatorActivityGmv').value),
+    attributed_on: occurredAt ? occurredAt.slice(0, 10) : null
+  };
+  try { await teamGateway.createCreatorActivity(creatorId, type, payload); await openCreatorDetail(creatorId); showToast('达人业务记录已保存。'); }
   catch (error) { handleTeamError(error); }
 }
 
@@ -5030,6 +5089,23 @@ function bindEvents() {
     if (planHistory) return openProfitPlanHistory(planHistory.dataset.profitPlanHistory);
     const planRecalculate = event.target.closest('[data-profit-plan-recalculate]');
     if (planRecalculate) return prepareProfitPlanRecalculation(planRecalculate.dataset.profitPlanRecalculate);
+    const versionRecalculate = event.target.closest('[data-profit-version-recalculate]');
+    if (versionRecalculate && profitPlanState.active) return prepareProfitPlanRecalculation(profitPlanState.active.id, versionRecalculate.dataset.profitVersionRecalculate);
+    const snapshotButton = event.target.closest('[data-profit-snapshot]');
+    if (snapshotButton) {
+      const version = (profitPlanState.versions || []).find(function (row) { return String(row.id) === String(snapshotButton.dataset.profitSnapshot); });
+      if (!version) return showToast('历史版本快照不存在。');
+      $('#profitPlanSnapshot').hidden = false;
+      $('#profitPlanSnapshot').textContent = JSON.stringify({ input: version.input_snapshot, exchange_rate: version.exchange_rate_snapshot, rule_version: version.rule_version, result: version.result_snapshot }, null, 2);
+      return;
+    }
+    const planArchive = event.target.closest('[data-profit-plan-archive]');
+    if (planArchive) return askConfirm('确认归档该利润方案？历史版本会保留。', async function () {
+      await teamGateway.setProfitPlanArchived(planArchive.dataset.profitPlanArchive, true);
+      profitPlanState.loaded = false; await loadProfitPlans();
+    });
+    const planRestore = event.target.closest('[data-profit-plan-restore]');
+    if (planRestore) return teamGateway.setProfitPlanArchived(planRestore.dataset.profitPlanRestore, false).then(function () { profitPlanState.loaded = false; return loadProfitPlans(); }).catch(handleTeamError);
     const close = event.target.closest('[data-close]');
     if (close) return closeModal(close.dataset.close);
     const removePurchase = event.target.closest('[data-remove-purchase-line]');
@@ -5066,6 +5142,7 @@ function bindEvents() {
   if ($('#openCreatorModal')) $('#openCreatorModal').addEventListener('click', function () { openCreatorEditor(''); });
   if ($('#creatorForm')) $('#creatorForm').addEventListener('submit', saveCreatorFromForm);
   if ($('#creatorActivityForm')) $('#creatorActivityForm').addEventListener('submit', saveCreatorActivityFromForm);
+  if ($('#creatorActivityType')) $('#creatorActivityType').addEventListener('change', configureCreatorActivityForm);
   if ($('#refreshCreators')) $('#refreshCreators').addEventListener('click', loadCreators);
   if ($('#creatorSearch')) $('#creatorSearch').addEventListener('change', loadCreators);
   if ($('#creatorStageFilter')) $('#creatorStageFilter').addEventListener('change', loadCreators);

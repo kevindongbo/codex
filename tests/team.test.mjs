@@ -590,15 +590,18 @@ test('analytics, creator CRM, profit plans and final transfer exception use audi
   await gateway.listCreators({ stage: 'pending' });
   await gateway.createCreatorActivity('creator-1', 'collaboration', { stage: 'pending' });
   await gateway.listProfitPlans({ status: 'active' });
+  await gateway.prepareProfitPlanRecalculation('plan-1', 'version-2');
   await gateway.completeTransferWithException({ id: 'transfer-1' }, '货损');
   assert.match(calls[0].url, /analytics\/overview\/\?days=7.*store=store-1/);
   assert.equal(calls[1].url, '/api/replenishment/demand-detail/?sku=sku-1&days=7');
   assert.equal(calls[2].url, '/api/creators/?stage=pending');
   assert.equal(calls[3].url, '/api/creators/creator-1/collaborations/');
-  assert.equal(calls[4].url, '/api/profit-calculator/plans/?status=active');
-  assert.equal(calls[5].url, '/api/stock-transfers/transfer-1/complete-with-exception/');
-  assert.equal(JSON.parse(calls[5].options.body).reason, '货损');
-  assert.match(JSON.parse(calls[5].options.body).idempotency_key, /^transfer-complete-with-exception:/);
+  assert.equal(calls[4].url, '/api/profit-calculator/plans/');
+  assert.equal(calls[5].url, '/api/profit-calculator/plans/plan-1/recalculate/');
+  assert.deepEqual(JSON.parse(calls[5].options.body), { version: 'version-2' });
+  assert.equal(calls[6].url, '/api/stock-transfers/transfer-1/complete-with-exception/');
+  assert.equal(JSON.parse(calls[6].options.body).reason, '货损');
+  assert.match(JSON.parse(calls[6].options.body).idempotency_key, /^transfer-complete-with-exception:/);
 });
 
 test('an account outside the internal organization cannot enter onboarding', async () => {

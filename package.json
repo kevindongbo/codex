@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build-site.mjs",
-    "test": "npm run build && node --test tests/*.test.mjs"
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "test:browser": "node tests/browser/replenishment-sticky.test.mjs && node tests/browser/profit-workflow.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
   }
 }

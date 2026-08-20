@@ -30,6 +30,7 @@
   let workingConfigRevision = null;
   let workingConfigRetryMode = 'load';
   let workingConfigSaveFailed = false;
+  let profitPlanSaveContext = null;
   const manualCommissionByRow = new Map();
 
   function el(id) { return document.getElementById(id); }
@@ -768,7 +769,37 @@
     }
   }
 
-  async function saveToProfitPlans() {
+  function loadCalculation(calculation, saveContext) {
+    const source = calculation || {};
+    const assign = function (id, value) { if (el(id) && value !== undefined && value !== null) el(id).value = value; };
+    assign('profitCountry', source.country);
+    assign('profitSellerType', source.seller_type);
+    assign('profitShopIdentity', source.shop_identity);
+    assign('profitCommissionAdjustment', source.commission_adjustment);
+    assign('profitTransactionFeeAdjustment', source.transaction_fee_adjustment);
+    assign('profitAdvertisingRebatePercent', source.advertising_rebate_percent);
+    if (el('profitBxp')) el('profitBxp').checked = Boolean(source.bxp);
+    if (el('profitBuyerPaysShipping')) el('profitBuyerPaysShipping').checked = Boolean(source.buyer_pays_shipping);
+    buyerShippingRegion = source.buyer_shipping_region || 'west_malaysia';
+    el('profitSkuRows').innerHTML = '';
+    manualCommissionByRow.clear();
+    (source.items || []).forEach(function (item) {
+      addRow(item);
+      const row = el('profitSkuRows').lastElementChild;
+      const type = row.querySelector('[data-profit-field="ad_cost_type"]');
+      const value = row.querySelector('[data-profit-field="ad_cost_value"]');
+      type.value = item.ad_cost_type || 'none';
+      value.disabled = type.value === 'none';
+    });
+    if (!el('profitSkuRows').children.length) addRow();
+    profitPlanSaveContext = saveContext || null;
+    el('profitSaveToPlans').textContent = profitPlanSaveContext ? '保存新版本' : '保存到商品利润表';
+    el('profitSaveAsPlan').hidden = !profitPlanSaveContext;
+    el('profitResultPanel').hidden = true;
+    updateBuyerShippingUi();
+  }
+
+  async function saveToProfitPlans(forceNewPlan) {
     const panel = el('profitResultPanel');
     if (!panel || panel.hidden || !panel.dataset.lastResult) return setStatus('请先完成利润计算，再保存到商品利润表。', true);
     const rows = Array.from(document.querySelectorAll('[data-profit-row]'));
@@ -782,11 +813,14 @@
         transaction_fee_adjustment: el('profitTransactionFeeAdjustment').value || '0',
         advertising_rebate_percent: globalRebateValue(), buyer_pays_shipping: el('profitBuyerPaysShipping').checked,
         buyer_shipping_region: el('profitBuyerPaysShipping').checked ? buyerShippingRegion : 'west_malaysia',
+        cny_per_myr: el('profitExchangeRate').value, usd_per_myr: el('profitUsdRate').value,
         items: rows.map(function (row) {
           const item = collectRow(row);
           item.sku_code = item.sku_name;
           item.plan_name = item.sku_name + ' · 利润方案';
-          item.action = 'new_plan';
+          const updateExisting = !forceNewPlan && profitPlanSaveContext && rows.length === 1;
+          item.action = updateExisting ? 'new_version' : 'new_plan';
+          if (updateExisting) item.target_plan = profitPlanSaveContext.targetPlan;
           return item;
         }),
         idempotency_key: 'profit-save-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
@@ -794,6 +828,7 @@
       const result = await request('/profit-calculator/plans/', { method: 'POST', body: payload });
       setStatus('已保存 ' + ((result.plans || []).length || rows.length) + ' 个商品利润方案；以后可在“利润方案”查看并按当前规则重新计算。');
       root.dispatchEvent(new CustomEvent('dongbo-profit-plans-saved'));
+      if (!forceNewPlan && profitPlanSaveContext) profitPlanSaveContext = Object.assign({}, profitPlanSaveContext, { sourceVersion: (result.plans && result.plans[0] && result.plans[0].version_id) || profitPlanSaveContext.sourceVersion });
     } catch (error) {
       const detail = error && error.data ? JSON.stringify(error.data) : (error.message || '保存失败');
       setStatus('保存失败：' + detail, true);
@@ -806,7 +841,8 @@
     ensureAdvertisingRebateUi();
     addRow();
     form.addEventListener('submit', function (event) { event.preventDefault(); calculate(true); });
-    el('profitSaveToPlans').addEventListener('click', saveToProfitPlans);
+    el('profitSaveToPlans').addEventListener('click', function () { saveToProfitPlans(false); });
+    el('profitSaveAsPlan').addEventListener('click', function () { saveToProfitPlans(true); });
     el('profitAddSku').addEventListener('click', function () { addRow({ product_cost_cny: '0.00', item_price: '0.00', affiliate_rate: '0.00' }); });
     el('profitBasisToggle').addEventListener('click', function () {
       const table = el('profitBreakdownTable');
@@ -931,6 +967,7 @@
     strategyActivationPayload: strategyActivationPayload,
     advertisingRebateConfig: function (value) { return { advertising_rebate_percent: value == null || value === '' ? '0.00' : fixed(value) }; }
   };
+  root.DongboProfitCalculator = { loadCalculation: loadCalculation };
   if (!root.document) return;
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })(typeof window === 'undefined' ? globalThis : window);

@@ -1350,6 +1350,7 @@ class CreatorFollowUp(OrganizationScopedModel):
 
 class CreatorAttribution(OrganizationScopedModel):
     class Source(models.TextChoices):
+        UNATTRIBUTED = "unattributed", "未归因"
         MANUAL = "manual", "手工录入"
         AUTHORIZED = "authorized", "平台正式授权"
 

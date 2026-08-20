@@ -1149,6 +1149,7 @@ class AnalyticsSkusView(AnalyticsBaseView):
             payload = skus_payload(
                 organization=organization, warehouse_ids=warehouse_ids,
                 store_id=request.query_params.get("store"),
+                sku_id=request.query_params.get("sku"),
                 query=request.query_params.get("search") or request.query_params.get("q", ""),
                 limit=min(500, max(1, int(request.query_params.get("limit", "200")))),
                 **self.period_args(request),
@@ -2591,6 +2592,17 @@ class CreatorProfileViewSet(CreatorAccessMixin, OrganizationScopedViewSet):
         queryset = self.queryset.filter(organization=self.get_organization())
         if self.request.query_params.get("archived") not in {"1", "true"}:
             queryset = queryset.filter(is_archived=False)
+        stage = self.request.query_params.get("stage")
+        if stage:
+            queryset = queryset.filter(cooperation_status=stage)
+        search = (self.request.query_params.get("search") or self.request.query_params.get("q") or "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(display_name__icontains=search)
+                | Q(account_name__icontains=search)
+                | Q(platform__icontains=search)
+                | Q(country__icontains=search)
+            )
         return queryset
 
     def destroy(self, request, *args, **kwargs):
@@ -2739,7 +2751,9 @@ class ProfitPlanViewSet(OrganizationScopedViewSet):
     def get_queryset(self):
         queryset = self.queryset.filter(organization=self.get_organization())
         archived = self.request.query_params.get("archived")
-        if archived not in {"1", "true", "all"}:
+        if archived in {"1", "true"}:
+            queryset = queryset.filter(status=ProfitPlan.Status.ARCHIVED)
+        elif archived != "all":
             queryset = queryset.filter(status=ProfitPlan.Status.ACTIVE)
         if self.request.query_params.get("sku"):
             queryset = queryset.filter(sku_id=self.request.query_params["sku"])
@@ -2800,6 +2814,13 @@ class ProfitPlanViewSet(OrganizationScopedViewSet):
 
     @action(detail=True, methods=["post"])
     def recalculate(self, request, pk=None):
+        """Return a historical business-input snapshot for the calculator.
+
+        This action deliberately does not calculate or persist anything.  The
+        browser loads the old business inputs, the normal calculate endpoint
+        applies today's authoritative rules, and a later explicit save creates
+        the next immutable version.
+        """
         plan = self.get_object()
         self.require_plan_edit(plan)
         data = ProfitRecalculateInputSerializer(data=request.data)
@@ -2807,22 +2828,23 @@ class ProfitPlanViewSet(OrganizationScopedViewSet):
         version = data.validated_data.get("version") or plan.versions.order_by("-version_number").first()
         if version is None or version.plan_id != plan.pk:
             raise ValidationError("历史版本不存在或不属于当前方案")
-        snapshot = version.input_snapshot
-        calculation = dict(snapshot["calculation"])
-        item = dict(calculation["items"][snapshot["item_index"]])
-        metadata = dict(snapshot.get("metadata") or {})
-        item.update(metadata)
-        item["action"] = "new_version"
-        item["target_plan"] = str(plan.pk)
-        payload = {**calculation, "items": [item], "idempotency_key": data.validated_data["idempotency_key"]}
-        serializer = ProfitBatchSaveInputSerializer(data=payload, context=self.get_serializer_context())
-        serializer.is_valid(raise_exception=True)
-        result, _batch = _service_call(
-            save_profit_batch, organization=plan.organization,
-            validated_data=serializer.validated_data, actor=request.user,
-            can_edit_all=self.can_edit_all(),
-        )
-        return Response(result)
+        snapshot = version.input_snapshot or {}
+        calculation = dict(snapshot.get("calculation") or {})
+        items = list(calculation.get("items") or [])
+        item_index = int(snapshot.get("item_index", -1))
+        if item_index < 0 or item_index >= len(items):
+            raise ValidationError("历史版本输入快照不完整")
+        item = dict(items[item_index])
+        item.update(dict(snapshot.get("metadata") or {}))
+        calculation["items"] = [item]
+        return Response({
+            "calculation": calculation,
+            "target_plan": str(plan.pk),
+            "source_version": str(version.pk),
+            "source_version_number": version.version_number,
+            "source_rule_version": version.rule_version,
+            "source_exchange_rate": version.exchange_rate_snapshot,
+        })
 
     def destroy(self, request, *args, **kwargs):
         return self.archive(request, pk=kwargs.get("pk"))

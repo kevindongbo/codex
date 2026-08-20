@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import timedelta
 from dataclasses import replace
 from pathlib import Path
 import shutil
@@ -730,11 +731,13 @@ class ProfitCalculatorApiTests(TestCase):
 
     @patch("apps.erp.exchange_rates.urlopen", side_effect=[
         TimeoutError("primary timeout"), TimeoutError("primary timeout"),
-        FakePayloadResponse(b'{"date":"2026-08-03","rates":{"CNY":1.690000,"USD":0.236000}}'),
+        FakePayloadResponse(
+            ('{"date":"%s","rates":{"CNY":1.690000,"USD":0.236000}}' % timezone.localdate()).encode("utf-8")
+        ),
     ])
     def test_exchange_rates_switch_to_backup_source_and_persist_failure_summary(self, mocked_urlopen):
         ExchangeRateSnapshot.objects.create(
-            organization=self.organization, effective_date="2026-08-02", fetched_at=timezone.now(),
+            organization=self.organization, effective_date=timezone.localdate() - timedelta(days=1), fetched_at=timezone.now(),
             myr_cny="1.680000", myr_usd="0.235000", source="European Central Bank",
             source_url="https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
             validation_status="valid", is_current=True,

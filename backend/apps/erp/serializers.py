@@ -957,6 +957,7 @@ class CreatorFollowUpSerializer(CreatorRelatedSerializerMixin, ScopedSerializer)
 
 
 class CreatorAttributionSerializer(CreatorRelatedSerializerMixin, ScopedSerializer):
+    recorded_by_name = serializers.CharField(source="recorded_by.username", read_only=True, default=None)
     relation_fields = ("creator", "collaboration", "store")
 
     class Meta(ScopedSerializer.Meta):
@@ -1028,7 +1029,6 @@ class ProfitPlanSerializer(ScopedSerializer):
 
 class ProfitRecalculateInputSerializer(serializers.Serializer):
     version = serializers.PrimaryKeyRelatedField(queryset=ProfitPlanVersion.objects.all(), required=False, allow_null=True)
-    idempotency_key = serializers.CharField(max_length=120)
 
 
 class StockTransferPackageLineInputSerializer(OrganizationValidationMixin, serializers.Serializer):

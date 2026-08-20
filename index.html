@@ -6,21 +6,21 @@
   <meta name="theme-color" content="#163b4f" />
   <link rel="icon" type="image/png" href="assets/dongbo-erp-mark.png" />
   <link rel="apple-touch-icon" href="assets/dongbo-erp-mark.png" />
-  <meta name="description" content="东铂跨境：商品、采购、仓储、订单与竞品监控一体化运营工作台。" />
+  <meta name="description" content="东铂跨境：商品、采购、仓储、订单、数据分析与达人协作一体化运营工作台。" />
   <meta property="og:type" content="website" />
   <meta property="og:locale" content="zh_CN" />
   <meta property="og:site_name" content="东铂跨境" />
   <meta property="og:title" content="东铂跨境 · 跨境电商运营管理系统" />
-  <meta property="og:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
+  <meta property="og:description" content="商品、多仓库存、智能补货、订单履约与数据分析一体化运营工作台。" />
   <meta property="og:url" content="https://dongbokeji.com/" />
   <meta property="og:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <meta property="og:image:alt" content="东铂跨境运营工作台" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="东铂跨境 · 跨境电商运营管理系统" />
-  <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
+  <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与数据分析一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260813-inventory-order-workflow-1" />
+  <link rel="stylesheet" href="styles.css?v=20260821-data-profit-creator-workflow-2" />
 </head>
 <body>
   <header class="app-header">
@@ -567,7 +567,7 @@
       </form>
 
       <section class="profit-results" id="profitResultPanel" hidden>
-        <div class="profit-results-toolbar"><span>保存时后端会按权威规则重新计算，不信任浏览器金额。</span><button class="button primary" id="profitSaveToPlans" type="button">保存到商品利润表</button></div>
+        <div class="profit-results-toolbar"><span>保存时后端会按权威规则重新计算，不信任浏览器金额。</span><div class="inline-actions"><button class="button secondary" id="profitSaveAsPlan" type="button" hidden>另存为方案</button><button class="button primary" id="profitSaveToPlans" type="button">保存到商品利润表</button></div></div>
         <div class="summary-strip profit-summary">
           <article><div><span id="profitPrimaryLabel">广告前毛利</span><strong id="profitNet">RM 0.00</strong><small id="profitNetCny">≈ CNY 0.00</small></div><i class="profit-metric-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a3 3 0 0 1-3-3v-10a3 3 0 0 1 3-3h11v4"></path><path d="M15 12h5M17.5 14.5V9.5"></path></svg></i></article>
           <article><div><span id="profitMarginLabel">毛利率</span><strong id="profitMargin">0.00%</strong><small id="profitMarginHint">广告前毛利 ÷ 结算收入</small></div><i class="profit-metric-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9h-9V3Z"></path><path d="M15 3.5A9 9 0 0 1 20.5 9H15V3.5Z"></path></svg></i></article>
@@ -1196,17 +1196,18 @@
         <div class="form-section-title"><strong>新增业务记录</strong><span>归因只接受手工录入或正式授权平台数据，不能按销量变化自动推断。</span></div>
         <div class="form-grid three">
           <label>记录类型<select id="creatorActivityType"><option value="collaboration">合作</option><option value="sample">寄样 / 物流</option><option value="content">内容 / 发布</option><option value="followup">跟进 / 提醒</option><option value="attribution">业绩归因</option></select></label>
-          <label>状态 / 阶段<input id="creatorActivityStatus" maxlength="80" /></label>
-          <label>关联店铺<input id="creatorActivityStore" maxlength="160" /></label>
-          <label>关联商品 / SKU<input id="creatorActivitySku" maxlength="200" /></label>
+          <label>关联合作<select id="creatorActivityCollaboration"><option value="">不关联 / 请先建立合作</option></select></label>
+          <label>状态 / 阶段<select id="creatorActivityStatus"></select></label>
+          <label>关联店铺<select id="creatorActivityStore"><option value="">不关联店铺</option></select></label>
+          <label>关联商品 / SKU<select id="creatorActivitySku"><option value="">不关联商品</option></select></label>
           <label>佣金比例（%）<input id="creatorActivityCommission" type="number" min="0" max="100" step="0.01" /></label>
           <label>固定费用<input id="creatorActivityFixedFee" type="number" min="0" step="0.01" /></label>
-          <label>寄样数量<input id="creatorActivityQuantity" type="number" min="0" step="1" /></label>
+          <label>寄样数量<input id="creatorActivityQuantity" type="number" min="1" step="1" /></label>
           <label>物流单号<input id="creatorActivityTracking" maxlength="160" /></label>
           <label>视频 / 直播链接<input id="creatorActivityUrl" type="url" /></label>
           <label>计划发布 / 下次提醒<input id="creatorActivityPlannedAt" type="datetime-local" /></label>
           <label>实际发布 / 签收时间<input id="creatorActivityOccurredAt" type="datetime-local" /></label>
-          <label>归因来源<select id="creatorActivitySource"><option value="">未归因</option><option value="manual">用户手工录入</option><option value="authorized_platform">正式授权平台</option></select></label>
+          <label>归因来源<select id="creatorActivitySource"><option value="unattributed">未归因</option><option value="manual">用户手工录入</option><option value="authorized">正式授权平台</option></select></label>
           <label>归因订单数<input id="creatorActivityOrders" type="number" min="0" step="1" /></label>
           <label>归因成交件数<input id="creatorActivityUnits" type="number" min="0" step="1" /></label>
           <label>归因 GMV<input id="creatorActivityGmv" type="number" min="0" step="0.01" /></label>
@@ -1340,8 +1341,8 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js?v=20260728-profit-calculator-server-1"></script>
-  <script src="team.js?v=20260813-inventory-order-workflow-1"></script>
-  <script src="profit-calculator.js?v=20260812-erp-ui-workflow-fix-1"></script>
-  <script src="app.js?v=20260813-inventory-order-workflow-1"></script>
+  <script src="team.js?v=20260821-data-profit-creator-workflow-2"></script>
+  <script src="profit-calculator.js?v=20260821-data-profit-creator-workflow-2"></script>
+  <script src="app.js?v=20260821-data-profit-creator-workflow-2"></script>
 </body>
 </html>

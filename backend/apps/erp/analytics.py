@@ -354,9 +354,13 @@ def stores_payload(*, organization, warehouse_ids, start=None, end=None, days=30
     }
 
 
-def skus_payload(*, organization, warehouse_ids, start=None, end=None, days=30, now=None, query="", limit=200, store_id=None):
+def skus_payload(*, organization, warehouse_ids, start=None, end=None, days=30, now=None, query="", limit=200, store_id=None, sku_id=None):
     window = report_window(start=start, end=end, days=days, now=now)
     skus = SKU.objects.filter(organization=organization).select_related("product")
+    if sku_id:
+        skus = skus.filter(pk=sku_id)
+        if not skus.exists():
+            raise ValueError("SKU 不存在或不属于当前组织")
     if query:
         from django.db.models import Q
         skus = skus.filter(Q(code__icontains=query) | Q(product__name__icontains=query))
