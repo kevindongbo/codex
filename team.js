@@ -15,6 +15,11 @@
     competitor: 'catalog',
     selection: 'catalog',
     replenishment: 'replenishment',
+    analytics: 'analytics_view',
+    creator_view: 'creator_view',
+    creator_edit: 'creator_edit',
+    profit_records: 'profit_record_view',
+    profit_record_edit: 'profit_record_edit',
     profit_rules: 'profit_rules',
     migration: 'data'
   };
@@ -77,6 +82,15 @@
   function pageItems(payload) {
     if (Array.isArray(payload)) return payload;
     return payload && Array.isArray(payload.results) ? payload.results : [];
+  }
+
+  function queryString(source, keys) {
+    const params = [];
+    const values = source || {};
+    keys.forEach(function (key) {
+      if (values[key] !== '' && values[key] != null) params.push(encodeURIComponent(key) + '=' + encodeURIComponent(values[key]));
+    });
+    return params.length ? '?' + params.join('&') : '';
   }
 
   class TeamGateway {
@@ -1096,6 +1110,22 @@
       });
     }
 
+    async completeTransferWithException(transfer, reason) {
+      const normalizedReason = String(reason || '').trim();
+      if (!normalizedReason) throw new ApiError('请填写结束调拨的异常原因。', 400, null);
+      const key = this.idempotencyKey('transfer-complete-with-exception', transfer.id + ':' + normalizedReason);
+      try {
+        const result = await this.request('/stock-transfers/' + transfer.id + '/complete-with-exception/', {
+          method: 'POST', body: { reason: normalizedReason, idempotency_key: key.value }
+        });
+        this.completeIdempotency(key);
+        return result;
+      } catch (error) {
+        this.completeIdempotency(key, error);
+        throw error;
+      }
+    }
+
     async cancelTransfer(transfer) {
       return this.request('/stock-transfers/' + transfer.id + '/cancel/', { method: 'POST', body: {} });
     }
@@ -1272,6 +1302,79 @@
 
     async loadReplenishmentRecommendations() {
       return this.listAll('/replenishment/recommendations/?warehouse=' + encodeURIComponent(this.warehouseId));
+    }
+
+    async getReplenishmentDemandDetail(product, days) {
+      const skuId = product && (product.skuId || product.sku_id || product.sku);
+      if (!skuId) throw new ApiError('该商品没有可查询的 SKU。', 400, null);
+      return this.request('/replenishment/demand-detail/?sku=' + encodeURIComponent(skuId) + '&days=' + encodeURIComponent(days || 7));
+    }
+
+    analyticsQuery(filters) {
+      const source = filters || {};
+      return queryString({
+        days: source.days, start: source.date_from, end: source.date_to,
+        store: source.store, warehouse: source.warehouse, sku: source.sku, q: source.search
+      }, ['days', 'start', 'end', 'store', 'warehouse', 'sku', 'q']);
+    }
+
+    async getAnalyticsOverview(filters) {
+      return this.request('/analytics/overview/' + this.analyticsQuery(filters));
+    }
+
+    async getAnalyticsStores(filters) {
+      return this.request('/analytics/stores/' + this.analyticsQuery(filters));
+    }
+
+    async getAnalyticsSkus(filters) {
+      return this.request('/analytics/skus/' + this.analyticsQuery(filters));
+    }
+
+    async listCreators(filters) {
+      return this.listAll('/creators/' + queryString(filters, ['search', 'stage', 'archived']));
+    }
+
+    async getCreator(id) { return this.request('/creators/' + id + '/'); }
+
+    async saveCreator(payload, id) {
+      return this.request(id ? '/creators/' + id + '/' : '/creators/', {
+        method: id ? 'PATCH' : 'POST', body: payload
+      });
+    }
+
+    async setCreatorArchived(id, archived) {
+      return this.request('/creators/' + id + '/' + (archived ? 'archive' : 'restore') + '/', { method: 'POST', body: {} });
+    }
+
+    async deleteCreator(id) { return this.request('/creators/' + id + '/', { method: 'DELETE' }); }
+
+    async createCreatorActivity(creatorId, type, payload) {
+      const paths = {
+        collaboration: 'collaborations', sample: 'samples', content: 'contents',
+        followup: 'followups', attribution: 'attributions'
+      };
+      const segment = paths[type];
+      if (!segment) throw new ApiError('不支持的达人业务记录类型。', 400, null);
+      return this.request('/creators/' + creatorId + '/' + segment + '/', { method: 'POST', body: payload });
+    }
+
+    async listProfitPlans(filters) {
+      const source = filters || {};
+      return this.listAll('/profit-calculator/plans/' + queryString({
+        q: source.search, store: source.store,
+        archived: source.status === 'archived' ? 'true' : (source.status === 'all' ? 'all' : '')
+      }, ['q', 'store', 'archived']));
+    }
+
+    async getProfitPlan(id) { return this.request('/profit-calculator/plans/' + id + '/'); }
+    async listProfitPlanVersions(id) { return this.listAll('/profit-calculator/plans/' + id + '/versions/'); }
+    async setProfitPlanArchived(id, archived) {
+      return this.request('/profit-calculator/plans/' + id + '/' + (archived ? 'archive' : 'restore') + '/', { method: 'POST', body: {} });
+    }
+    async prepareProfitPlanRecalculation(id, versionId) {
+      return this.request('/profit-calculator/plans/' + id + '/recalculate/', {
+        method: 'POST', body: { version: versionId || null }
+      });
     }
 
     async recomputeReplenishment(skuIds) {

@@ -15,12 +15,13 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
   assert.match(html, /东铂跨境/);
   assert.match(html, /商品中心/);
   assert.match(html, /仓配中心/);
-  assert.match(html, /竞品监控/);
+  assert.match(html, /数据分析/);
+  assert.match(html, /竞品分析/);
   assert.match(html, /智能选品/);
   assert.doesNotMatch(html, />\s*总览\s*</);
   assert.match(html, /data-module="products"/);
   assert.match(html, /data-module="warehouse"/);
-  assert.match(html, /data-module="competitors"/);
+  assert.match(html, /data-module="analytics"/);
   assert.match(html, /data-module="selection"/);
   assert.match(html, /property="og:title" content="东铂跨境 · 跨境电商运营管理系统"/);
   assert.match(html, /账号与权限/);
@@ -36,10 +37,10 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260813-inventory-order-workflow-1/);
-  assert.match(html, /team\.js\?v=20260813-inventory-order-workflow-1/);
-  assert.match(html, /profit-calculator\.js\?v=20260812-erp-ui-workflow-fix-1/);
-  assert.match(html, /app\.js\?v=20260813-inventory-order-workflow-1/);
+  assert.match(html, /styles\.css\?v=20260821-data-profit-creator-workflow-2/);
+  assert.match(html, /team\.js\?v=20260821-data-profit-creator-workflow-2/);
+  assert.match(html, /profit-calculator\.js\?v=20260821-data-profit-creator-workflow-2/);
+  assert.match(html, /app\.js\?v=20260821-data-profit-creator-workflow-2/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });

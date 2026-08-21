@@ -6,21 +6,21 @@
   <meta name="theme-color" content="#163b4f" />
   <link rel="icon" type="image/png" href="assets/dongbo-erp-mark.png" />
   <link rel="apple-touch-icon" href="assets/dongbo-erp-mark.png" />
-  <meta name="description" content="东铂跨境：商品、采购、仓储、订单与竞品监控一体化运营工作台。" />
+  <meta name="description" content="东铂跨境：商品、采购、仓储、订单、数据分析与达人协作一体化运营工作台。" />
   <meta property="og:type" content="website" />
   <meta property="og:locale" content="zh_CN" />
   <meta property="og:site_name" content="东铂跨境" />
   <meta property="og:title" content="东铂跨境 · 跨境电商运营管理系统" />
-  <meta property="og:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
+  <meta property="og:description" content="商品、多仓库存、智能补货、订单履约与数据分析一体化运营工作台。" />
   <meta property="og:url" content="https://dongbokeji.com/" />
   <meta property="og:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <meta property="og:image:alt" content="东铂跨境运营工作台" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="东铂跨境 · 跨境电商运营管理系统" />
-  <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与竞品监控一体化运营工作台。" />
+  <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与数据分析一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20260813-inventory-order-workflow-1" />
+  <link rel="stylesheet" href="styles.css?v=20260821-data-profit-creator-workflow-2" />
 </head>
 <body>
   <header class="app-header">
@@ -32,7 +32,8 @@
     <nav class="primary-nav" aria-label="主导航">
       <button class="primary-nav-item active" data-module="products"><span>商品中心</span><b id="navProductCount">0</b></button>
       <button class="primary-nav-item" data-module="warehouse"><span>仓配中心</span><b id="navWarehouseCount">0</b></button>
-      <button class="primary-nav-item" data-module="competitors"><span>竞品监控</span><b id="navAlertCount">0</b></button>
+      <button class="primary-nav-item" data-module="analytics"><span>数据分析</span><b id="navAlertCount">0</b></button>
+      <button class="primary-nav-item" data-module="creators"><span>达人管家</span></button>
       <button class="primary-nav-item" data-module="profit"><span>利润试算</span></button>
       <button class="primary-nav-item" data-module="selection"><span>智能选品</span><b>AI</b></button>
     </nav>
@@ -106,18 +107,33 @@
         </nav>
       </section>
 
-      <section class="sidebar-module" data-sidebar-module="competitors">
-        <div class="sidebar-heading"><span>竞品监控</span><small>竞品数据分析</small></div>
-        <nav class="sidebar-nav" aria-label="竞品监控功能">
+      <section class="sidebar-module" data-sidebar-module="analytics">
+        <div class="sidebar-heading"><span>数据分析</span><small>ERP 真实经营数据</small></div>
+        <nav class="sidebar-nav" aria-label="数据分析功能">
           <div class="sidebar-group">
-            <p>竞品管理</p>
-            <button class="side-link active" type="button" data-side-link data-competitor-view="products" data-competitor-tab="products"><span class="side-icon">◎</span><span>竞品商品</span></button>
-            <button class="side-link" type="button" data-side-link data-competitor-view="snapshots" data-competitor-tab="snapshots"><span class="side-icon">◴</span><span>销量记录</span></button>
+            <p>经营分析</p>
+            <button class="side-link active" type="button" data-side-link data-competitor-view="overview" data-competitor-tab="overview"><span class="side-icon">▦</span><span>经营总览</span></button>
+            <button class="side-link" type="button" data-side-link data-competitor-view="stores" data-competitor-tab="stores"><span class="side-icon">▣</span><span>店铺分析</span></button>
+            <button class="side-link" type="button" data-side-link data-competitor-view="skus" data-competitor-tab="skus"><span class="side-icon">◇</span><span>商品 / SKU 分析</span></button>
           </div>
           <div class="sidebar-group">
-            <p>分析洞察</p>
+            <p>竞品分析</p>
+            <button class="side-link" type="button" data-side-link data-competitor-view="products" data-competitor-tab="products"><span class="side-icon">◎</span><span>竞品商品</span></button>
+            <button class="side-link" type="button" data-side-link data-competitor-view="snapshots" data-competitor-tab="snapshots"><span class="side-icon">◴</span><span>销量记录</span></button>
             <button class="side-link" type="button" data-side-link data-competitor-view="trends" data-competitor-tab="trends"><span class="side-icon">↗</span><span>趋势对比</span></button>
             <button class="side-link" type="button" data-side-link data-competitor-view="alerts" data-competitor-tab="alerts"><span class="side-icon">!</span><span>变化提醒</span><b id="competitorAlertCount">0</b></button>
+          </div>
+        </nav>
+      </section>
+
+      <section class="sidebar-module" data-sidebar-module="creators">
+        <div class="sidebar-heading"><span>达人管家</span><small>内部达人 CRM</small></div>
+        <nav class="sidebar-nav" aria-label="达人管家功能">
+          <div class="sidebar-group">
+            <p>达人协作</p>
+            <button class="side-link active" type="button" data-side-link data-creator-view="list"><span class="side-icon">♙</span><span>达人档案</span></button>
+            <button class="side-link" type="button" data-side-link data-creator-stage="sample"><span class="side-icon">◫</span><span>寄样跟进</span></button>
+            <button class="side-link" type="button" data-side-link data-creator-stage="content"><span class="side-icon">▷</span><span>内容与归因</span></button>
           </div>
         </nav>
       </section>
@@ -129,6 +145,7 @@
             <p>结算测算</p>
             <button class="side-link active" type="button" data-side-link data-profit-view="calculator" data-scroll-target="profitInputPanel"><span class="side-icon">▦</span><span>商品试算</span></button>
             <button class="side-link" type="button" data-side-link data-profit-view="calculator" data-scroll-target="profitResultPanel"><span class="side-icon">∑</span><span>费用明细</span></button>
+            <button class="side-link" type="button" data-side-link data-profit-view="plans"><span class="side-icon">▤</span><span>商品利润表</span></button>
           </div>
           <div class="sidebar-group">
             <p>核算口径</p>
@@ -334,10 +351,10 @@
           <div class="inline-actions"><button class="button secondary" id="openReplenishmentSettings" type="button">全局补货参数</button><button class="button secondary" id="refreshReplenishment" type="button">重新计算</button></div>
         </div>
         <div class="inline-actions replenishment-batch-toolbar"><span id="replenishmentSelectionCount">未选择 SKU</span><button class="button secondary" id="batchReplenishmentPolicy" type="button">批量调整参数</button><button class="button secondary" id="batchReplenishmentRecompute" type="button">重新计算所选</button><button class="button primary" id="batchReplenishmentPurchase" type="button">生成采购草稿</button></div>
-        <section class="panel">
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th><input id="replenishmentSelectAll" type="checkbox" aria-label="选择当前筛选结果中的全部 SKU" /></th><th>商品</th><th>日均出库</th><th>预测到货周期</th><th>可用 / 在途</th><th>可售天数</th><th>最迟下单</th><th>建议补货量</th><th>紧急度</th><th>操作</th></tr></thead>
+        <section class="panel" id="replenishmentTablePanel">
+          <div class="table-wrap replenishment-table-wrap" id="replenishmentTableWrap">
+            <table class="replenishment-table" id="replenishmentTable">
+              <thead><tr><th class="replenishment-select-column"><input id="replenishmentSelectAll" type="checkbox" aria-label="选择当前筛选结果中的全部 SKU" /></th><th class="replenishment-product-column">商品</th><th>日均出库</th><th>预测到货周期</th><th>可用 / 在途</th><th>可售天数</th><th>最迟下单</th><th>建议补货量</th><th>紧急度</th><th>操作</th></tr></thead>
               <tbody id="replenishmentRows"></tbody>
             </table>
             <div class="empty-state compact" id="replenishmentEmpty"><p>还没有可计算的本店 SKU。</p></div>
@@ -370,15 +387,46 @@
       </section>
     </section>
 
-    <section class="module-page" id="module-competitors" data-module-page="competitors" hidden>
+    <section class="module-page" id="module-analytics" data-module-page="analytics" hidden>
       <div class="page-heading compact-heading">
         <div>
-          <p class="eyebrow">竞品数据分析</p>
-          <h1>竞品监控</h1>
-          <p>竞品公开销量、价格和评价数据与真实仓库库存完全分开。</p>
+          <p class="eyebrow">ERP 经营数据</p>
+          <h1>数据分析</h1>
+          <p>经营指标仅使用 ERP 与正式授权数据；没有真实金额时明确显示“暂无数据”。</p>
         </div>
         <div class="page-actions"><button class="button secondary" id="competitorAddOwnProduct">＋ 加入本店商品</button><button class="button primary" id="competitorAddProduct">＋ 添加竞品</button></div>
       </div>
+
+      <section class="subpage active" data-competitor-page="overview">
+        <div class="analytics-toolbar">
+          <label>统计范围<select id="analyticsDays"><option value="7">近 7 天</option><option value="30" selected>近 30 天</option><option value="90">近 90 天</option><option value="custom">自定义</option></select></label>
+          <label id="analyticsDateFromLabel" hidden>开始日期<input id="analyticsDateFrom" type="date" /></label>
+          <label id="analyticsDateToLabel" hidden>结束日期<input id="analyticsDateTo" type="date" /></label>
+          <label>店铺<select id="analyticsStoreFilter"><option value="">全部店铺</option></select></label>
+          <label>仓库<select id="analyticsWarehouseFilter"><option value="">全部授权仓库</option></select></label>
+          <button class="button secondary" id="refreshAnalytics" type="button">刷新统计</button>
+        </div>
+        <p class="analytics-source-note" id="analyticsOverviewMeta">等待读取报表时区和数据来源。</p>
+        <section class="metric-grid analytics-metrics" id="analyticsOverviewMetrics"></section>
+        <div class="analytics-grid">
+          <section class="panel"><div class="panel-title"><div><h2>热销 SKU</h2><p>按真实销售件数排序</p></div></div><div class="analytics-list" id="analyticsTopSkus"></div></section>
+          <section class="panel"><div class="panel-title"><div><h2>库存风险与近期异常</h2><p>库存为查询生成时的当前快照</p></div></div><div class="analytics-list" id="analyticsRisks"></div></section>
+        </div>
+        <div class="empty-state compact" id="analyticsOverviewEmpty"><p>暂无可统计的真实经营数据。</p></div>
+      </section>
+
+      <section class="subpage" data-competitor-page="stores" hidden>
+        <div class="subpage-heading"><div><h2>店铺分析</h2><p>按店铺查看订单、履约、退货、热销 SKU 与库存；无法唯一匹配的订单列入“未关联店铺”。</p></div><button class="button secondary" id="refreshStoreAnalytics" type="button">刷新</button></div>
+        <p class="analytics-source-note" id="analyticsStoresMeta"></p>
+        <section class="analytics-card-grid" id="analyticsStoreCards"></section>
+        <div class="empty-state compact" id="analyticsStoresEmpty"><p>暂无店铺分析数据。</p></div>
+      </section>
+
+      <section class="subpage" data-competitor-page="skus" hidden>
+        <div class="subpage-heading"><div><h2>商品 / SKU 分析</h2><p>销售、退货、库存和补货数据按 SKU 与授权仓库聚合。</p></div><div class="inline-actions"><input id="analyticsSkuSearch" type="search" placeholder="搜索商品或 SKU" /><button class="button secondary" id="refreshSkuAnalytics" type="button">刷新</button></div></div>
+        <p class="analytics-source-note" id="analyticsSkusMeta"></p>
+        <section class="panel"><div class="table-wrap"><table><thead><tr><th>商品 / SKU</th><th>销售件数</th><th>订单 / 手工出库</th><th>退货 / 净销售</th><th>在库 / 锁定 / 可用</th><th>在途</th><th>日均 / 可售天数</th><th>补货状态</th><th>操作</th></tr></thead><tbody id="analyticsSkuRows"></tbody></table><div class="empty-state compact" id="analyticsSkusEmpty"><p>暂无 SKU 分析数据。</p></div></div></section>
+      </section>
 
       <section class="subpage active" data-competitor-page="products">
         <div class="subpage-heading">
@@ -436,6 +484,21 @@
       </section>
     </section>
 
+    <section class="module-page" id="module-creators" data-module-page="creators" hidden>
+      <div class="page-heading compact-heading">
+        <div><p class="eyebrow">INTERNAL CREATOR CRM</p><h1>达人管家</h1><p>管理达人档案、合作、寄样、内容、跟进和可追溯归因；系统不会自动抓取或推断带货归因。</p></div>
+        <button class="button primary" id="openCreatorModal" type="button">＋ 新建达人</button>
+      </div>
+      <div class="analytics-toolbar creator-toolbar">
+        <label>搜索<input id="creatorSearch" type="search" placeholder="昵称、账号或标签" /></label>
+        <label>合作阶段<select id="creatorStageFilter"><option value="">全部阶段</option><option value="pending">待联系</option><option value="contacted">已联系</option><option value="negotiating">洽谈中</option><option value="sampling">寄样中</option><option value="publishing">待发布</option><option value="published">已发布</option><option value="completed">已完成</option><option value="paused">暂停</option></select></label>
+        <label>档案状态<select id="creatorArchivedFilter"><option value="false">有效</option><option value="true">已归档</option><option value="">全部</option></select></label>
+        <button class="button secondary" id="refreshCreators" type="button">刷新</button>
+      </div>
+      <p class="analytics-source-note" id="creatorPermissionHint">达人联系方式与私人备注仅对本组织具备达人查看权限的成员开放。</p>
+      <section class="panel"><div class="table-wrap"><table><thead><tr><th>达人</th><th>平台 / 市场</th><th>联系方式</th><th>合作阶段</th><th>负责人</th><th>下次提醒</th><th>资料状态</th><th>操作</th></tr></thead><tbody id="creatorRows"></tbody></table><div class="empty-state compact" id="creatorEmpty"><p>还没有达人档案；只填写昵称也可以先保存。</p></div></div></section>
+    </section>
+
     <section class="module-page profit-page" id="module-profit" data-module-page="profit" hidden>
       <section class="profit-view-page" data-profit-view-page="calculator">
       <div class="page-heading profit-heading">
@@ -475,6 +538,7 @@
             <label>店铺身份<select id="profitShopIdentity"><option value="marketplace">Marketplace</option><option value="mall">Mall</option></select></label>
             <label class="profit-adjustment-field">类目佣金调试（按百分点临时调整）<div class="profit-adjustment-input"><input id="profitCommissionAdjustment" type="number" min="-100" max="100" step="0.01" value="1.00" inputmode="decimal" /><span>百分点</span></div></label>
             <label>交易手续费调整（百分点）<div class="profit-adjustment-input"><input id="profitTransactionFeeAdjustment" type="number" min="-100" max="100" step="0.01" value="0.00" inputmode="decimal" /><span>百分点</span></div></label>
+            <label>广告返点（组织默认）<div class="profit-adjustment-input"><input id="profitAdvertisingRebatePercent" type="number" min="0" max="100" step="0.01" value="0.00" inputmode="decimal" /><span>%</span></div></label>
           </div>
           <div class="profit-config-grid profit-config-grid-switches">
             <label class="profit-switch"><input id="profitBxp" type="checkbox" /><span><strong>参加 BXP</strong><small>将增加 4.86% BXP 服务费，并使用 BXP 佣金档</small></span></label>
@@ -503,11 +567,19 @@
       </form>
 
       <section class="profit-results" id="profitResultPanel" hidden>
+        <div class="profit-results-toolbar"><span>保存时后端会按权威规则重新计算，不信任浏览器金额。</span><div class="inline-actions"><button class="button secondary" id="profitSaveAsPlan" type="button" hidden>另存为方案</button><button class="button primary" id="profitSaveToPlans" type="button">保存到商品利润表</button></div></div>
         <div class="summary-strip profit-summary">
           <article><div><span id="profitPrimaryLabel">广告前毛利</span><strong id="profitNet">RM 0.00</strong><small id="profitNetCny">≈ CNY 0.00</small></div><i class="profit-metric-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a3 3 0 0 1-3-3v-10a3 3 0 0 1 3-3h11v4"></path><path d="M15 12h5M17.5 14.5V9.5"></path></svg></i></article>
           <article><div><span id="profitMarginLabel">毛利率</span><strong id="profitMargin">0.00%</strong><small id="profitMarginHint">广告前毛利 ÷ 结算收入</small></div><i class="profit-metric-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9h-9V3Z"></path><path d="M15 3.5A9 9 0 0 1 20.5 9H15V3.5Z"></path></svg></i></article>
           <article><div><span>盈亏平衡 CPA（USD）</span><strong id="profitCpa">$ 0.00</strong><small>建议单笔美元广告成本上限</small></div><i class="profit-metric-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg></i></article>
           <article><div><span>保本 ROI</span><strong id="profitRoas">—</strong><small>成交收入 ÷ 广告费的保本下限</small></div><i class="profit-metric-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 17 5-5 4 3 7-8"></path><path d="M15 7h5v5"></path></svg></i></article>
+        </div>
+
+        <div class="summary-strip profit-summary profit-rebate-summary">
+          <article><div><span>返点前广告成本</span><strong id="profitAdCostBeforeRebate">暂无数据</strong></div></article>
+          <article><div><span>广告返点金额</span><strong id="profitAdRebateAmount">暂无数据</strong></div></article>
+          <article><div><span>真实 ROI</span><strong id="profitTrueRoi">暂无数据</strong></div></article>
+          <article><div><span>真实 CPA</span><strong id="profitTrueCpa">不适用</strong></div></article>
         </div>
 
         <div class="profit-result-grid">
@@ -550,6 +622,20 @@
           </aside>
         </div>
       </section>
+      </section>
+
+      <section class="profit-view-page" data-profit-view-page="plans" id="profitPlansPage" hidden>
+        <div class="page-heading profit-heading">
+          <div><p class="eyebrow">版本化利润记录</p><h1>商品利润表</h1><p>每行是一个 SKU 方案的最新版本；历史输入与结果只读保留，重新计算会生成新版本。</p></div>
+          <button class="button secondary" id="refreshProfitPlans" type="button">刷新利润表</button>
+        </div>
+        <div class="analytics-toolbar">
+          <label>搜索<input id="profitPlanSearch" type="search" placeholder="商品、SKU 或方案名称" /></label>
+          <label>店铺<select id="profitPlanStoreFilter"><option value="">全部店铺</option></select></label>
+          <label>状态<select id="profitPlanStatusFilter"><option value="active">有效</option><option value="archived">已归档</option><option value="">全部</option></select></label>
+        </div>
+        <p class="analytics-source-note" id="profitPlansMeta">利润记录在组织内共享；金额以保存版本的规则与汇率快照为准。</p>
+        <section class="panel"><div class="table-wrap"><table class="profit-plans-table"><thead><tr><th>商品 / SKU</th><th>店铺 / 方案</th><th>售价 / 成本</th><th>达人佣金 / 广告返点</th><th>广告前毛利</th><th>实际广告成本</th><th>广告后净利润</th><th>真实 ROI / CPA</th><th>版本 / 保存时间</th><th>操作</th></tr></thead><tbody id="profitPlanRows"></tbody></table><div class="empty-state compact" id="profitPlansEmpty"><p>还没有保存的商品利润方案。</p></div></div></section>
       </section>
 
       <section class="profit-view-page profit-rules-page" data-profit-view-page="rules" id="profitRulesPage" hidden>
@@ -845,6 +931,31 @@
     </section>
   </div>
 
+  <div class="modal-backdrop" id="transferCompleteModal" aria-hidden="true">
+    <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="transferCompleteModalTitle">
+      <button class="modal-close" data-close="transferCompleteModal" aria-label="关闭">×</button>
+      <p class="eyebrow">最终结束调拨</p><h2 id="transferCompleteModalTitle">结束调拨并关闭全部剩余</h2>
+      <p class="modal-intro" id="transferCompleteIntro">剩余数量将全部记为异常关闭：不增加目的仓在库，也不恢复来源仓库存。</p>
+      <form id="transferCompleteForm">
+        <div class="table-wrap"><table><thead><tr><th>SKU</th><th>计划</th><th>已收</th><th>已异常关闭</th><th>本次待关闭</th></tr></thead><tbody id="transferCompleteRows"></tbody></table></div>
+        <label>异常原因 <span>*</span><textarea id="transferCompleteReason" rows="3" maxlength="240" required placeholder="例如：运输短少，经盘点确认剩余货物无法收回"></textarea></label>
+        <div class="last-value danger-note">提交后调拨状态变为“已完成（有异常）”。这是库存业务动作，必须再次确认。</div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="transferCompleteModal">取消</button><button class="button danger" id="submitTransferComplete" type="submit">结束调拨</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="replenishmentDemandModal" aria-hidden="true">
+    <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="replenishmentDemandTitle">
+      <button class="modal-close" data-close="replenishmentDemandModal" aria-label="关闭">×</button>
+      <p class="eyebrow">近 7 天真实销售出库</p><h2 id="replenishmentDemandTitle">各仓库周期明细</h2>
+      <p class="modal-intro" id="replenishmentDemandIntro">订单实际出库＋手动销售出库－按原销售日回溯的退货；每仓日均固定除以 7。</p>
+      <div class="table-wrap"><table><thead><tr><th>仓库</th><th>订单出库</th><th>手动销售出库</th><th>退货扣减</th><th>净销售出库</th><th>7 天日均</th></tr></thead><tbody id="replenishmentDemandRows"></tbody><tfoot id="replenishmentDemandTotal"></tfoot></table></div>
+      <p class="analytics-source-note" id="replenishmentDemandMeta"></p>
+      <div class="modal-actions"><button class="button secondary" type="button" data-close="replenishmentDemandModal">关闭</button></div>
+    </section>
+  </div>
+
   <div class="modal-backdrop" id="replenishmentPolicyModal" aria-hidden="true">
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="replenishmentPolicyTitle">
       <button class="modal-close" data-close="replenishmentPolicyModal" aria-label="关闭">×</button>
@@ -1052,6 +1163,71 @@
     </section>
   </div>
 
+  <div class="modal-backdrop" id="creatorModal" aria-hidden="true">
+    <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="creatorModalTitle">
+      <button class="modal-close" data-close="creatorModal" aria-label="关闭">×</button>
+      <p class="eyebrow">达人档案</p><h2 id="creatorModalTitle">新建达人</h2><p class="modal-intro">只填写达人名称或昵称即可保存；其余资料可以后续逐步完善。</p>
+      <form id="creatorForm"><input id="creatorId" type="hidden" />
+        <div class="form-grid three">
+          <label>达人名称 / 昵称 <span>*</span><input id="creatorName" maxlength="120" required /></label>
+          <label>平台<select id="creatorPlatform"><option value="">未填写</option><option value="tiktok">TikTok</option><option value="shopee">Shopee</option><option value="instagram">Instagram</option><option value="youtube">YouTube</option><option value="other">其他</option></select></label>
+          <label>账号名<input id="creatorHandle" maxlength="160" /></label>
+          <label>主页链接<input id="creatorProfileUrl" type="url" /></label>
+          <label>国家 / 市场<input id="creatorMarket" maxlength="12" placeholder="例如 MY" /></label>
+          <label>语言<input id="creatorLanguage" maxlength="80" /></label>
+          <label>联系方式<input id="creatorContact" maxlength="200" autocomplete="off" /></label>
+          <label>粉丝量<input id="creatorFollowers" type="number" min="0" step="1" /></label>
+          <label>标签<input id="creatorTags" maxlength="240" placeholder="逗号分隔" /></label>
+          <label>负责人<input id="creatorOwner" maxlength="120" /></label>
+          <label>合作阶段<select id="creatorStage"><option value="pending">待联系</option><option value="contacted">已联系</option><option value="negotiating">洽谈中</option><option value="sampling">寄样中</option><option value="publishing">待发布</option><option value="published">已发布</option><option value="completed">已完成</option><option value="paused">暂停</option></select></label>
+          <label class="full">备注<textarea id="creatorNotes" rows="3" maxlength="1000"></textarea></label>
+        </div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="creatorModal">取消</button><button class="button primary" id="saveCreator" type="submit">保存达人档案</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="creatorDetailModal" aria-hidden="true">
+    <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="creatorDetailTitle">
+      <button class="modal-close" data-close="creatorDetailModal" aria-label="关闭">×</button>
+      <p class="eyebrow">达人协作记录</p><h2 id="creatorDetailTitle">达人详情</h2><p class="modal-intro" id="creatorDetailIntro"></p>
+      <div class="creator-activity-list" id="creatorActivityRows"></div>
+      <form id="creatorActivityForm"><input id="creatorActivityCreatorId" type="hidden" />
+        <div class="form-section-title"><strong>新增业务记录</strong><span>归因只接受手工录入或正式授权平台数据，不能按销量变化自动推断。</span></div>
+        <div class="form-grid three">
+          <label>记录类型<select id="creatorActivityType"><option value="collaboration">合作</option><option value="sample">寄样 / 物流</option><option value="content">内容 / 发布</option><option value="followup">跟进 / 提醒</option><option value="attribution">业绩归因</option></select></label>
+          <label>关联合作<select id="creatorActivityCollaboration"><option value="">不关联 / 请先建立合作</option></select></label>
+          <label>状态 / 阶段<select id="creatorActivityStatus"></select></label>
+          <label>关联店铺<select id="creatorActivityStore"><option value="">不关联店铺</option></select></label>
+          <label>关联商品 / SKU<select id="creatorActivitySku"><option value="">不关联商品</option></select></label>
+          <label>佣金比例（%）<input id="creatorActivityCommission" type="number" min="0" max="100" step="0.01" /></label>
+          <label>固定费用<input id="creatorActivityFixedFee" type="number" min="0" step="0.01" /></label>
+          <label>寄样数量<input id="creatorActivityQuantity" type="number" min="1" step="1" /></label>
+          <label>物流单号<input id="creatorActivityTracking" maxlength="160" /></label>
+          <label>视频 / 直播链接<input id="creatorActivityUrl" type="url" /></label>
+          <label>计划发布 / 下次提醒<input id="creatorActivityPlannedAt" type="datetime-local" /></label>
+          <label>实际发布 / 签收时间<input id="creatorActivityOccurredAt" type="datetime-local" /></label>
+          <label>归因来源<select id="creatorActivitySource"><option value="unattributed">未归因</option><option value="manual">用户手工录入</option><option value="authorized">正式授权平台</option></select></label>
+          <label>归因订单数<input id="creatorActivityOrders" type="number" min="0" step="1" /></label>
+          <label>归因成交件数<input id="creatorActivityUnits" type="number" min="0" step="1" /></label>
+          <label>归因 GMV<input id="creatorActivityGmv" type="number" min="0" step="0.01" /></label>
+          <label class="full">记录内容 / 备注<textarea id="creatorActivityNotes" rows="3" maxlength="1000"></textarea></label>
+        </div>
+        <div class="modal-actions"><button class="button secondary" type="button" data-close="creatorDetailModal">关闭</button><button class="button primary" id="saveCreatorActivity" type="submit">保存业务记录</button></div>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="profitPlanHistoryModal" aria-hidden="true">
+    <section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="profitPlanHistoryTitle">
+      <button class="modal-close" data-close="profitPlanHistoryModal" aria-label="关闭">×</button>
+      <p class="eyebrow">不可变历史版本</p><h2 id="profitPlanHistoryTitle">利润方案历史</h2><p class="modal-intro" id="profitPlanHistoryIntro">查看原结果不会重算；按当前规则重新计算会回到试算页，保存时生成新版本。</p>
+      <div class="table-wrap"><table><thead><tr><th>版本</th><th>规则 / 汇率</th><th>广告返点</th><th>毛利 / 净利润</th><th>保存人 / 时间</th><th>操作</th></tr></thead><tbody id="profitPlanVersionRows"></tbody></table></div>
+      <pre class="profit-plan-snapshot" id="profitPlanSnapshot" hidden></pre>
+      <div class="modal-actions"><button class="button secondary" type="button" data-close="profitPlanHistoryModal">关闭</button></div>
+    </section>
+  </div>
+
   <div class="modal-backdrop" id="sessionModal" aria-hidden="true">
     <section class="modal session-modal" role="dialog" aria-modal="true" aria-labelledby="sessionModalTitle">
       <button class="modal-close" type="button" data-close="sessionModal" aria-label="关闭">×</button>
@@ -1165,8 +1341,8 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js?v=20260728-profit-calculator-server-1"></script>
-  <script src="team.js?v=20260813-inventory-order-workflow-1"></script>
-  <script src="profit-calculator.js?v=20260812-erp-ui-workflow-fix-1"></script>
-  <script src="app.js?v=20260813-inventory-order-workflow-1"></script>
+  <script src="team.js?v=20260821-data-profit-creator-workflow-2"></script>
+  <script src="profit-calculator.js?v=20260821-data-profit-creator-workflow-2"></script>
+  <script src="app.js?v=20260821-data-profit-creator-workflow-2"></script>
 </body>
 </html>

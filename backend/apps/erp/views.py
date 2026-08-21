@@ -26,15 +26,17 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, ExchangeRateSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge, OwnStore, ProfitCalculationStrategy, ProfitCalculationWorkingConfig,
+    AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, ExchangeRateSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge, OwnStore, ProfitCalculationStrategy, ProfitCalculationWorkingConfig, ProfitPlan, ProfitPlanVersion,
     LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentConversionEvent, ReplenishmentPolicy, ReplenishmentSettings,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, StockTransferPackage, ReplenishmentRecommendation, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
+    CreatorAttribution, CreatorCollaboration, CreatorContent, CreatorFollowUp, CreatorProfile, CreatorSample,
 )
 from .owner_security import consume_challenge, create_challenge, email_verification_enabled
 from .permissions import (
     PERMISSION_CATALOG,
     OrganizationRolePermission,
+    CapabilityPermission,
     is_owner,
     allowed_warehouse_ids, LEGACY_ROLE_PERMISSIONS, membership_permissions,
     request_organization,
@@ -51,22 +53,27 @@ from .serializers import (
     ShipmentSerializer, ShipInputSerializer, SKUSerializer, StockBalanceSerializer,
     StockLedgerReversalInputSerializer, StockLedgerSerializer, StockTransferSerializer, SupplierSerializer,
     ManualStockMovementInputSerializer, TikTokAuthorizationStartSerializer, TikTokShopConnectionSerializer, TikTokShopSyncRunSerializer, TikTokSyncStartSerializer,
-    TransferExceptionCloseInputSerializer, TransferPostInputSerializer, TransferReceiveInputSerializer, WarehouseSerializer,
+    TransferCompleteWithExceptionInputSerializer, TransferExceptionCloseInputSerializer, TransferPostInputSerializer, TransferReceiveInputSerializer, WarehouseSerializer,
     ProductSelectionKeywordInputSerializer, ProductSelectionReportInputSerializer, ProfitCalculationStrategySerializer, ProfitCalculationWorkingConfigSerializer,
     StockTransferPackageSerializer, TransferPackagesInputSerializer,
+    CreatorAttributionSerializer, CreatorCollaborationSerializer, CreatorContentSerializer, CreatorFollowUpSerializer, CreatorProfileSerializer, CreatorSampleSerializer,
+    ProfitBatchSaveInputSerializer, ProfitPlanSerializer, ProfitPlanVersionSerializer, ProfitRecalculateInputSerializer,
 )
 from . import alphashop, integrations
 from .services import (
     adjust_inventory, allocate_order, assign_order_warehouse, cancel_order, cancel_purchase, cancel_stock_transfer,
     confirm_and_ship_order, confirm_and_ship_or_shortage, confirm_order, create_quick_sales_snapshot,
-    change_order_warehouse, close_purchase_transit_exception, close_purchase_unshipped, close_stock_transfer_exception, confirm_purchase_shipment, dispatch_stock_transfer, edit_purchase, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger, reserve_stock_transfer_draft,
-    reject_return, restore_order_fulfillment, save_stock_transfer_packages, ship_order, start_picking, submit_purchase, update_stock_transfer_package_tracking, verify_order, write_audit,
+    change_order_warehouse, close_purchase_transit_exception, close_purchase_unshipped, close_stock_transfer_exception, complete_stock_transfer_with_exception, confirm_purchase_shipment, dispatch_stock_transfer, edit_purchase, manual_stock_movement, receive_purchase, receive_return, receive_stock_transfer, reverse_stock_ledger, reserve_stock_transfer_draft,
+    reject_return, restore_order_fulfillment, save_stock_transfer_packages, ship_order, start_picking, submit_purchase, update_stock_transfer_package_tracking, verify_order, write_audit, WorkflowConflictError,
 )
 from .local_imports import commit_local_import, validate_local_import
 from .replenishment import (
     ReplenishmentPolicy as ForecastPolicy,
     build_replenishment_forecast,
+    multi_warehouse_demand_detail,
 )
+from .analytics import overview_payload, skus_payload, stores_payload
+from .profit_records import save_profit_batch
 from .replenishment_automation import schedule_replenishment_ai_analysis
 from .profit_calculator import (
     AFFILIATE_SOURCE,
@@ -140,6 +147,18 @@ class DataConflict(APIException):
     default_code = "data_conflict"
 
 
+class RevisionConflict(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = "revision_conflict"
+
+    def __init__(self, current_revision):
+        super().__init__({
+            "code": "revision_conflict",
+            "detail": "当前配置已被其他成员更新，请刷新或确认后重试。",
+            "current_revision": current_revision,
+        })
+
+
 def _save_serializer(serializer, **kwargs):
     try:
         with transaction.atomic():
@@ -151,6 +170,8 @@ def _save_serializer(serializer, **kwargs):
 def _service_call(function, **kwargs):
     try:
         return function(**kwargs)
+    except WorkflowConflictError as exc:
+        raise DataConflict(detail=exc.payload) from exc
     except DjangoValidationError as exc:
         if hasattr(exc, "payload"):
             raise ValidationError(exc.payload)
@@ -254,23 +275,46 @@ def profit_calculator_working_config(request):
             "rate_mode": "auto",
             "manual_cny_per_myr": None,
             "manual_usd_per_myr": None,
+            "revision": 0,
             "updated_by_name": None,
             "updated_at": None,
         })
     _require_capability(request, "profit_rules", "当前账号没有修改利润试算配置的权限")
+    raw_revision = request.data.get("revision")
     with transaction.atomic():
-        record, _ = ProfitCalculationWorkingConfig.objects.select_for_update().get_or_create(
+        Organization.objects.select_for_update().get(pk=organization.pk)
+        record = ProfitCalculationWorkingConfig.objects.select_for_update().filter(
             organization=organization
-        )
+        ).first()
+        current_revision = record.revision if record is not None else 0
+        if raw_revision is None:
+            if record is not None:
+                raise ValidationError({"revision": "更新当前配置必须携带读取到的 revision"})
+            expected_revision = 0
+        else:
+            try:
+                expected_revision = int(raw_revision)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({"revision": "revision 必须是非负整数"}) from exc
+            if expected_revision < 0:
+                raise ValidationError({"revision": "revision 必须是非负整数"})
+        if expected_revision != current_revision:
+            raise RevisionConflict(current_revision)
+        if record is None:
+            record = ProfitCalculationWorkingConfig.objects.create(
+                organization=organization, revision=1
+            )
         serializer = ProfitCalculationWorkingConfigSerializer(record, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+        next_revision = current_revision + 1
         saved = serializer.save(
             updated_by=request.user,
+            revision=next_revision,
             config=_profit_strategy_config(serializer.validated_data.get("config", record.config)),
         )
         write_audit(
             organization=organization, actor=request.user, action="profit_calculator.working_config.save",
-            instance=saved, after={"rate_mode": saved.rate_mode},
+            instance=saved, after={"rate_mode": saved.rate_mode, "revision": next_revision},
         )
         bump_sync_revision(organization_id=organization.pk)
     return Response(ProfitCalculationWorkingConfigSerializer(saved).data)
@@ -1018,6 +1062,103 @@ class OrganizationScopedViewSet(viewsets.ModelViewSet):
         _save_serializer(serializer)
 
 
+class ReplenishmentDemandDetailView(APIView):
+    permission_classes = [OrganizationRolePermission]
+    capability = "replenishment"
+
+    def get(self, request):
+        _require_capability(request, "replenishment", "当前账号没有查看补货周期明细权限")
+        organization = request_organization(request)
+        sku = SKU.objects.filter(organization=organization, pk=request.query_params.get("sku")).first()
+        if sku is None:
+            raise NotFound("SKU 不存在或不属于当前组织")
+        try:
+            days = int(request.query_params.get("days", "7"))
+        except ValueError as exc:
+            raise ValidationError({"days": "days 必须是整数"}) from exc
+        membership = active_internal_membership(request.user)
+        allowed = allowed_warehouse_ids(request.user, membership, organization)
+        warehouses = Warehouse.objects.filter(organization=organization, active=True).order_by("name", "id")
+        if allowed is not None:
+            warehouses = warehouses.filter(pk__in=allowed)
+        try:
+            payload = multi_warehouse_demand_detail(
+                organization=organization, sku=sku, warehouses=list(warehouses), days=days
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        return Response(payload)
+
+
+class AnalyticsBaseView(APIView):
+    permission_classes = [CapabilityPermission]
+    read_capability = "analytics_view"
+    write_capability = "analytics_view"
+
+    def context(self, request):
+        organization = request_organization(request)
+        membership = active_internal_membership(request.user)
+        warehouse_ids = allowed_warehouse_ids(request.user, membership, organization)
+        selected_warehouse = request.query_params.get("warehouse")
+        if selected_warehouse:
+            if warehouse_ids is not None and selected_warehouse not in {str(item) for item in warehouse_ids}:
+                raise PermissionDenied("当前账号没有该仓库的数据权限")
+            if not Warehouse.objects.filter(organization=organization, pk=selected_warehouse).exists():
+                raise NotFound("仓库不存在或不属于当前组织")
+            warehouse_ids = {selected_warehouse}
+        return organization, warehouse_ids
+
+    def period_args(self, request):
+        return {
+            "start": request.query_params.get("date_from") or request.query_params.get("start"),
+            "end": request.query_params.get("date_to") or request.query_params.get("end"),
+            "days": request.query_params.get("days", "30"),
+        }
+
+
+class AnalyticsOverviewView(AnalyticsBaseView):
+    def get(self, request):
+        organization, warehouse_ids = self.context(request)
+        try:
+            payload = overview_payload(
+                organization=organization, warehouse_ids=warehouse_ids,
+                store_id=request.query_params.get("store"), **self.period_args(request),
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        return Response(payload)
+
+
+class AnalyticsStoresView(AnalyticsBaseView):
+    def get(self, request):
+        organization, warehouse_ids = self.context(request)
+        try:
+            payload = stores_payload(
+                organization=organization, warehouse_ids=warehouse_ids,
+                store_id=request.query_params.get("store"), **self.period_args(request),
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        return Response(payload)
+
+
+class AnalyticsSkusView(AnalyticsBaseView):
+    def get(self, request):
+        organization, warehouse_ids = self.context(request)
+        try:
+            payload = skus_payload(
+                organization=organization, warehouse_ids=warehouse_ids,
+                store_id=request.query_params.get("store"),
+                sku_id=request.query_params.get("sku"),
+                query=request.query_params.get("search") or request.query_params.get("q", ""),
+                limit=min(500, max(1, int(request.query_params.get("limit", "200")))),
+                **self.period_args(request),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(str(exc)) from exc
+        return Response(payload)
+
+
 def _profit_strategy_config(values):
     return {key: str(value) if isinstance(value, Decimal) else value for key, value in values.items()}
 
@@ -1097,11 +1238,42 @@ class ProfitCalculationStrategyViewSet(OrganizationScopedViewSet):
         self._make_default(organization, instance)
         instance.updated_by = request.user
         instance.save(update_fields=["updated_by", "updated_at"])
+        working = ProfitCalculationWorkingConfig.objects.select_for_update().filter(
+            organization=organization
+        ).first()
+        raw_working_revision = request.data.get("working_revision", request.data.get("revision"))
+        current_working_revision = working.revision if working is not None else 0
+        if raw_working_revision is None:
+            if working is not None:
+                raise ValidationError({"working_revision": "激活策略必须携带当前 working revision"})
+            expected_working_revision = 0
+        else:
+            try:
+                expected_working_revision = int(raw_working_revision)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({"working_revision": "working_revision 必须是非负整数"}) from exc
+        if expected_working_revision != current_working_revision:
+            raise RevisionConflict(current_working_revision)
+        if working is None:
+            working = ProfitCalculationWorkingConfig.objects.create(
+                organization=organization,
+                config=instance.config,
+                revision=1,
+                updated_by=request.user,
+            )
+        else:
+            working.config = instance.config
+            working.revision += 1
+            working.updated_by = request.user
+            working.save(update_fields=["config", "revision", "updated_by", "updated_at"])
         write_audit(
             organization=organization, actor=request.user, action="profit_strategy.activate", instance=instance,
-            before=before, after={"is_default": True},
+            before=before, after={"is_default": True, "working_revision": working.revision},
         )
-        return Response(self.get_serializer(instance).data)
+        bump_sync_revision(organization_id=organization.pk)
+        payload = dict(self.get_serializer(instance).data)
+        payload["working_revision"] = working.revision
+        return Response(payload)
 
     @transaction.atomic
     def perform_destroy(self, instance):
@@ -2030,6 +2202,25 @@ class StockTransferViewSet(OrganizationScopedViewSet):
         )
         return Response(self.get_serializer(transfer).data)
 
+    @action(detail=True, methods=["post"], url_path="complete-with-exception")
+    def complete_with_exception(self, request, pk=None):
+        data = TransferCompleteWithExceptionInputSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        transfer, event = _service_call(
+            complete_stock_transfer_with_exception,
+            transfer=self.get_object(),
+            actor=request.user,
+            **data.validated_data,
+        )
+        payload = dict(self.get_serializer(transfer).data)
+        payload["completion_event"] = {
+            "id": str(event.pk),
+            "idempotency_key": event.idempotency_key,
+            "quantities": event.quantities,
+            "completed_at": event.created_at.isoformat(),
+        }
+        return Response(payload)
+
     @action(detail=True, methods=["post"], url_path="close-transit-exception")
     def close_transit_exception(self, request, pk=None):
         data = TransferExceptionCloseInputSerializer(data=request.data)
@@ -2324,6 +2515,351 @@ class ReturnOrderViewSet(OrganizationScopedViewSet):
         if instance.status != ReturnOrder.Status.REQUESTED or instance.receipts.exists():
             raise ValidationError("已开始收货的退货单不可删除")
         instance.delete()
+
+
+def _creator_for_instance(instance):
+    if isinstance(instance, CreatorProfile):
+        return instance
+    if isinstance(instance, CreatorCollaboration):
+        return instance.creator
+    if isinstance(instance, (CreatorSample, CreatorContent)):
+        return instance.collaboration.creator
+    return instance.creator
+
+
+class CreatorAccessMixin:
+    permission_classes = [CapabilityPermission]
+    read_capability = "creator_view"
+    write_capability = "creator_edit"
+
+    def get_organization(self):
+        return self.organization or request_organization(self.request)
+
+    def can_edit_all(self):
+        return is_owner(self.request.user) or (
+            getattr(self, "membership", None) is not None
+            and self.membership.role == Membership.Role.ADMIN
+        )
+
+    def require_creator_edit(self, creator):
+        if not self.can_edit_all() and creator.created_by_id != self.request.user.pk:
+            raise PermissionDenied("只能编辑自己创建的达人及其业务记录")
+
+    def perform_create(self, serializer):
+        organization = self.get_organization()
+        values = serializer.validated_data
+        if serializer.Meta.model is CreatorProfile:
+            item = serializer.save(
+                organization=organization, created_by=self.request.user, updated_by=self.request.user
+            )
+        else:
+            prospective = serializer.Meta.model(**values)
+            self.require_creator_edit(_creator_for_instance(prospective))
+            actor_fields = {}
+            if hasattr(prospective, "created_by_id"):
+                actor_fields["created_by"] = self.request.user
+            if hasattr(prospective, "updated_by_id"):
+                actor_fields["updated_by"] = self.request.user
+            if hasattr(prospective, "recorded_by_id"):
+                actor_fields["recorded_by"] = self.request.user
+            item = serializer.save(organization=organization, **actor_fields)
+        write_audit(
+            organization=organization, actor=self.request.user,
+            action=f"creator.{item._meta.model_name}.create", instance=item,
+            after={"changed_fields": sorted(serializer.validated_data)},
+        )
+
+    def perform_update(self, serializer):
+        self.require_creator_edit(_creator_for_instance(serializer.instance))
+        kwargs = {"updated_by": self.request.user} if hasattr(serializer.instance, "updated_by_id") else {}
+        item = serializer.save(**kwargs)
+        write_audit(
+            organization=item.organization, actor=self.request.user,
+            action=f"creator.{item._meta.model_name}.update", instance=item,
+            after={"changed_fields": sorted(serializer.validated_data)},
+        )
+
+    def perform_destroy(self, instance):
+        self.require_creator_edit(_creator_for_instance(instance))
+        instance.delete()
+
+
+class CreatorProfileViewSet(CreatorAccessMixin, OrganizationScopedViewSet):
+    queryset = CreatorProfile.objects.select_related("created_by", "updated_by", "responsible_by").order_by("is_archived", "display_name", "id")
+    serializer_class = CreatorProfileSerializer
+
+    def get_queryset(self):
+        queryset = self.queryset.filter(organization=self.get_organization())
+        if self.request.query_params.get("archived") not in {"1", "true"}:
+            queryset = queryset.filter(is_archived=False)
+        stage = self.request.query_params.get("stage")
+        if stage:
+            queryset = queryset.filter(cooperation_status=stage)
+        search = (self.request.query_params.get("search") or self.request.query_params.get("q") or "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(display_name__icontains=search)
+                | Q(account_name__icontains=search)
+                | Q(platform__icontains=search)
+                | Q(country__icontains=search)
+            )
+        return queryset
+
+    def destroy(self, request, *args, **kwargs):
+        creator = self.get_object()
+        self.require_creator_edit(creator)
+        if creator.is_archived:
+            return Response(self.get_serializer(creator).data)
+        creator.is_archived = True
+        creator.archived_at = timezone.now()
+        creator.archived_by = request.user
+        creator.updated_by = request.user
+        creator.save(update_fields=["is_archived", "archived_at", "archived_by", "updated_by", "updated_at"])
+        write_audit(organization=creator.organization, actor=request.user, action="creator.archive", instance=creator, after={"is_archived": True})
+        return Response(self.get_serializer(creator).data)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        creator = self.get_object()
+        self.require_creator_edit(creator)
+        creator.is_archived = False
+        creator.archived_at = None
+        creator.archived_by = None
+        creator.updated_by = request.user
+        creator.save(update_fields=["is_archived", "archived_at", "archived_by", "updated_by", "updated_at"])
+        write_audit(organization=creator.organization, actor=request.user, action="creator.restore", instance=creator, after={"is_archived": False})
+        return Response(self.get_serializer(creator).data)
+
+    @action(detail=True, methods=["post"], url_path="permanent-delete")
+    def permanent_delete(self, request, pk=None):
+        if not is_owner(request.user):
+            raise PermissionDenied("只有主账号可以永久删除达人")
+        if request.data.get("confirm") is not True:
+            raise ValidationError({"confirm": "永久删除必须二次确认"})
+        creator = self.get_object()
+        referenced = any((
+            creator.collaborations.exists(), creator.follow_ups.exists(), creator.attributions.exists(),
+        ))
+        if referenced:
+            raise DataConflict("达人已有合作、跟进或业绩记录，只能归档")
+        organization = creator.organization
+        creator_id = str(creator.pk)
+        write_audit(organization=organization, actor=request.user, action="creator.permanent_delete", instance=creator, before={"display_name": creator.display_name})
+        creator.delete()
+        return Response({"deleted": True, "id": creator_id})
+
+    @action(detail=False, methods=["get"])
+    def export(self, request):
+        return Response({"results": self.get_serializer(self.get_queryset(), many=True).data})
+
+    def _nested(self, request, creator, model, serializer_class, filter_kwargs, forced):
+        queryset = model.objects.filter(organization=creator.organization, **filter_kwargs).order_by("-created_at", "id")
+        if request.method == "GET":
+            return Response(serializer_class(queryset, many=True, context=self.get_serializer_context()).data)
+        self.require_creator_edit(creator)
+        payload = request.data.copy()
+        for key, value in forced.items():
+            payload[key] = value
+        serializer = serializer_class(data=payload, context=self.get_serializer_context())
+        serializer.is_valid(raise_exception=True)
+        prospective = model(**serializer.validated_data)
+        if _creator_for_instance(prospective).pk != creator.pk:
+            raise ValidationError("子记录引用的合作/达人与当前 URL 不一致")
+        self.perform_create(serializer)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get", "post"])
+    def collaborations(self, request, pk=None):
+        creator = self.get_object()
+        return self._nested(request, creator, CreatorCollaboration, CreatorCollaborationSerializer, {"creator": creator}, {"creator": str(creator.pk)})
+
+    @action(detail=True, methods=["get", "post"])
+    def samples(self, request, pk=None):
+        creator = self.get_object()
+        return self._nested(request, creator, CreatorSample, CreatorSampleSerializer, {"collaboration__creator": creator}, {})
+
+    @action(detail=True, methods=["get", "post"])
+    def contents(self, request, pk=None):
+        creator = self.get_object()
+        return self._nested(request, creator, CreatorContent, CreatorContentSerializer, {"collaboration__creator": creator}, {})
+
+    @action(detail=True, methods=["get", "post"], url_path="followups")
+    def followups(self, request, pk=None):
+        creator = self.get_object()
+        return self._nested(request, creator, CreatorFollowUp, CreatorFollowUpSerializer, {"creator": creator}, {"creator": str(creator.pk)})
+
+    @action(detail=True, methods=["get", "post"])
+    def attributions(self, request, pk=None):
+        creator = self.get_object()
+        return self._nested(request, creator, CreatorAttribution, CreatorAttributionSerializer, {"creator": creator}, {"creator": str(creator.pk)})
+
+
+class CreatorRelatedViewSet(CreatorAccessMixin, OrganizationScopedViewSet):
+    def get_queryset(self):
+        queryset = self.queryset.filter(organization=self.get_organization())
+        creator_id = self.request.query_params.get("creator")
+        if creator_id:
+            if self.queryset.model in (CreatorSample, CreatorContent):
+                queryset = queryset.filter(collaboration__creator_id=creator_id)
+            else:
+                queryset = queryset.filter(creator_id=creator_id)
+        return queryset
+
+
+class CreatorCollaborationViewSet(CreatorRelatedViewSet):
+    queryset = CreatorCollaboration.objects.select_related("creator", "store", "sku")
+    serializer_class = CreatorCollaborationSerializer
+
+
+class CreatorSampleViewSet(CreatorRelatedViewSet):
+    queryset = CreatorSample.objects.select_related("collaboration__creator", "sku")
+    serializer_class = CreatorSampleSerializer
+
+
+class CreatorContentViewSet(CreatorRelatedViewSet):
+    queryset = CreatorContent.objects.select_related("collaboration__creator")
+    serializer_class = CreatorContentSerializer
+
+
+class CreatorFollowUpViewSet(CreatorRelatedViewSet):
+    queryset = CreatorFollowUp.objects.select_related("creator", "collaboration")
+    serializer_class = CreatorFollowUpSerializer
+
+
+class CreatorAttributionViewSet(CreatorRelatedViewSet):
+    queryset = CreatorAttribution.objects.select_related("creator", "collaboration", "store")
+    serializer_class = CreatorAttributionSerializer
+
+
+class ProfitPlanViewSet(OrganizationScopedViewSet):
+    queryset = ProfitPlan.objects.select_related("sku__product", "store", "created_by", "updated_by").prefetch_related("versions")
+    serializer_class = ProfitPlanSerializer
+    permission_classes = [CapabilityPermission]
+    read_capability = "profit_record_view"
+    write_capability = "profit_record_edit"
+
+    def can_edit_all(self):
+        return is_owner(self.request.user) or (
+            getattr(self, "membership", None) is not None
+            and self.membership.role == Membership.Role.ADMIN
+        )
+
+    def require_plan_edit(self, plan):
+        if not self.can_edit_all() and plan.created_by_id != self.request.user.pk:
+            raise PermissionDenied("只能维护自己创建的利润方案")
+
+    def get_queryset(self):
+        queryset = self.queryset.filter(organization=self.get_organization())
+        archived = self.request.query_params.get("archived")
+        if archived in {"1", "true"}:
+            queryset = queryset.filter(status=ProfitPlan.Status.ARCHIVED)
+        elif archived != "all":
+            queryset = queryset.filter(status=ProfitPlan.Status.ACTIVE)
+        if self.request.query_params.get("sku"):
+            queryset = queryset.filter(sku_id=self.request.query_params["sku"])
+        if self.request.query_params.get("store"):
+            queryset = queryset.filter(store_id=self.request.query_params["store"])
+        if self.request.query_params.get("q"):
+            term = self.request.query_params["q"]
+            queryset = queryset.filter(Q(name__icontains=term) | Q(sku_code_snapshot__icontains=term) | Q(sku_name_snapshot__icontains=term))
+        return queryset.order_by("-updated_at", "id")
+
+    def create(self, request, *args, **kwargs):
+        serializer = ProfitBatchSaveInputSerializer(data=request.data, context=self.get_serializer_context())
+        serializer.is_valid(raise_exception=True)
+        result, _batch = _service_call(
+            save_profit_batch,
+            organization=self.get_organization(),
+            validated_data=serializer.validated_data,
+            actor=request.user,
+            can_edit_all=self.can_edit_all(),
+        )
+        return Response(result, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request, *args, **kwargs):
+        if set(request.data) - {"name", "notes"}:
+            raise ValidationError("方案元数据只允许修改名称和备注；计算输入必须保存为新版本")
+        plan = self.get_object()
+        self.require_plan_edit(plan)
+        return super().partial_update(request, *args, **kwargs)
+
+    @action(detail=True, methods=["get"])
+    def versions(self, request, pk=None):
+        versions = self.get_object().versions.select_related("created_by").order_by("-version_number")
+        return Response(ProfitPlanVersionSerializer(versions, many=True).data)
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        plan = self.get_object()
+        self.require_plan_edit(plan)
+        plan.status = ProfitPlan.Status.ARCHIVED
+        plan.archived_at = timezone.now()
+        plan.archived_by = request.user
+        plan.updated_by = request.user
+        plan.save(update_fields=["status", "archived_at", "archived_by", "updated_by", "updated_at"])
+        write_audit(organization=plan.organization, actor=request.user, action="profit_record.plan.archive", instance=plan)
+        return Response(self.get_serializer(plan).data)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        plan = self.get_object()
+        self.require_plan_edit(plan)
+        plan.status = ProfitPlan.Status.ACTIVE
+        plan.archived_at = None
+        plan.archived_by = None
+        plan.updated_by = request.user
+        plan.save(update_fields=["status", "archived_at", "archived_by", "updated_by", "updated_at"])
+        write_audit(organization=plan.organization, actor=request.user, action="profit_record.plan.restore", instance=plan)
+        return Response(self.get_serializer(plan).data)
+
+    @action(detail=True, methods=["post"])
+    def recalculate(self, request, pk=None):
+        """Return a historical business-input snapshot for the calculator.
+
+        This action deliberately does not calculate or persist anything.  The
+        browser loads the old business inputs, the normal calculate endpoint
+        applies today's authoritative rules, and a later explicit save creates
+        the next immutable version.
+        """
+        plan = self.get_object()
+        self.require_plan_edit(plan)
+        data = ProfitRecalculateInputSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        version = data.validated_data.get("version") or plan.versions.order_by("-version_number").first()
+        if version is None or version.plan_id != plan.pk:
+            raise ValidationError("历史版本不存在或不属于当前方案")
+        snapshot = version.input_snapshot or {}
+        calculation = dict(snapshot.get("calculation") or {})
+        items = list(calculation.get("items") or [])
+        item_index = int(snapshot.get("item_index", -1))
+        if item_index < 0 or item_index >= len(items):
+            raise ValidationError("历史版本输入快照不完整")
+        item = dict(items[item_index])
+        item.update(dict(snapshot.get("metadata") or {}))
+        calculation["items"] = [item]
+        return Response({
+            "calculation": calculation,
+            "target_plan": str(plan.pk),
+            "source_version": str(version.pk),
+            "source_version_number": version.version_number,
+            "source_rule_version": version.rule_version,
+            "source_exchange_rate": version.exchange_rate_snapshot,
+        })
+
+    def destroy(self, request, *args, **kwargs):
+        return self.archive(request, pk=kwargs.get("pk"))
+
+    @action(detail=True, methods=["post"], url_path="permanent-delete")
+    def permanent_delete(self, request, pk=None):
+        if not is_owner(request.user):
+            raise PermissionDenied("只有主账号可以永久删除利润方案")
+        if request.data.get("confirm") is not True:
+            raise ValidationError({"confirm": "永久删除必须二次确认"})
+        plan = self.get_object()
+        plan_id = str(plan.pk)
+        write_audit(organization=plan.organization, actor=request.user, action="profit_record.plan.permanent_delete", instance=plan, before={"version_count": plan.versions.count()})
+        plan.delete()
+        return Response({"deleted": True, "id": plan_id})
 
 
 class CompetitorProductViewSet(OrganizationScopedViewSet):

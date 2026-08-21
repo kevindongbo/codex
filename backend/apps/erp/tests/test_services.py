@@ -13,7 +13,7 @@ from apps.erp.models import (
 from apps.erp.services import (
     adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
     confirm_and_ship_order, confirm_order, confirm_purchase_shipment, create_quick_sales_snapshot,
-    close_stock_transfer_exception, dispatch_stock_transfer, receive_purchase, receive_return, receive_stock_transfer,
+    close_stock_transfer_exception, complete_stock_transfer_with_exception, dispatch_stock_transfer, receive_purchase, receive_return, receive_stock_transfer,
     restore_order_fulfillment, ship_order, start_picking, submit_purchase, verify_order,
 )
 
@@ -724,6 +724,31 @@ class InventoryServiceTests(TestCase):
         self.assertEqual(destination_a.in_transit, Decimal("0"))
         self.assertEqual(destination_b.on_hand, Decimal("0"))
         self.assertEqual(destination_b.in_transit, Decimal("0"))
+
+    def test_final_transfer_exception_closes_all_remaining_once_without_on_hand_reversal(self):
+        destination = Warehouse.objects.create(organization=self.organization, code="FINAL-DST", name="终态目标仓")
+        adjust_inventory(organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+                         delta="5", reason="final exception opening", idempotency_key="final-open", actor=self.user)
+        transfer = StockTransfer.objects.create(organization=self.organization, number="TR-FINAL-EXCEPTION",
+                                                source_warehouse=self.warehouse, destination_warehouse=destination)
+        line = StockTransferLine.objects.create(transfer=transfer, sku=self.sku, quantity="5")
+        dispatch_stock_transfer(transfer=transfer, idempotency_key="final-dispatch", actor=self.user)
+        receive_stock_transfer(transfer=transfer, idempotency_key="final-receive", quantities={str(line.pk): Decimal("2")}, actor=self.user)
+        transfer, event = complete_stock_transfer_with_exception(
+            transfer=transfer, idempotency_key="final-close", reason="物流丢失", actor=self.user
+        )
+        repeated, same_event = complete_stock_transfer_with_exception(
+            transfer=transfer, idempotency_key="final-close", reason="物流丢失", actor=self.user
+        )
+        line.refresh_from_db()
+        balance = StockBalance.objects.get(warehouse=destination, sku=self.sku)
+        self.assertEqual(transfer.status, StockTransfer.Status.COMPLETED_WITH_EXCEPTION)
+        self.assertEqual(repeated.pk, transfer.pk)
+        self.assertEqual(event.pk, same_event.pk)
+        self.assertEqual(line.received_quantity, Decimal("2"))
+        self.assertEqual(line.exception_closed_quantity, Decimal("3"))
+        self.assertEqual(balance.on_hand, Decimal("2"))
+        self.assertEqual(balance.in_transit, Decimal("0"))
 
     def test_stock_transfer_overdispatch_rolls_back_every_line(self):
         destination = Warehouse.objects.create(

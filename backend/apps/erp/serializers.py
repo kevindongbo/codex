@@ -12,11 +12,13 @@ from rest_framework import serializers
 
 from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, CompetitorSellerGroup, CompetitorSellerSnapshot, LocalImport, Membership, Organization, OwnStore,
-    Product, ProductImage, ProfitCalculationStrategy, ProfitCalculationWorkingConfig, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReceiptLine,
+    Product, ProductImage, ProfitCalculationBatch, ProfitCalculationStrategy, ProfitCalculationWorkingConfig, ProfitPlan, ProfitPlanVersion, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReceiptLine,
     ReplenishmentPolicy, ReplenishmentSettings, ReplenishmentRecommendation,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockTransfer, StockTransferLine, StockTransferPackage, StockTransferPackageLine, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
+    CreatorAttribution, CreatorCollaboration, CreatorContent, CreatorFollowUp, CreatorProfile, CreatorSample,
 )
+from .profit_serializers import ProfitCalculationSerializer, ProfitItemSerializer
 from .permissions import PERMISSION_CATALOG, request_organization
 from .secure_config import encrypt_secret
 from .inbound import calculate_inbound_snapshot
@@ -157,6 +159,10 @@ class ProfitCalculationStrategyConfigSerializer(serializers.Serializer):
     buyer_shipping_region = serializers.ChoiceField(choices=("west_malaysia", "east_malaysia"), default="west_malaysia")
     transaction_fee_adjustment = serializers.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"), min_value=Decimal("-100"), max_value=Decimal("100"))
     display_currency = serializers.ChoiceField(choices=("MYR", "CNY"), default="MYR")
+    advertising_rebate_percent = serializers.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0.00"),
+        min_value=Decimal("0"), max_value=Decimal("100"),
+    )
 
     def validate(self, attrs):
         # A disabled buyer-shipping switch makes the delivery region irrelevant.
@@ -186,9 +192,9 @@ class ProfitCalculationWorkingConfigSerializer(ScopedSerializer):
         model = ProfitCalculationWorkingConfig
         fields = [
             "id", "config", "rate_mode", "manual_cny_per_myr", "manual_usd_per_myr",
-            "updated_by_name", "updated_at",
+            "revision", "updated_by_name", "updated_at",
         ]
-        read_only_fields = ["id", "updated_by_name", "updated_at"]
+        read_only_fields = ["id", "revision", "updated_by_name", "updated_at"]
 
     def validate(self, attrs):
         mode = attrs.get("rate_mode", getattr(self.instance, "rate_mode", "auto"))
@@ -828,7 +834,7 @@ class StockTransferSerializer(OrganizationValidationMixin, ScopedSerializer):
         fields = "__all__"
         read_only_fields = ScopedSerializer.Meta.read_only_fields + [
             "status", "dispatch_idempotency_key", "receive_idempotency_key",
-            "dispatched_at", "dispatched_by", "received_at", "received_by",
+            "dispatched_at", "dispatched_by", "received_at", "received_by", "closed_at", "closed_by",
         ]
 
 
@@ -845,6 +851,184 @@ class TransferReceiveInputSerializer(TransferPostInputSerializer):
 
 class TransferExceptionCloseInputSerializer(TransferReceiveInputSerializer):
     reason = serializers.CharField(max_length=240)
+
+
+class TransferCompleteWithExceptionInputSerializer(TransferPostInputSerializer):
+    reason = serializers.CharField(max_length=240, trim_whitespace=True)
+
+
+class CreatorProfileSerializer(ScopedSerializer):
+    incomplete = serializers.SerializerMethodField()
+    created_by_name = serializers.CharField(source="created_by.username", read_only=True, default=None)
+    updated_by_name = serializers.CharField(source="updated_by.username", read_only=True, default=None)
+
+    class Meta(ScopedSerializer.Meta):
+        model = CreatorProfile
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + [
+            "archived_at", "archived_by", "created_by", "updated_by",
+        ]
+
+    def validate_display_name(self, value):
+        value = str(value or "").strip()
+        if not value:
+            raise serializers.ValidationError("达人名称/昵称不能为空")
+        return value
+
+    def validate_contact(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("联系方式必须是键值对象")
+        return value
+
+    def validate_tags(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError("标签必须是列表")
+        return value
+
+    def get_incomplete(self, obj):
+        return not all((obj.platform, obj.account_name, obj.country, obj.contact))
+
+
+class CreatorRelatedSerializerMixin(OrganizationValidationMixin):
+    relation_fields = ()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        organization = self.get_organization()
+        if organization is None:
+            return
+        mapping = {
+            "creator": CreatorProfile,
+            "collaboration": CreatorCollaboration,
+            "store": OwnStore,
+            "sku": SKU,
+        }
+        for field_name in self.relation_fields:
+            field = self.fields.get(field_name)
+            if field is not None and hasattr(field, "queryset"):
+                field.queryset = mapping[field_name].objects.filter(organization=organization)
+
+    def validate(self, attrs):
+        for field_name in self.relation_fields:
+            value = attrs.get(field_name, getattr(self.instance, field_name, None) if self.instance else None)
+            if value is not None:
+                self.require_same_organization(value, field_name)
+        creator = attrs.get("creator", getattr(self.instance, "creator", None) if self.instance else None)
+        collaboration = attrs.get("collaboration", getattr(self.instance, "collaboration", None) if self.instance else None)
+        if collaboration is not None and creator is not None and collaboration.creator_id != creator.pk:
+            raise serializers.ValidationError("合作记录不属于所选达人")
+        return attrs
+
+
+class CreatorCollaborationSerializer(CreatorRelatedSerializerMixin, ScopedSerializer):
+    relation_fields = ("creator", "store", "sku")
+
+    class Meta(ScopedSerializer.Meta):
+        model = CreatorCollaboration
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + ["created_by", "updated_by"]
+
+
+class CreatorSampleSerializer(CreatorRelatedSerializerMixin, ScopedSerializer):
+    relation_fields = ("collaboration", "sku")
+
+    class Meta(ScopedSerializer.Meta):
+        model = CreatorSample
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields
+
+
+class CreatorContentSerializer(CreatorRelatedSerializerMixin, ScopedSerializer):
+    relation_fields = ("collaboration",)
+
+    class Meta(ScopedSerializer.Meta):
+        model = CreatorContent
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields
+
+
+class CreatorFollowUpSerializer(CreatorRelatedSerializerMixin, ScopedSerializer):
+    relation_fields = ("creator", "collaboration")
+
+    class Meta(ScopedSerializer.Meta):
+        model = CreatorFollowUp
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + ["created_by"]
+
+
+class CreatorAttributionSerializer(CreatorRelatedSerializerMixin, ScopedSerializer):
+    recorded_by_name = serializers.CharField(source="recorded_by.username", read_only=True, default=None)
+    relation_fields = ("creator", "collaboration", "store")
+
+    class Meta(ScopedSerializer.Meta):
+        model = CreatorAttribution
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + ["recorded_by"]
+
+
+class ProfitRecordItemInputSerializer(ProfitItemSerializer):
+    sku = serializers.PrimaryKeyRelatedField(queryset=SKU.objects.all(), required=False, allow_null=True)
+    sku_code = serializers.CharField(max_length=160, required=False, allow_blank=True)
+    image_url = serializers.CharField(max_length=4096, required=False, allow_blank=True)
+    store = serializers.PrimaryKeyRelatedField(queryset=OwnStore.objects.all(), required=False, allow_null=True)
+    plan_name = serializers.CharField(max_length=160, required=False, allow_blank=True)
+    action = serializers.ChoiceField(choices=("new_plan", "new_version"), default="new_plan")
+    target_plan = serializers.PrimaryKeyRelatedField(queryset=ProfitPlan.objects.all(), required=False, allow_null=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        organization = _context_organization(self)
+        if organization is not None:
+            self.fields["sku"].queryset = SKU.objects.filter(organization=organization)
+            self.fields["store"].queryset = OwnStore.objects.filter(organization=organization)
+            self.fields["target_plan"].queryset = ProfitPlan.objects.filter(organization=organization)
+
+    def validate(self, attrs):
+        if attrs.get("action") == "new_version" and attrs.get("target_plan") is None:
+            raise serializers.ValidationError({"target_plan": "保存新版本必须指定目标方案"})
+        if attrs.get("sku") is None and not str(attrs.get("sku_code") or attrs.get("sku_name") or "").strip():
+            raise serializers.ValidationError("未关联 ERP SKU 时必须提供 SKU 编码或名称快照")
+        return attrs
+
+
+class ProfitBatchSaveInputSerializer(ProfitCalculationSerializer):
+    idempotency_key = serializers.CharField(max_length=120)
+    items = ProfitRecordItemInputSerializer(many=True, allow_empty=False)
+
+
+class ProfitPlanVersionSerializer(ScopedSerializer):
+    created_by_name = serializers.CharField(source="created_by.username", read_only=True, default=None)
+
+    class Meta(ScopedSerializer.Meta):
+        model = ProfitPlanVersion
+        fields = [
+            "id", "organization", "plan", "batch", "version_number", "input_snapshot",
+            "result_snapshot", "exchange_rate_snapshot", "rule_version", "created_by",
+            "created_by_name", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class ProfitPlanSerializer(ScopedSerializer):
+    latest_version = serializers.SerializerMethodField()
+    created_by_name = serializers.CharField(source="created_by.username", read_only=True, default=None)
+    updated_by_name = serializers.CharField(source="updated_by.username", read_only=True, default=None)
+
+    class Meta(ScopedSerializer.Meta):
+        model = ProfitPlan
+        fields = "__all__"
+        read_only_fields = ScopedSerializer.Meta.read_only_fields + [
+            "source_batch", "sku", "store", "sku_code_snapshot", "sku_name_snapshot",
+            "image_url_snapshot", "created_by", "updated_by", "archived_at", "archived_by",
+        ]
+
+    def get_latest_version(self, obj):
+        version = obj.versions.order_by("-version_number").first()
+        return ProfitPlanVersionSerializer(version).data if version is not None else None
+
+
+class ProfitRecalculateInputSerializer(serializers.Serializer):
+    version = serializers.PrimaryKeyRelatedField(queryset=ProfitPlanVersion.objects.all(), required=False, allow_null=True)
 
 
 class StockTransferPackageLineInputSerializer(OrganizationValidationMixin, serializers.Serializer):

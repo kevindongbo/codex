@@ -76,7 +76,7 @@ test("invalid persisted navigation falls back to safe ERP routes", async () => {
   const normalized = domain.normalizeV5(saved);
   assert.equal(normalized.ui.module, "products");
   assert.equal(normalized.ui.warehouseTab, "purchase");
-  assert.equal(normalized.ui.competitorTab, "products");
+  assert.equal(normalized.ui.competitorTab, "overview");
 
   saved.ui = { module: "warehouse", warehouseTab: "replenishment", competitorTab: "products", warehouseId: "warehouse-default" };
   assert.equal(domain.normalizeV5(saved).ui.warehouseTab, "replenishment");

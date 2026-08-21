@@ -1,6 +1,7 @@
 from copy import deepcopy
 from decimal import Decimal
 from hashlib import sha256
+import json
 import logging
 import uuid
 
@@ -31,6 +32,7 @@ from .models import (
     StockLedgerReversal,
     StockReservation,
     StockTransfer,
+    StockTransferCompletionEvent,
     StockTransferLine,
     StockTransferPackage,
     StockTransferPackageLine,
@@ -46,6 +48,14 @@ class WorkflowValidationError(ValidationError):
     def __init__(self, payload):
         self.payload = payload
         super().__init__(payload.get("detail", "业务校验失败"))
+
+
+class WorkflowConflictError(ValidationError):
+    """A durable idempotency or terminal-state conflict (HTTP 409 at the API)."""
+
+    def __init__(self, detail, *, code="workflow_conflict"):
+        self.payload = {"code": code, "detail": detail}
+        super().__init__(detail)
 
 
 def _decimal(value):
@@ -558,7 +568,10 @@ def close_stock_transfer_exception(*, transfer, quantities, reason, actor=None):
             organization=transfer.organization, warehouse=transfer.destination_warehouse, sku=line.sku,
             event_type=StockLedger.Type.TRANSFER_TRANSIT, in_transit_delta=-quantity,
             reference_type="stock_transfer_line", reference_id=line.pk,
-            idempotency_key=f"transfer-exception-close:{transfer.pk}:{line.pk}:{line.received_quantity}", actor=actor,
+            idempotency_key=(
+                f"transfer-exception-close:{transfer.pk}:{line.pk}:"
+                f"{line.received_quantity}:{line.exception_closed_quantity}"
+            ), actor=actor,
             reason=reason,
         )
         line.exception_closed_quantity += quantity
@@ -570,6 +583,157 @@ def close_stock_transfer_exception(*, transfer, quantities, reason, actor=None):
     transfer.save(update_fields=["status", "exception_reason", "updated_at"])
     write_audit(organization=transfer.organization, actor=actor, action="stock_transfer.transit.exception_close", instance=transfer, after={"reason": reason, "quantities": {str(key): str(value) for key, value in quantities.items()}})
     return transfer
+
+
+@transaction.atomic
+def complete_stock_transfer_with_exception(*, transfer, idempotency_key, reason, actor=None):
+    """Atomically close every remaining transfer line as a final exception.
+
+    The quantities are always derived under row locks.  The caller supplies no
+    quantity, so a stale or forged browser cannot decide what leaves transit.
+    """
+
+    normalized_reason = str(reason or "").strip()
+    normalized_key = str(idempotency_key or "").strip()
+    if not normalized_key:
+        raise ValidationError("幂等键不能为空")
+    if not normalized_reason:
+        raise ValidationError("结束调拨必须填写异常原因")
+    if len(normalized_key) > 120:
+        raise ValidationError("幂等键不能超过 120 个字符")
+    if len(normalized_reason) > 240:
+        raise ValidationError("异常原因不能超过 240 个字符")
+
+    expected_organization = transfer.organization
+    # Serialize the empty-event case across every transfer in the organization,
+    # so the unique idempotency constraint can never surface as an uncaught 500.
+    expected_organization.__class__.objects.select_for_update().get(pk=expected_organization.pk)
+    transfer = StockTransfer.objects.select_for_update().select_related(
+        "organization", "source_warehouse", "destination_warehouse"
+    ).get(pk=transfer.pk, organization=expected_organization)
+    request_payload = {
+        "transfer_id": str(transfer.pk),
+        "reason": normalized_reason,
+    }
+    request_hash = sha256(
+        json.dumps(request_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    existing = StockTransferCompletionEvent.objects.filter(
+        organization=transfer.organization,
+        idempotency_key=normalized_key,
+    ).first()
+    if existing is not None:
+        if existing.transfer_id == transfer.pk and existing.request_hash == request_hash:
+            return transfer, existing
+        raise WorkflowConflictError("幂等键已用于不同的结束调拨请求", code="idempotency_conflict")
+
+    terminal_event = StockTransferCompletionEvent.objects.filter(
+        organization=transfer.organization,
+        transfer=transfer,
+    ).first()
+    if terminal_event is not None or transfer.status in {
+        StockTransfer.Status.RECEIVED,
+        StockTransfer.Status.CANCELLED,
+        StockTransfer.Status.COMPLETED_WITH_EXCEPTION,
+    }:
+        raise WorkflowConflictError("调拨单已经进入终态，不能使用新的请求再次结束", code="transfer_terminal")
+    if transfer.status not in {
+        StockTransfer.Status.IN_TRANSIT,
+        StockTransfer.Status.PARTIALLY_RECEIVED,
+    }:
+        raise WorkflowConflictError("只有调拨在途或部分收货单可以结束异常", code="transfer_not_in_transit")
+
+    lines = list(
+        StockTransferLine.objects.select_for_update()
+        .filter(transfer=transfer)
+        .select_related("sku__product")
+        .order_by("pk")
+    )
+    if not lines:
+        raise ValidationError("调拨单没有明细")
+
+    remaining_by_line = {}
+    for line in lines:
+        remaining = (
+            Decimal(line.quantity)
+            - Decimal(line.received_quantity)
+            - Decimal(line.exception_closed_quantity)
+        )
+        if remaining < 0:
+            raise ValidationError(f"SKU {line.sku.code} 的调拨数量数据异常")
+        remaining_by_line[line.pk] = remaining
+    if sum(remaining_by_line.values(), Decimal("0")) <= 0:
+        raise WorkflowConflictError("调拨单没有可异常关闭的在途剩余", code="transfer_no_remaining")
+
+    quantities = {}
+    for line in lines:
+        remaining = remaining_by_line[line.pk]
+        before = {
+            "planned": str(line.quantity),
+            "received": str(line.received_quantity),
+            "exception_closed": str(line.exception_closed_quantity),
+        }
+        if remaining > 0:
+            post_stock(
+                organization=transfer.organization,
+                warehouse=transfer.destination_warehouse,
+                sku=line.sku,
+                event_type=StockLedger.Type.TRANSFER_TRANSIT,
+                in_transit_delta=-remaining,
+                reference_type="stock_transfer_completion_event",
+                reference_id=line.pk,
+                idempotency_key=f"transfer-final-exception:{transfer.pk}:{line.pk}:{normalized_key}",
+                actor=actor,
+                reason=normalized_reason,
+            )
+            line.exception_closed_quantity += remaining
+            line.save(update_fields=["exception_closed_quantity", "updated_at"])
+        quantities[str(line.pk)] = {
+            **before,
+            "closed_now": str(remaining),
+            "exception_closed_after": str(line.exception_closed_quantity),
+            "remaining_after": "0",
+            "sku": line.sku.code,
+        }
+
+    closed_at = timezone.now()
+    transfer.status = StockTransfer.Status.COMPLETED_WITH_EXCEPTION
+    transfer.exception_reason = normalized_reason
+    transfer.closed_at = closed_at
+    transfer.closed_by = actor if getattr(actor, "is_authenticated", False) else None
+    transfer.save(update_fields=[
+        "status", "exception_reason", "closed_at", "closed_by", "updated_at",
+    ])
+    result = {
+        "transfer_id": str(transfer.pk),
+        "status": transfer.status,
+        "closed_at": closed_at.isoformat(),
+        "quantities": quantities,
+    }
+    event = StockTransferCompletionEvent.objects.create(
+        organization=transfer.organization,
+        transfer=transfer,
+        idempotency_key=normalized_key,
+        request_hash=request_hash,
+        reason=normalized_reason,
+        quantities=quantities,
+        result=result,
+        completed_by=actor if getattr(actor, "is_authenticated", False) else None,
+    )
+    write_audit(
+        organization=transfer.organization,
+        actor=actor,
+        action="stock_transfer.complete_with_exception",
+        instance=transfer,
+        after={
+            "idempotency_key": normalized_key,
+            "reason": normalized_reason,
+            "quantities": quantities,
+        },
+        request_id=normalized_key,
+    )
+    return transfer, event
 
 
 @transaction.atomic
