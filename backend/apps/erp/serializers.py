@@ -1129,6 +1129,12 @@ class ReplenishmentSettingsSerializer(ScopedSerializer):
         if organization is not None:
             self.fields["ai_provider"].queryset = AIProviderConfig.objects.filter(organization=organization)
 
+    def validate(self, attrs):
+        values = [attrs.get(name, getattr(self.instance, name, None)) for name in ("velocity_weight_3", "velocity_weight_7", "velocity_weight_15", "velocity_weight_30")]
+        if sum((Decimal(str(value)) for value in values), Decimal("0")) != Decimal("1"):
+            raise serializers.ValidationError("3/7/15/30 天权重合计必须为 100%。")
+        return attrs
+
     class Meta(ScopedSerializer.Meta):
         model = ReplenishmentSettings
         fields = "__all__"

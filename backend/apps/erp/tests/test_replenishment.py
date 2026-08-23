@@ -36,6 +36,7 @@ from apps.erp.replenishment import (
     ReplenishmentPolicy,
     RobustLeadSummary,
     calculate_replenishment,
+    build_replenishment_forecast,
     estimate_demand_velocity,
     estimate_lead_time,
     get_inventory_position,
@@ -320,6 +321,32 @@ class ReplenishmentTests(TestCase):
         self.assertEqual(demand.quantity_30, Decimal("58.000"))
         self.assertEqual(demand.shipment_count, 3)
 
+    def test_forecast_uses_all_warehouses_for_demand_and_primary_for_inventory(self):
+        self.create_shipment(
+            warehouse=self.warehouse, days_ago=2, quantity="10", sequence=41
+        )
+        self.create_shipment(
+            warehouse=self.other_warehouse, days_ago=2, quantity="30", sequence=42
+        )
+        StockBalance.objects.filter(
+            organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+        ).update(on_hand="100", reserved="0")
+        StockBalance.objects.filter(
+            organization=self.organization, warehouse=self.other_warehouse, sku=self.sku,
+        ).update(on_hand="1", reserved="0")
+
+        forecast = build_replenishment_forecast(
+            organization=self.organization,
+            sku=self.sku,
+            warehouse=self.warehouse,
+            supplier=self.supplier,
+            policy=ReplenishmentPolicy(coverage_days=Decimal("30")),
+            as_of=self.as_of,
+        )
+
+        self.assertEqual(forecast.demand.quantity_3, Decimal("40.000"))
+        self.assertEqual(forecast.inventory.available, Decimal("100.000"))
+
     def test_weighted_velocity_includes_manual_outbound_but_not_manual_inbound(self):
         manual = post_stock(
             organization=self.organization,
@@ -381,8 +408,8 @@ class ReplenishmentTests(TestCase):
         )
 
         self.assertEqual(demand.quantity_7, Decimal("0.000"))
-        self.assertEqual(demand.quantity_15, Decimal("7.000"))
-        self.assertEqual(demand.breakdown["15"]["returns_at_original_sale_date"], Decimal("5.000"))
+        self.assertEqual(demand.quantity_15, Decimal("12.000"))
+        self.assertEqual(demand.breakdown["15"]["returns_at_original_sale_date"], Decimal("0.000"))
 
     def test_inventory_position_counts_only_target_warehouse_open_inbound(self):
         StockBalance.objects.create(
@@ -524,16 +551,17 @@ class ReplenishmentTests(TestCase):
                 safety_days=Decimal("3"),
                 review_cycle_days=Decimal("5"),
                 target_days=Decimal("30"),
+                coverage_days=Decimal("30"),
                 moq=Decimal("70"),
                 pack_size=Decimal("24"),
             ),
             as_of=self.as_of,
         )
 
-        self.assertEqual(forecast.safety_stock_units, Decimal("6.000"))
-        self.assertEqual(forecast.reorder_point, Decimal("86.000"))
-        self.assertEqual(forecast.target_inventory_position, Decimal("86.000"))
-        self.assertEqual(forecast.raw_order_quantity, Decimal("66.000"))
+        self.assertEqual(forecast.safety_stock_units, Decimal("0.000"))
+        self.assertEqual(forecast.reorder_point, Decimal("20.000"))
+        self.assertEqual(forecast.target_inventory_position, Decimal("60.000"))
+        self.assertEqual(forecast.raw_order_quantity, Decimal("40.000"))
         self.assertEqual(forecast.suggested_order_quantity, Decimal("72.000"))
         self.assertTrue(forecast.needs_reorder)
         self.assertEqual(forecast.alert_level, "red")
@@ -575,10 +603,9 @@ class ReplenishmentTests(TestCase):
             as_of=self.as_of,
         )
 
-        self.assertEqual(variable.safety_margin_ratio, Decimal("0.5000"))
-        self.assertGreater(variable.safety_margin_units, Decimal("0"))
-        self.assertGreater(variable.suggested_order_quantity, baseline.suggested_order_quantity)
-        self.assertTrue(any("安全余量" in reason for reason in variable.reasons))
+        self.assertEqual(variable.safety_margin_ratio, Decimal("0"))
+        self.assertEqual(variable.safety_margin_units, Decimal("0"))
+        self.assertEqual(variable.suggested_order_quantity, baseline.suggested_order_quantity)
 
     def test_zero_sales_does_not_invent_demand_or_stockout_date(self):
         forecast = calculate_replenishment(

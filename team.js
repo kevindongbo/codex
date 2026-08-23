@@ -1105,9 +1105,13 @@
         return { transfer_line: line.transferLineId || line.transfer_line || line.id, quantity: number(line.quantity) };
       }).filter(function (line) { return line.transfer_line && line.quantity > 0; });
       if (!lines.length) throw new ApiError('请至少填写一条异常关闭数量。', 400, null);
-      return this.request('/stock-transfers/' + transfer.id + '/close-transit-exception/', {
-        method: 'POST', body: { quantities: Object.fromEntries(lines.map(function (line) { return [line.transfer_line, line.quantity]; })), reason: String(reason || '').trim() }
-      });
+      const key = this.idempotencyKey('transfer-close-transit-exception', transfer.id + ':' + JSON.stringify(lines) + ':' + String(reason || '').trim());
+      try {
+        const result = await this.request('/stock-transfers/' + transfer.id + '/close-transit-exception/', {
+          method: 'POST', body: { idempotency_key: key.value, quantities: Object.fromEntries(lines.map(function (line) { return [line.transfer_line, line.quantity]; })), reason: String(reason || '').trim() }
+        });
+        this.completeIdempotency(key); return result;
+      } catch (error) { this.completeIdempotency(key, error); throw error; }
     }
 
     async completeTransferWithException(transfer, reason) {
@@ -1382,7 +1386,7 @@
     }
 
     async batchSaveReplenishmentPolicy(skuIds, fields) {
-      return this.request('/replenishment/batch-policy/', { method: 'POST', body: { warehouse: this.warehouseId, sku_ids: skuIds, fields: fields } });
+      return this.request('/replenishment/batch-policy/', { method: 'POST', body: { sku_ids: skuIds, fields: fields } });
     }
 
     async getReplenishmentSettings() {
@@ -1395,18 +1399,15 @@
     }
 
     async saveReplenishmentPolicy(product, policy) {
-      const existing = (this.cache.replenishmentPolicies || []).find(function (item) {
-        return String(item.warehouse) === String(this.warehouseId) && String(item.sku) === String(product.skuId);
-      }, this);
       const payload = {
-        warehouse: this.warehouseId, sku: product.skuId,
-        lead_time_override: policy.leadTimeOverride, review_cycle_days: policy.reviewCycleDays,
-        target_days: policy.targetDays, min_order_qty: policy.minOrderQty, pack_size: policy.packSize,
-        safety_stock_override: policy.safetyStockOverride
+        primary_warehouse: policy.primaryWarehouse, target_coverage_days: policy.targetDays,
+        manual_lead_time_days: policy.leadTimeOverride, min_order_qty: policy.minOrderQty,
+        pack_size: policy.packSize, safety_stock: policy.safetyStockOverride,
+        velocity_weight_3: policy.velocityWeight3, velocity_weight_7: policy.velocityWeight7,
+        velocity_weight_15: policy.velocityWeight15, velocity_weight_30: policy.velocityWeight30
       };
-      return this.request(existing ? '/replenishment-policies/' + existing.id + '/' : '/replenishment-policies/', {
-        method: existing ? 'PATCH' : 'POST', body: payload
-      });
+      Object.keys(payload).forEach(function (key) { if (payload[key] === undefined) delete payload[key]; });
+      return this.batchSaveReplenishmentPolicy([product.skuId], payload);
     }
 
     async deleteReplenishmentPolicy(product) {

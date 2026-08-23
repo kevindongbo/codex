@@ -2209,11 +2209,6 @@ function renderTransfers() {
   setText('#transferTabCount', pending);
 }
 
-function percentile(values, fraction) {
-  if (!values.length) return null;
-  const sorted = values.slice().sort(function (a, b) { return a - b; });
-  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)];
-}
 function localPolicyFor(productId, warehouseId) {
   const stored = state.replenishmentPolicies.find(function (item) { return item.productId === productId && item.warehouseId === warehouseId; }) || {};
   return {
@@ -2225,82 +2220,6 @@ function localPolicyFor(productId, warehouseId) {
     packSize: integer(stored.packSize || 1) || 1,
     safetyStockOverride: stored.safetyStockOverride == null || stored.safetyStockOverride === '' ? null : integer(stored.safetyStockOverride),
     safetyMarginRatio: Math.min(1, Math.max(0, asNumber(stored.safetyMarginRatio, 0.2)))
-  };
-}
-function localLeadSamples(productId, warehouseId) {
-  const samples = [];
-  state.receipts.forEach(function (receipt) {
-    if ((receipt.warehouseId || DEFAULT_WAREHOUSE_ID) !== warehouseId) return;
-    const order = state.purchaseOrders.find(function (item) { return item.id === receipt.purchaseOrderId; });
-    if (!order || !order.orderedAt) return;
-    const hasProduct = (receipt.lines || []).some(function (line) { return line.productId === productId; });
-    if (!hasProduct) return;
-    const days = (new Date(receipt.receivedAt).getTime() - new Date(order.orderedAt).getTime()) / 86400000;
-    if (Number.isFinite(days) && days >= 0) samples.push(days);
-  });
-  return samples;
-}
-function localVelocity(productId, warehouseId, days) {
-  const threshold = Date.now() - days * 86400000;
-  const quantity = state.inventoryMovements.reduce(function (sum, movement) {
-    if (movement.productId !== productId || movement.warehouseId !== warehouseId || !['outbound', 'manual_outbound'].includes(movement.type) || movement.isReversed) return sum;
-    if (new Date(movement.occurredAt).getTime() < threshold) return sum;
-    return sum + Math.abs(Math.min(0, asNumber(movement.onHandDelta)));
-  }, 0);
-  return quantity / days;
-}
-function dateAfterDays(days, allowPast) {
-  const date = new Date();
-  date.setHours(12, 0, 0, 0);
-  date.setDate(date.getDate() + (allowPast ? Math.ceil(days) : Math.max(0, Math.ceil(days))));
-  // These dates are displayed as local operational dates.  Converting noon
-  // China time to UTC can otherwise shift an overdue date forward by one day.
-  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
-}
-function localReplenishmentRecommendation(product) {
-  const warehouseId = currentWarehouseId();
-  const policy = localPolicyFor(product.id, warehouseId);
-  const velocity3 = localVelocity(product.id, warehouseId, 3);
-  const velocity7 = localVelocity(product.id, warehouseId, 7);
-  const velocity15 = localVelocity(product.id, warehouseId, 15);
-  const velocity30 = localVelocity(product.id, warehouseId, 30);
-  const velocity = velocity3 * 0.4 + velocity7 * 0.3 + velocity15 * 0.2 + velocity30 * 0.1;
-  const leadSamples = localLeadSamples(product.id, warehouseId);
-  const leadMedian = percentile(leadSamples, 0.5);
-  const leadP80 = percentile(leadSamples, 0.8);
-  const leadDays = policy.leadTimeOverride || (leadP80 == null ? 14 : Math.max(1, leadP80));
-  const leadSource = policy.leadTimeOverride ? 'manual' : (leadP80 == null ? 'fallback' : 'history_p80');
-  const balance = balanceFor(product.id, state, warehouseId);
-  const available = Math.max(0, balance.onHand - balance.reserved);
-  const purchaseInbound = purchaseTransitFor(product.id, state, warehouseId);
-  const transferInbound = state.stockTransfers.reduce(function (sum, transfer) {
-    if (transfer.status !== 'in_transit' || transfer.destinationWarehouseId !== warehouseId) return sum;
-    return sum + transfer.lines.reduce(function (lineSum, line) { return line.productId === product.id ? lineSum + Math.max(0, transferLineQuantity(line) - transferReceivedQuantity(line)) : lineSum; }, 0);
-  }, 0);
-  const inbound = purchaseInbound + transferInbound;
-  const inventoryPosition = available + inbound;
-  const safetyStock = policy.safetyStockOverride == null ? integer(product.safetyStock) : policy.safetyStockOverride;
-  const reorderDemand = velocity * (leadDays + policy.reviewCycleDays);
-  const targetDemand = velocity * (leadDays + Math.max(policy.targetDays, policy.reviewCycleDays));
-  const reorderPoint = Math.ceil(reorderDemand * (1 + policy.safetyMarginRatio) + safetyStock);
-  const safetyMarginUnits = targetDemand * policy.safetyMarginRatio;
-  const rawSuggested = Math.max(0, targetDemand + safetyStock + safetyMarginUnits - inventoryPosition);
-  let suggestedQty = rawSuggested <= 0 ? 0 : Math.max(policy.minOrderQty, Math.ceil(rawSuggested));
-  if (suggestedQty) suggestedQty = Math.ceil(suggestedQty / policy.packSize) * policy.packSize;
-  const daysCover = velocity > 0 ? inventoryPosition / velocity : Infinity;
-  const latestInDays = velocity > 0 ? daysCover - leadDays - 2 : Infinity;
-  const insufficientData = velocity <= 0 && safetyStock <= inventoryPosition;
-  const urgency = insufficientData ? 'insufficient' : (inventoryPosition <= reorderPoint || latestInDays <= 0 ? 'urgent' : (latestInDays <= 7 ? 'soon' : 'healthy'));
-  const confidence = leadSamples.length >= 3 && state.inventoryMovements.filter(function (item) { return item.productId === product.id && item.warehouseId === warehouseId && item.type === 'outbound'; }).length >= 3 ? 'high' : (leadSamples.length || velocity > 0 ? 'medium' : 'low');
-  return {
-    productId: product.id, velocity: velocity, velocity3: velocity3, velocity7: velocity7, velocity15: velocity15, velocity30: velocity30,
-    leadDays: leadDays, leadMedian: leadMedian, leadP80: leadP80, leadSource: leadSource,
-    available: available, inbound: inbound, inventoryPosition: inventoryPosition, reorderPoint: reorderPoint,
-    daysCover: daysCover, stockoutDate: velocity > 0 && Number.isFinite(daysCover) ? dateAfterDays(daysCover) : '',
-    latestOrderDate: Number.isFinite(latestInDays) ? dateAfterDays(latestInDays, true) : '', suggestedQty: suggestedQty,
-    safetyMarginRatio: policy.safetyMarginRatio, safetyMarginUnits: safetyMarginUnits,
-    reasons: ['库存位置 = 可用库存 + 在途库存。', '建议安全余量 = 目标需求 × ' + (policy.safetyMarginRatio * 100).toFixed(0) + '%。'],
-    urgency: urgency, confidence: confidence, policy: policy
   };
 }
 function normalizeTeamRecommendation(item) {
@@ -2328,7 +2247,7 @@ function replenishmentRecommendations() {
   if (TEAM_MODE && Array.isArray(state.replenishmentRecommendations) && state.replenishmentRecommendations.length) {
     return state.replenishmentRecommendations.map(normalizeTeamRecommendation);
   }
-  return ownProducts(state).filter(function (product) { return !product.needsReview; }).map(localReplenishmentRecommendation);
+  return [];
 }
 function recommendationProduct(recommendation) {
   return productById(recommendation.productId) || state.products.find(function (item) { return recommendation.skuId && String(item.skuId) === recommendation.skuId; });
@@ -2408,14 +2327,14 @@ function renderReplenishmentDemandDetail(product, payload) {
   const warehouses = rawRows.map(normalizeDemandWarehouse);
   $('#replenishmentDemandTitle').textContent = (product.sku || 'SKU') + ' · 各仓库近 7 天出库';
   $('#replenishmentDemandRows').innerHTML = warehouses.length ? warehouses.map(function (row) {
-    return '<tr><td><strong>' + escapeHtml(row.name) + '</strong><small>' + escapeHtml(row.code + (row.timezone ? ' · ' + row.timezone : '')) + '</small></td><td>' + row.orderOutbound + '</td><td>' + row.manualOutbound + '</td><td>− ' + row.returns + '</td><td><strong>' + row.net + '</strong></td><td>' + row.average.toFixed(2) + '</td></tr>';
-  }).join('') : '<tr><td colspan="6">所有可访问仓库近 7 天均无销售出库，数量为 0。</td></tr>';
+    return '<tr><td><strong>' + escapeHtml(row.name) + '</strong><small>' + escapeHtml(row.code + (row.timezone ? ' · ' + row.timezone : '')) + '</small></td><td>' + row.orderOutbound + '</td><td>' + row.manualOutbound + '</td><td><strong>' + row.net + '</strong></td><td>' + row.average.toFixed(2) + '</td></tr>';
+  }).join('') : '<tr><td colspan="5">所有可访问仓库近 7 天均无销售出库，数量为 0。</td></tr>';
   const total = warehouses.reduce(function (sum, row) {
     sum.orderOutbound += row.orderOutbound; sum.manualOutbound += row.manualOutbound;
-    sum.returns += row.returns; sum.net += row.net; return sum;
-  }, { orderOutbound: 0, manualOutbound: 0, returns: 0, net: 0 });
-  $('#replenishmentDemandTotal').innerHTML = '<tr><th>全部可见仓库合计</th><th>' + total.orderOutbound + '</th><th>' + total.manualOutbound + '</th><th>− ' + total.returns + '</th><th>' + total.net + '</th><th>' + (total.net / 7).toFixed(2) + '</th></tr>';
-  $('#replenishmentDemandMeta').textContent = '统计窗口：' + escapeHtml((payload && (payload.date_from || payload.started_at)) || '近 7 天') + ' 至 ' + escapeHtml((payload && (payload.date_to || payload.ended_at)) || '今天') + '；退货按原订单销售日与原出库仓回溯冲减。';
+    sum.net += row.net; return sum;
+  }, { orderOutbound: 0, manualOutbound: 0, net: 0 });
+  $('#replenishmentDemandTotal').innerHTML = '<tr><th>全部可见仓库合计</th><th>' + total.orderOutbound + '</th><th>' + total.manualOutbound + '</th><th>' + total.net + '</th><th>' + (total.net / 7).toFixed(2) + '</th></tr>';
+  $('#replenishmentDemandMeta').textContent = '统计窗口：' + escapeHtml((payload && (payload.date_from || payload.started_at)) || '近 7 天') + ' 至 ' + escapeHtml((payload && (payload.date_to || payload.ended_at)) || '今天') + '；退货不扣减需求。';
 }
 
 async function openReplenishmentDemandDetail(productId) {
@@ -2424,7 +2343,7 @@ async function openReplenishmentDemandDetail(productId) {
   if (!TEAM_MODE || !teamGateway) return showToast('各仓周期明细仅在团队在线模式下提供。');
   if (!teamCapabilityAllowed('replenishment')) return showToast('当前账号没有查看补货明细的权限。');
   $('#replenishmentDemandTitle').textContent = (product.sku || 'SKU') + ' · 正在读取';
-  $('#replenishmentDemandRows').innerHTML = '<tr><td colspan="6">正在读取各仓库近 7 天出库…</td></tr>';
+  $('#replenishmentDemandRows').innerHTML = '<tr><td colspan="5">正在读取各仓库近 7 天出库…</td></tr>';
   $('#replenishmentDemandTotal').innerHTML = '';
   $('#replenishmentDemandMeta').textContent = '';
   openModal('replenishmentDemandModal');
@@ -2432,7 +2351,7 @@ async function openReplenishmentDemandDetail(productId) {
     const payload = await teamGateway.getReplenishmentDemandDetail(product, 7);
     renderReplenishmentDemandDetail(product, payload || {});
   } catch (error) {
-    $('#replenishmentDemandRows').innerHTML = '<tr><td colspan="6">' + escapeHtml(error && error.message || '读取失败，请重试。') + '</td></tr>';
+    $('#replenishmentDemandRows').innerHTML = '<tr><td colspan="5">' + escapeHtml(error && error.message || '读取失败，请重试。') + '</td></tr>';
     handleTeamError(error);
   }
 }
@@ -4082,14 +4001,22 @@ function openReplenishmentPolicy(productId) {
   if (!product) return;
   const policyWarehouseId = TEAM_MODE && teamGateway ? String(teamGateway.warehouseId) : currentWarehouseId();
   const policy = localPolicyFor(productId, policyWarehouseId);
+  const serverRecommendation = (state.replenishmentRecommendations || []).find(function (item) { return String(item.sku || item.sku_id) === String(product.skuId); }) || {};
+  const serverWeights = serverRecommendation.weights || {};
+  const profileConfig = serverRecommendation.profile_config || {};
   $('#policyProductId').value = productId;
-  $('#replenishmentPolicyIntro').textContent = (product.sku || '无 SKU') + ' · ' + product.name + '；参数只作用于当前仓库。';
-  $('#policyLeadDays').value = policy.leadTimeOverride == null ? '' : policy.leadTimeOverride;
-  $('#policyReviewDays').value = policy.reviewCycleDays;
-  $('#policyTargetDays').value = policy.targetDays;
-  $('#policyMoq').value = policy.minOrderQty;
-  $('#policyPackSize').value = policy.packSize;
-  $('#policySafetyStock').value = policy.safetyStockOverride == null ? '' : policy.safetyStockOverride;
+  $('#replenishmentPolicyIntro').textContent = (product.sku || '无 SKU') + ' · ' + product.name + '；参数跟随 SKU，未设置主力仓时不会产生正式建议。';
+  $('#policyPrimaryWarehouse').innerHTML = '<option value="">未设置</option>' + (state.warehouses || []).filter(function (row) { return row.active; }).map(function (row) { return '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(row.name + ' · ' + row.code) + '</option>'; }).join('');
+  $('#policyPrimaryWarehouse').value = profileConfig.primary_warehouse || serverRecommendation.primary_warehouse || '';
+  $('#policyLeadDays').value = profileConfig.manual_lead_time_days == null ? (policy.leadTimeOverride == null ? '' : policy.leadTimeOverride) : profileConfig.manual_lead_time_days;
+  $('#policyTargetDays').value = profileConfig.target_coverage_days == null ? '' : profileConfig.target_coverage_days;
+  $('#policyMoq').value = profileConfig.min_order_qty == null ? '' : profileConfig.min_order_qty;
+  $('#policyPackSize').value = profileConfig.pack_size == null ? '' : profileConfig.pack_size;
+  $('#policySafetyStock').value = profileConfig.safety_stock == null ? (policy.safetyStockOverride == null ? '' : policy.safetyStockOverride) : profileConfig.safety_stock;
+  $('#policyWeight3').value = serverRecommendation.weight_source === 'sku' ? Math.round(Number(serverWeights.w3) * 100) : '';
+  $('#policyWeight7').value = serverRecommendation.weight_source === 'sku' ? Math.round(Number(serverWeights.w7) * 100) : '';
+  $('#policyWeight15').value = serverRecommendation.weight_source === 'sku' ? Math.round(Number(serverWeights.w15) * 100) : '';
+  $('#policyWeight30').value = serverRecommendation.weight_source === 'sku' ? Math.round(Number(serverWeights.w30) * 100) : '';
   openModal('replenishmentPolicyModal');
 }
 async function openReplenishmentSettings() {
@@ -4166,13 +4093,13 @@ async function openBatchReplenishmentPolicy() {
   try {
     const settings = await teamGateway.getReplenishmentSettings();
     if (settings) {
-      $('#batchPolicyReviewDays').value = settings.review_cycle_days;
       $('#batchPolicyTargetDays').value = settings.target_days;
       $('#batchWeight3').value = Math.round(Number(settings.velocity_weight_3 == null ? 0.4 : settings.velocity_weight_3) * 100);
       $('#batchWeight7').value = Math.round(Number(settings.velocity_weight_7 == null ? 0.3 : settings.velocity_weight_7) * 100);
       $('#batchWeight15').value = Math.round(Number(settings.velocity_weight_15 == null ? 0.2 : settings.velocity_weight_15) * 100);
       $('#batchWeight30').value = Math.round(Number(settings.velocity_weight_30 == null ? 0.1 : settings.velocity_weight_30) * 100);
     }
+    $('#batchPolicyPrimaryWarehouse').innerHTML = '<option value="">未设置</option>' + (state.warehouses || []).filter(function (row) { return row.active; }).map(function (row) { return '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(row.name + ' · ' + row.code) + '</option>'; }).join('');
     $('#replenishmentBatchPolicyTitle').textContent = '调整已选 ' + replenishmentSelectedSkuIds.size + ' 个 SKU 参数';
     openModal('replenishmentBatchPolicyModal');
   } catch (error) { handleTeamError(error); }
@@ -4181,16 +4108,16 @@ async function openBatchReplenishmentPolicy() {
 async function handleBatchReplenishmentPolicySubmit(event) {
   event.preventDefault();
   const weights = [$('#batchWeight3'), $('#batchWeight7'), $('#batchWeight15'), $('#batchWeight30')].map(function (input) { return Number(input.value); });
-  if (weights.some(function (value) { return !Number.isFinite(value) || value < 0; }) || Math.abs(weights.reduce(function (sum, value) { return sum + value; }, 0) - 100) > 0.001) {
+  if ($('#batchPolicyWeightsEnabled').checked && (weights.some(function (value) { return !Number.isFinite(value) || value < 0; }) || Math.abs(weights.reduce(function (sum, value) { return sum + value; }, 0) - 100) > 0.001)) {
     return showToast('近 3/7/15/30 天权重必须为非负数，且合计等于 100%。');
   }
   const fieldInputs = {
-    lead_time_override: '#batchPolicyLeadDays',
-    review_cycle_days: '#batchPolicyReviewDays',
-    target_days: '#batchPolicyTargetDays',
+    primary_warehouse: '#batchPolicyPrimaryWarehouse',
+    manual_lead_time_days: '#batchPolicyLeadDays',
+    target_coverage_days: '#batchPolicyTargetDays',
     min_order_qty: '#batchPolicyMoq',
     pack_size: '#batchPolicyPackSize',
-    safety_stock_override: '#batchPolicySafetyStock'
+    safety_stock: '#batchPolicySafetyStock'
   };
   const fields = {};
   $$('[data-batch-policy-enable]').forEach(function (checkbox) {
@@ -4199,18 +4126,17 @@ async function handleBatchReplenishmentPolicySubmit(event) {
     const input = $(fieldInputs[key]);
     fields[key] = input ? input.value : '';
   });
+  if ($('#batchPolicyWeightsEnabled').checked) {
+    fields.velocity_weight_3 = weights[0] / 100;
+    fields.velocity_weight_7 = weights[1] / 100;
+    fields.velocity_weight_15 = weights[2] / 100;
+    fields.velocity_weight_30 = weights[3] / 100;
+  }
   const skuIds = Array.from(replenishmentSelectedSkuIds);
   if (TEAM_MODE) {
     const saved = await executeTeamCommand(function () {
-      return teamGateway.saveReplenishmentSettings({
-        velocity_weight_3: weights[0] / 100,
-        velocity_weight_7: weights[1] / 100,
-        velocity_weight_15: weights[2] / 100,
-        velocity_weight_30: weights[3] / 100
-      }).then(function () {
-        return Object.keys(fields).length ? teamGateway.batchSaveReplenishmentPolicy(skuIds, fields) : teamGateway.recomputeReplenishment(skuIds);
-      });
-    }, '权重与所选 SKU 参数已保存，并已重新计算补货建议。', 'replenishment');
+      return Object.keys(fields).length ? teamGateway.batchSaveReplenishmentPolicy(skuIds, fields) : teamGateway.recomputeReplenishment(skuIds);
+    }, '所选 SKU 参数已保存，并已重新计算补货建议。', 'replenishment');
     if (saved) closeModal('replenishmentBatchPolicyModal');
     return;
   }
@@ -4245,12 +4171,19 @@ async function handleReplenishmentPolicySubmit(event) {
   event.preventDefault();
   const product = productById($('#policyProductId').value);
   if (!product) return showToast('商品不存在。');
+  const weights = [$('#policyWeight3'), $('#policyWeight7'), $('#policyWeight15'), $('#policyWeight30')].map(function (input) { return input.value === '' ? null : Number(input.value); });
+  if (weights.some(function (value) { return value === null; }) && !weights.every(function (value) { return value === null; })) return showToast('SKU 独立权重需同时填写 3/7/15/30 天四项，或全部留空。');
+  if (weights.every(function (value) { return value !== null; }) && (weights.some(function (value) { return !Number.isFinite(value) || value < 0; }) || Math.abs(weights.reduce(function (sum, value) { return sum + value; }, 0) - 100) > 0.001)) return showToast('SKU 独立权重必须为非负数，且合计等于 100%。');
   const policy = {
     id: '', productId: product.id, skuId: product.skuId || '', warehouseId: TEAM_MODE && teamGateway ? String(teamGateway.warehouseId) : currentWarehouseId(),
     leadTimeOverride: $('#policyLeadDays').value === '' ? null : integer($('#policyLeadDays').value),
-    reviewCycleDays: integer($('#policyReviewDays').value), targetDays: integer($('#policyTargetDays').value),
-    minOrderQty: integer($('#policyMoq').value), packSize: integer($('#policyPackSize').value),
-    safetyStockOverride: $('#policySafetyStock').value === '' ? null : integer($('#policySafetyStock').value)
+    primaryWarehouse: $('#policyPrimaryWarehouse').value || null, targetDays: $('#policyTargetDays').value === '' ? null : integer($('#policyTargetDays').value),
+    minOrderQty: $('#policyMoq').value === '' ? null : integer($('#policyMoq').value), packSize: $('#policyPackSize').value === '' ? null : integer($('#policyPackSize').value),
+    safetyStockOverride: $('#policySafetyStock').value === '' ? null : integer($('#policySafetyStock').value),
+    velocityWeight3: weights[0] == null ? undefined : weights[0] / 100,
+    velocityWeight7: weights[1] == null ? undefined : weights[1] / 100,
+    velocityWeight15: weights[2] == null ? undefined : weights[2] / 100,
+    velocityWeight30: weights[3] == null ? undefined : weights[3] / 100
   };
   if (TEAM_MODE) {
     const saved = await executeTeamCommand(function () { return teamGateway.saveReplenishmentPolicy(product, policy); }, '补货参数已保存并重新计算。', 'replenishment');

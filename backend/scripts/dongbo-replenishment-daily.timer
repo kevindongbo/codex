@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Dongbo ERP replenishment V3 daily check
+
+[Timer]
+OnCalendar=*-*-* 02:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

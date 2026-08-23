@@ -9,7 +9,7 @@ async function loadDomain() {
   assert.ok(source.includes(boot), "app boot sequence changed unexpectedly");
   const exposed = source.replace(
     boot,
-    "globalThis.__domain = { emptyState, normalizeProduct, normalizeWarehouse, normalizeV5, migrateLegacy, ownProducts, productMissingFields, currentWarehouseId, ensureBalance, balanceFor, availableFor, purchaseTransitFor, receivePurchaseOrder, reserveOrder, shipOrder, confirmAndShipOrder, cancelOrder, receiveSalesReturn, returnedForLine, returnableForLine, addMovement, dispatchTransfer, receiveTransfer, cancelTransfer, localReplenishmentRecommendation, normalizeTeamRecommendation, snapshotFromForm, snapshotAdvancedChanged, fillSnapshotHint, getState: () => state, setState: (value) => { state = value; } };",
+    "globalThis.__domain = { emptyState, normalizeProduct, normalizeWarehouse, normalizeV5, migrateLegacy, ownProducts, productMissingFields, currentWarehouseId, ensureBalance, balanceFor, availableFor, purchaseTransitFor, receivePurchaseOrder, reserveOrder, shipOrder, confirmAndShipOrder, cancelOrder, receiveSalesReturn, returnedForLine, returnableForLine, addMovement, dispatchTransfer, receiveTransfer, cancelTransfer, normalizeTeamRecommendation, snapshotFromForm, snapshotAdvancedChanged, fillSnapshotHint, getState: () => state, setState: (value) => { state = value; } };",
   );
   const storage = new Map();
   const domNodes = new Map();
@@ -313,67 +313,9 @@ test("one confirmation atomically ships a whole order and leaves shortages untou
   assert.equal(state.shipments.length, shipmentsBefore);
 });
 
-test("replenishment combines weighted outbound velocity, lead time, inbound stock and pack rounding", async () => {
+test("replenishment calculation has no local frontend formula", async () => {
   const domain = await loadDomain();
-  const state = domain.emptyState();
-  const product = ownProduct(domain, { safetyStock: 2 });
-  state.products.push(product);
-  domain.addMovement(state, { productId: product.id, type: "opening", onHandDelta: 10, reservedDelta: 0 });
-  state.replenishmentPolicies.push({
-    id: "policy-1", productId: product.id, warehouseId: "warehouse-default",
-    leadTimeOverride: 10, reviewCycleDays: 7, targetDays: 30, minOrderQty: 12, packSize: 6,
-  });
-  state.purchaseOrders.push({
-    id: "po-inbound", warehouseId: "warehouse-default", status: "transit",
-    lines: [{ productId: product.id, orderedQty: 5, receivedQty: 0, cancelledQty: 0 }],
-  });
-  for (let day = 0; day < 7; day += 1) {
-    state.inventoryMovements.push({
-      id: `outbound-${day}`, warehouseId: "warehouse-default", productId: product.id,
-      type: "outbound", onHandDelta: -2, reservedDelta: -2,
-      occurredAt: new Date(Date.now() - day * 86400000).toISOString(),
-    });
-  }
-  domain.setState(state);
-
-  const recommendation = domain.localReplenishmentRecommendation(product);
-  assert.ok(Math.abs(recommendation.velocity7 - 2) < 0.001);
-  assert.ok(Math.abs(recommendation.velocity15 - (14 / 15)) < 0.001);
-  assert.ok(Math.abs(recommendation.velocity30 - (14 / 30)) < 0.001);
-  assert.ok(Math.abs(recommendation.velocity - (
-    recommendation.velocity3 * 0.4 + recommendation.velocity7 * 0.3 +
-    recommendation.velocity15 * 0.2 + recommendation.velocity30 * 0.1
-  )) < 0.001);
-  assert.equal(recommendation.leadDays, 10);
-  assert.equal(recommendation.leadSource, "manual");
-  assert.equal(recommendation.available, 10);
-  assert.equal(recommendation.inbound, 5);
-  assert.equal(recommendation.inventoryPosition, 15);
-  const expectedRawSuggested = recommendation.velocity * 40 * 1.2 + 2 - 15;
-  const expectedSuggested = Math.ceil(Math.max(12, Math.ceil(expectedRawSuggested)) / 6) * 6;
-  assert.equal(recommendation.suggestedQty, expectedSuggested);
-  assert.equal(recommendation.suggestedQty % 6, 0);
-  assert.equal(recommendation.safetyMarginRatio, 0.2);
-  assert.ok(recommendation.safetyMarginUnits > 0);
-  assert.equal(recommendation.urgency, "urgent");
-  assert.equal(recommendation.confidence, "medium");
-  assert.ok(recommendation.latestOrderDate);
-  const localNow = new Date();
-  const localToday = [localNow.getFullYear(), String(localNow.getMonth() + 1).padStart(2, "0"), String(localNow.getDate()).padStart(2, "0")].join("-");
-  assert.ok(recommendation.latestOrderDate < localToday, "overdue order dates must not be clamped to today");
-});
-
-test("zero demand and zero safety stock is data-insufficient instead of an urgent zero-quantity reorder", async () => {
-  const domain = await loadDomain();
-  const state = domain.emptyState();
-  const product = ownProduct(domain, { safetyStock: 0 });
-  state.products.push(product);
-  domain.setState(state);
-  const recommendation = domain.localReplenishmentRecommendation(product);
-  assert.equal(recommendation.velocity, 0);
-  assert.equal(recommendation.suggestedQty, 0);
-  assert.equal(recommendation.urgency, "insufficient");
-  assert.equal(recommendation.stockoutDate, "");
+  assert.equal("localReplenishmentRecommendation" in domain, false);
 });
 
 test("team replenishment response maps the final forecast dataclass fields without losing quantities or dates", async () => {
