@@ -1,19 +1,29 @@
 # ERP 智能补货 V3 + 调拨异常关闭需求包
 
-- 需求上传时间：2026-08-23 23:13 +08:00
+- 原需求上传时间：2026-08-23 23:13 +08:00
+- 详细版覆盖更新时间：2026-08-23 23:26 +08:00
+- 需求版本：V3 Detailed Revision 1
 - 需求分支：`requirements/erp-replenishment-v3-20260823-2313`
 - 开发基线：`codex/erp-analytics-profit-creator-workflow-20260820`
-- 预留实现分支：`codex/erp-replenishment-v3-implementation-20260823`
+- 代码实现分支：`codex/erp-replenishment-v3-implementation-20260823`
 - 仓库：`kevindongbo/codex`
 
-## 文件
+## 本次覆盖说明
 
-1. `REQUIREMENTS.md`：完整业务规则、公式、数据模型、UI、迁移、测试和验收标准。
-2. `CODEX_PROMPT.md`：可直接交给 Codex 的执行提示词。
-3. `HANDOFF_CHECKLIST.md`：Codex 修改完成后必须回传的 GitHub 信息，以及后续阿里云部署前的交接清单。
+2026-08-23 23:26 +08:00 将此前的压缩版需求直接替换为完整详细版。业务规则、公式、示例、边界条件、迁移要求和验收测试均按已确认内容完整保留。
 
-## 使用方式
+此前的 `REQUIREMENTS.md`、`CODEX_PROMPT.md`、`HANDOFF_CHECKLIST.md` 将由以下编号文件取代，不再作为开发真值。
 
-Codex 开始开发前先读取本文件夹全部文件，再从开发基线创建/切换到实现分支。不得直接修改主分支，不得把需求分支当成生产分支。
+## 文件结构
 
-需求文档是本次修改的业务真值；若现有代码与文档冲突，以 `REQUIREMENTS.md` 为准，但应优先做最小兼容修改并保留历史数据。
+1. `01_FULL_REQUIREMENTS.md`：完整详细业务需求，**最高优先级、最终业务真值**。
+2. `02_CURRENT_CODE_AUDIT.md`：当前代码与新需求差异，帮助 Codex 定位改动。
+3. `03_ACCEPTANCE_TESTS.md`：数字案例、测试场景、完整验收标准。
+4. `04_CODEX_PROMPT.md`：可以直接交给 Codex 的执行提示词。
+5. `05_HANDOFF_CHECKLIST.md`：Codex push GitHub 后给部署阶段的交接清单。
+
+## Codex 使用方式
+
+Codex 开发前必须从需求分支完整读取本目录全部编号文件，再切换到实现分支开发。不要直接修改 `main`，不要在需求分支写业务代码。
+
+如文件之间出现表述冲突，以 `01_FULL_REQUIREMENTS.md` 为准。
