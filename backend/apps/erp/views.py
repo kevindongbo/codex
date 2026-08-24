@@ -1064,7 +1064,7 @@ class ReplenishmentDemandDetailView(APIView):
         if sku is None:
             raise NotFound("SKU 不存在或不属于当前组织")
         try:
-            days = int(request.query_params.get("days", "7"))
+            days = int(request.query_params.get("days", "30"))
         except ValueError as exc:
             raise ValidationError({"days": "days 必须是整数"}) from exc
         membership = active_internal_membership(request.user)
@@ -1073,9 +1073,22 @@ class ReplenishmentDemandDetailView(APIView):
         if allowed is not None:
             warehouses = warehouses.filter(pk__in=allowed)
         try:
+            profile = SKUReplenishmentProfile.objects.filter(sku=sku).first()
+            settings = ReplenishmentSettings.objects.filter(organization=organization).first()
+            profile_weights = [
+                getattr(profile, field, None)
+                for field in ("velocity_weight_3", "velocity_weight_7", "velocity_weight_15", "velocity_weight_30")
+            ] if profile else []
+            use_profile_weights = len(profile_weights) == 4 and all(value is not None for value in profile_weights)
+            default_weights = [
+                getattr(settings, field, fallback)
+                for field, fallback in (("velocity_weight_3", Decimal("0.4")), ("velocity_weight_7", Decimal("0.3")), ("velocity_weight_15", Decimal("0.2")), ("velocity_weight_30", Decimal("0.1")))
+            ]
             payload = multi_warehouse_demand_detail(
-                organization=organization, sku=sku, warehouses=list(warehouses), days=days
+                organization=organization, sku=sku, warehouses=list(warehouses), days=days,
+                weights=profile_weights if use_profile_weights else default_weights,
             )
+            payload["weight_source"] = "sku" if use_profile_weights else "global"
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
         return Response(payload)
@@ -2218,7 +2231,9 @@ class StockTransferViewSet(OrganizationScopedViewSet):
         data.is_valid(raise_exception=True)
         transfer = _service_call(
             close_stock_transfer_exception, transfer=self.get_object(), actor=request.user,
-            quantities=data.validated_data.get("quantities") or {}, reason=data.validated_data["reason"],
+            quantities=data.validated_data.get("quantities") or {},
+            reason=data.validated_data.get("reason", ""),
+            idempotency_key=data.validated_data["idempotency_key"],
         )
         return Response(self.get_serializer(transfer).data)
 

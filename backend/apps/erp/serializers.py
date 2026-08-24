@@ -850,11 +850,11 @@ class TransferReceiveInputSerializer(TransferPostInputSerializer):
 
 
 class TransferExceptionCloseInputSerializer(TransferReceiveInputSerializer):
-    reason = serializers.CharField(max_length=240)
+    reason = serializers.CharField(max_length=240, required=False, allow_blank=True, trim_whitespace=True, default="")
 
 
 class TransferCompleteWithExceptionInputSerializer(TransferPostInputSerializer):
-    reason = serializers.CharField(max_length=240, trim_whitespace=True)
+    reason = serializers.CharField(max_length=240, required=False, allow_blank=True, trim_whitespace=True, default="")
 
 
 class CreatorProfileSerializer(ScopedSerializer):

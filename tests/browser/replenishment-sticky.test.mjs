@@ -29,6 +29,10 @@ const executablePath = process.env.BROWSER_EXECUTABLE || (existsSync(installedEd
 const browser = await chromium.launch({ headless: true, executablePath });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const pageErrors = [];
+  const consoleErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()); });
   const products = Array.from({ length: 28 }, (_, index) => ({
     id: `product-${index}`, kind: 'own', name: `浏览器验收商品 ${index + 1}`,
     sku: `QA-STICKY-${String(index + 1).padStart(3, '0')}`, salesCurrency: 'MYR',
@@ -86,9 +90,16 @@ try {
   await page.waitForTimeout(50);
   assertAligned(await geometry());
 
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.locator('#replenishmentTableWrap').evaluate((node) => { node.scrollLeft = 0; node.dispatchEvent(new Event('scroll')); });
+  await page.waitForTimeout(50);
+  assertAligned(await geometry());
+  assert.deepEqual(pageErrors, [], `pageerror: ${pageErrors.join('\n')}`);
+  assert.deepEqual(consoleErrors, [], `console.error: ${consoleErrors.join('\n')}`);
+
   await page.getByRole('button', { name: /商品中心/ }).click();
   assert.equal(await sticky.isVisible(), false, 'sticky header must hide after switching modules');
-  console.log('PASS replenishment sticky header 1440x900: vertical stickiness, horizontal sync, <=2px alignment, product containment, route hide');
+  console.log('PASS replenishment sticky header 1440x900 + 1920x1080: vertical stickiness, horizontal sync, <=2px alignment, product containment, zero pageerror and console.error, route hide');
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

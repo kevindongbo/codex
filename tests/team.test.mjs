@@ -289,7 +289,7 @@ test('warehouse modal APIs, cancellation restore, and partial transfer payloads 
   await gateway.cancelOrder(order);
   await gateway.restoreOrderFulfillment(order);
   await gateway.receiveTransfer(transfer, [{ transferLineId: 'line-a', quantity: 2 }]);
-  await gateway.closeTransferException(transfer, [{ transferLineId: 'line-b', quantity: 1 }], 'lost');
+  await gateway.closeTransferException(transfer, [{ transferLineId: 'line-b', quantity: 1 }], '');
 
   assert.equal(calls[0].path, '/orders/order-1/warehouse-options/');
   assert.equal(calls[1].path, '/orders/order-1/assign-warehouse/');
@@ -298,6 +298,7 @@ test('warehouse modal APIs, cancellation restore, and partial transfer payloads 
   assert.equal(JSON.stringify(calls[4].options.body.quantities), JSON.stringify({ 'line-a': 2 }));
   assert.equal(JSON.stringify(calls[5].options.body.quantities), JSON.stringify({ 'line-b': 1 }));
   assert.match(calls[5].options.body.idempotency_key, /^transfer-close-transit-exception:/);
+  assert.equal(calls[5].options.body.reason, '');
 });
 
 test('order creation uses one idempotent create-and-ship request and keeps shortage outcome', async () => {
@@ -587,21 +588,21 @@ test('analytics, creator CRM, profit plans and final transfer exception use audi
   const gateway = new Team.TeamGateway({ apiBase: '/api' });
   gateway.organizationId = 'org-1';
   await gateway.getAnalyticsOverview({ days: 7, store: 'store-1' });
-  await gateway.getReplenishmentDemandDetail({ skuId: 'sku-1' }, 7);
+  await gateway.getReplenishmentDemandDetail({ skuId: 'sku-1' }, 30);
   await gateway.listCreators({ stage: 'pending' });
   await gateway.createCreatorActivity('creator-1', 'collaboration', { stage: 'pending' });
   await gateway.listProfitPlans({ status: 'active' });
   await gateway.prepareProfitPlanRecalculation('plan-1', 'version-2');
-  await gateway.completeTransferWithException({ id: 'transfer-1' }, '货损');
+  await gateway.completeTransferWithException({ id: 'transfer-1' }, '');
   assert.match(calls[0].url, /analytics\/overview\/\?days=7.*store=store-1/);
-  assert.equal(calls[1].url, '/api/replenishment/demand-detail/?sku=sku-1&days=7');
+  assert.equal(calls[1].url, '/api/replenishment/demand-detail/?sku=sku-1&days=30');
   assert.equal(calls[2].url, '/api/creators/?stage=pending');
   assert.equal(calls[3].url, '/api/creators/creator-1/collaborations/');
   assert.equal(calls[4].url, '/api/profit-calculator/plans/');
   assert.equal(calls[5].url, '/api/profit-calculator/plans/plan-1/recalculate/');
   assert.deepEqual(JSON.parse(calls[5].options.body), { version: 'version-2' });
   assert.equal(calls[6].url, '/api/stock-transfers/transfer-1/complete-with-exception/');
-  assert.equal(JSON.parse(calls[6].options.body).reason, '货损');
+  assert.equal(JSON.parse(calls[6].options.body).reason, '');
   assert.match(JSON.parse(calls[6].options.body).idempotency_key, /^transfer-complete-with-exception:/);
 });
 

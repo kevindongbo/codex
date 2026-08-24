@@ -8,7 +8,7 @@ from apps.erp.models import (
     AuditLog, CompetitorProduct, CompetitorSnapshot, Membership, Organization, Product,
     PurchaseOrder, PurchaseOrderLine, PurchaseShipment, PurchaseShipmentLine, Receipt, ReturnLine, ReturnOrder, ReturnReceipt,
     SalesOrder, SalesOrderLine, Shipment, SKU, StockBalance, StockLedger,
-    StockReservation, StockTransfer, StockTransferLine, StockTransferPackage, StockTransferPackageLine, Supplier, Warehouse,
+    StockReservation, StockTransfer, StockTransferExceptionCloseEvent, StockTransferLine, StockTransferPackage, StockTransferPackageLine, Supplier, Warehouse,
 )
 from apps.erp.services import (
     adjust_inventory, allocate_order, cancel_order, cancel_purchase, cancel_stock_transfer,
@@ -16,6 +16,7 @@ from apps.erp.services import (
     close_stock_transfer_exception, complete_stock_transfer_with_exception, dispatch_stock_transfer, receive_purchase, receive_return, receive_stock_transfer,
     restore_order_fulfillment, ship_order, start_picking, submit_purchase, verify_order,
 )
+from apps.erp.serializers import TransferCompleteWithExceptionInputSerializer, TransferExceptionCloseInputSerializer
 
 
 class InventoryServiceTests(TestCase):
@@ -60,6 +61,18 @@ class InventoryServiceTests(TestCase):
             )
         balance.refresh_from_db()
         self.assertEqual(balance.on_hand, Decimal("8"))
+
+    def test_transfer_exception_serializers_allow_omitted_or_blank_reason_but_require_idempotency(self):
+        for serializer_class in (TransferExceptionCloseInputSerializer, TransferCompleteWithExceptionInputSerializer):
+            omitted = serializer_class(data={"idempotency_key": "optional-reason"})
+            blank = serializer_class(data={"idempotency_key": "blank-reason", "reason": ""})
+            named = serializer_class(data={"idempotency_key": "named-reason", "reason": "运输丢失"})
+            missing_key = serializer_class(data={"reason": ""})
+            self.assertTrue(omitted.is_valid(), omitted.errors)
+            self.assertTrue(blank.is_valid(), blank.errors)
+            self.assertTrue(named.is_valid(), named.errors)
+            self.assertFalse(missing_key.is_valid())
+            self.assertEqual(omitted.validated_data["reason"], "")
 
     def test_receipt_updates_purchase_and_stock_only_once(self):
         supplier = Supplier.objects.create(
@@ -709,7 +722,7 @@ class InventoryServiceTests(TestCase):
         self.assertEqual(line_a.received_quantity, Decimal("2"))
         self.assertEqual(line_b.received_quantity, Decimal("0"))
         closed = close_stock_transfer_exception(
-            transfer=transfer, quantities={str(line_a.pk): Decimal("3"), str(line_b.pk): Decimal("3")}, reason="lost in transit", actor=self.user,
+            transfer=transfer, quantities={str(line_a.pk): Decimal("3"), str(line_b.pk): Decimal("3")}, reason="lost in transit", idempotency_key="pkg-close-exception", actor=self.user,
         )
         self.assertEqual(closed.status, StockTransfer.Status.COMPLETED_WITH_EXCEPTION)
         line_a.refresh_from_db()
@@ -749,6 +762,48 @@ class InventoryServiceTests(TestCase):
         self.assertEqual(line.exception_closed_quantity, Decimal("3"))
         self.assertEqual(balance.on_hand, Decimal("2"))
         self.assertEqual(balance.in_transit, Decimal("0"))
+
+    def test_transfer_exception_empty_reason_is_idempotent_without_restoring_or_receiving_stock(self):
+        destination = Warehouse.objects.create(organization=self.organization, code="EMPTY-DST", name="空原因目标仓")
+        adjust_inventory(organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+                         delta="100", reason="opening", idempotency_key="empty-opening", actor=self.user)
+        transfer = StockTransfer.objects.create(organization=self.organization, number="TR-EMPTY-REASON",
+                                                source_warehouse=self.warehouse, destination_warehouse=destination)
+        line = StockTransferLine.objects.create(transfer=transfer, sku=self.sku, quantity="100")
+        dispatch_stock_transfer(transfer=transfer, idempotency_key="empty-dispatch", actor=self.user)
+        receive_stock_transfer(transfer=transfer, idempotency_key="empty-receive", quantities={str(line.pk): Decimal("80")}, actor=self.user)
+        first = close_stock_transfer_exception(
+            transfer=transfer, quantities={str(line.pk): Decimal("20")}, reason="", idempotency_key="empty-close", actor=self.user,
+        )
+        replay = close_stock_transfer_exception(
+            transfer=transfer, quantities={str(line.pk): Decimal("20")}, reason="", idempotency_key="empty-close", actor=self.user,
+        )
+        transfer.refresh_from_db(); line.refresh_from_db()
+        source = StockBalance.objects.get(warehouse=self.warehouse, sku=self.sku)
+        target = StockBalance.objects.get(warehouse=destination, sku=self.sku)
+        self.assertEqual(first.pk, replay.pk)
+        self.assertEqual(transfer.status, StockTransfer.Status.COMPLETED_WITH_EXCEPTION)
+        self.assertEqual(transfer.exception_reason, "")
+        self.assertEqual(line.received_quantity, Decimal("80"))
+        self.assertEqual(line.exception_closed_quantity, Decimal("20"))
+        self.assertEqual(source.on_hand, Decimal("0"))
+        self.assertEqual(target.on_hand, Decimal("80"))
+        self.assertEqual(target.in_transit, Decimal("0"))
+        self.assertEqual(StockTransferExceptionCloseEvent.objects.filter(transfer=transfer).count(), 1)
+
+    def test_final_transfer_exception_allows_empty_reason_and_remains_idempotent(self):
+        destination = Warehouse.objects.create(organization=self.organization, code="EMPTY-FINAL", name="空原因结案仓")
+        adjust_inventory(organization=self.organization, warehouse=self.warehouse, sku=self.sku,
+                         delta="5", reason="opening", idempotency_key="final-empty-opening", actor=self.user)
+        transfer = StockTransfer.objects.create(organization=self.organization, number="TR-FINAL-EMPTY",
+                                                source_warehouse=self.warehouse, destination_warehouse=destination)
+        StockTransferLine.objects.create(transfer=transfer, sku=self.sku, quantity="5")
+        dispatch_stock_transfer(transfer=transfer, idempotency_key="final-empty-dispatch", actor=self.user)
+        first, event = complete_stock_transfer_with_exception(transfer=transfer, idempotency_key="final-empty-close", reason="", actor=self.user)
+        replay, replay_event = complete_stock_transfer_with_exception(transfer=transfer, idempotency_key="final-empty-close", reason="", actor=self.user)
+        self.assertEqual(first.pk, replay.pk)
+        self.assertEqual(event.pk, replay_event.pk)
+        self.assertEqual(event.reason, "")
 
     def test_stock_transfer_overdispatch_rolls_back_every_line(self):
         destination = Warehouse.objects.create(

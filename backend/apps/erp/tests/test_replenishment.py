@@ -40,6 +40,7 @@ from apps.erp.replenishment import (
     estimate_demand_velocity,
     estimate_lead_time,
     get_inventory_position,
+    multi_warehouse_demand_detail,
     summarize_lead_times,
 )
 
@@ -382,6 +383,41 @@ class ReplenishmentTests(TestCase):
         self.assertEqual(demand.breakdown["3"]["order_outbound"], Decimal("0.000"))
         self.assertEqual(demand.breakdown["3"]["manual_outbound"], Decimal("6.000"))
         self.assertEqual(demand.breakdown["3"]["net_sales"], Decimal("6.000"))
+
+    def test_thirty_day_demand_detail_uses_only_shipment_and_manual_outbound_by_warehouse(self):
+        self.create_shipment(warehouse=self.warehouse, days_ago=2, quantity="100", sequence=301)
+        self.create_shipment(warehouse=self.other_warehouse, days_ago=2, quantity="200", sequence=302)
+        manual_inbound = post_stock(
+            organization=self.organization, warehouse=self.other_warehouse, sku=self.sku,
+            event_type=StockLedger.Type.MANUAL_INBOUND, on_hand_delta=Decimal("50"), reserved_delta=Decimal("0"),
+            reference_type="test", reference_id="manual-30-in", idempotency_key="manual-30-in",
+        )
+        self.set_ledger_time(manual_inbound, self.as_of - timedelta(days=1))
+        manual = post_stock(
+            organization=self.organization, warehouse=self.other_warehouse, sku=self.sku,
+            event_type=StockLedger.Type.MANUAL_OUTBOUND, on_hand_delta=Decimal("-50"), reserved_delta=Decimal("0"),
+            reference_type="test", reference_id="manual-30", idempotency_key="manual-30",
+        )
+        self.set_ledger_time(manual, self.as_of - timedelta(days=1))
+        transfer_inbound = post_stock(
+            organization=self.organization, warehouse=self.other_warehouse, sku=self.sku,
+            event_type=StockLedger.Type.MANUAL_INBOUND, on_hand_delta=Decimal("60"), reserved_delta=Decimal("0"),
+            reference_type="test", reference_id="transfer-30-in", idempotency_key="transfer-30-in",
+        )
+        self.set_ledger_time(transfer_inbound, self.as_of - timedelta(days=1))
+        excluded = post_stock(
+            organization=self.organization, warehouse=self.other_warehouse, sku=self.sku,
+            event_type=StockLedger.Type.TRANSFER_OUT, on_hand_delta=Decimal("-60"), reserved_delta=Decimal("0"),
+            reference_type="test", reference_id="transfer-30", idempotency_key="transfer-30",
+        )
+        self.set_ledger_time(excluded, self.as_of - timedelta(days=1))
+        detail = multi_warehouse_demand_detail(
+            organization=self.organization, sku=self.sku, warehouses=[self.warehouse, self.other_warehouse], days=30, as_of=self.as_of,
+        )
+        self.assertEqual(Decimal(detail["total"]["true_outbound"]), Decimal("350.000"))
+        self.assertEqual(Decimal(detail["warehouses"][0]["true_outbound"]), Decimal("100.000"))
+        self.assertEqual(Decimal(detail["warehouses"][1]["true_outbound"]), Decimal("250.000"))
+        self.assertEqual([row["days"] for row in detail["periods"]], [3, 7, 15, 30])
 
     def test_return_reduces_demand_on_original_shipment_date(self):
         self.create_shipment(
