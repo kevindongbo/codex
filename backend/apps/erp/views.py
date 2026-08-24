@@ -27,7 +27,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
     AIInvocationLog, AIProviderConfig, AIRecommendation, AlphaShopConfig, AuditLog, CompetitorProduct, CompetitorSnapshot, ExchangeRateSnapshot, Membership, Organization, OrganizationSyncState, OwnerEmailChallenge, OwnStore, ProfitCalculationStrategy, ProfitCalculationWorkingConfig, ProfitPlan, ProfitPlanVersion,
-    LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentConversionEvent, ReplenishmentPolicy, ReplenishmentSettings,
+    LocalImport, Product, ProductImage, PurchaseOrder, PurchaseOrderLine, PurchaseShipment, Receipt, ReceiptLine, ReplenishmentAIJob, ReplenishmentConversionEvent, ReplenishmentPolicy, ReplenishmentSettings, SKUReplenishmentProfile,
     ReturnLine, ReturnOrder, ReturnReceipt, ReturnReceiptLine, SalesOrder, SalesOrderLine, Shipment, ShipmentLine,
     SKU, StockBalance, StockLedger, StockLedgerReversal, StockReservation, StockTransfer, StockTransferLine, StockTransferPackage, ReplenishmentRecommendation, StoreProduct, Supplier, TikTokShopConnection, TikTokShopSyncRun, UploadedMediaAsset, Warehouse,
     CreatorAttribution, CreatorCollaboration, CreatorContent, CreatorFollowUp, CreatorProfile, CreatorSample,
@@ -872,22 +872,11 @@ def replenishment_recommendations(request):
     )
     query.is_valid(raise_exception=True)
     warehouse = query.validated_data["warehouse"]
-    policies = {
-        policy.sku_id: policy
-        for policy in ReplenishmentPolicy.objects.filter(
-            organization=organization, warehouse=warehouse
-        )
-    }
+    profiles = {profile.sku_id: profile for profile in SKUReplenishmentProfile.objects.filter(organization=organization).select_related("primary_warehouse")}
     settings, _ = ReplenishmentSettings.objects.get_or_create(organization=organization)
     default_policy = ForecastPolicy(
-        safety_days=settings.safety_days,
-        review_cycle_days=Decimal(settings.review_cycle_days),
         target_days=Decimal(settings.target_days),
-        manual_lead_days=Decimal(warehouse.default_lead_time_days or 0),
-        coverage_days=Decimal(warehouse.default_coverage_days) if warehouse.default_coverage_days is not None else None,
-        service_level_factor=settings.service_level_factor,
-        safety_margin_ratio=settings.safety_margin_ratio,
-        initial_reference_shipment_count=settings.initial_reference_shipment_count,
+        manual_lead_days=Decimal(settings.default_lead_time_days),
     )
     weights = (settings.velocity_weight_3, settings.velocity_weight_7, settings.velocity_weight_15, settings.velocity_weight_30)
     recommendations = []
@@ -897,35 +886,21 @@ def replenishment_recommendations(request):
         product__status=Product.Status.ACTIVE,
     ).select_related("product", "product__default_supplier").order_by("code", "id")
     for sku in skus:
-        stored_policy = policies.get(sku.pk)
-        if stored_policy is not None and not stored_policy.replenishment_enabled:
+        profile = profiles.get(sku.pk)
+        primary = profile.primary_warehouse if profile else None
+        if primary is not None and primary.pk != warehouse.pk:
             continue
-        lead_value = stored_policy.lead_time_override if stored_policy and stored_policy.lead_time_override is not None else warehouse.default_lead_time_days
-        coverage_value = stored_policy.coverage_days if stored_policy and stored_policy.coverage_days is not None else warehouse.default_coverage_days
-        if lead_value is None or coverage_value is None:
-            recommendations.append({"warehouse": str(warehouse.pk), "sku": str(sku.pk), "sku_code": sku.code, "status": "missing_parameters", "reason": "缺少补货参数，请先配置仓库默认值或 SKU 单独参数"})
+        if primary is None:
+            recommendations.append({"warehouse": str(warehouse.pk), "sku": str(sku.pk), "sku_code": sku.code, "product": str(sku.product_id), "product_name": sku.product.name, "status": "primary_warehouse_required", "reason": "请先设置主力仓库", "suggested_order_quantity": "0", "alert_level": "primary_warehouse_required"})
             continue
-        forecast_policy = default_policy
-        if stored_policy is not None:
-            forecast_policy = ForecastPolicy(
-                safety_days=default_policy.safety_days,
-                review_cycle_days=Decimal(stored_policy.review_cycle_days),
-                target_days=Decimal(stored_policy.target_days),
-                coverage_days=Decimal(coverage_value),
-                moq=stored_policy.min_order_qty,
-                pack_size=stored_policy.pack_size,
-                manual_lead_days=(
-                    Decimal(lead_value)
-                ),
-                safety_stock_units=stored_policy.safety_stock_override,
-                service_level_factor=settings.service_level_factor,
-                safety_margin_ratio=default_policy.safety_margin_ratio,
-                initial_reference_shipment_count=settings.initial_reference_shipment_count,
-            )
+        weights = (profile.velocity_weight_3, profile.velocity_weight_7, profile.velocity_weight_15, profile.velocity_weight_30) if profile and all(value is not None for value in (profile.velocity_weight_3, profile.velocity_weight_7, profile.velocity_weight_15, profile.velocity_weight_30)) else (settings.velocity_weight_3, settings.velocity_weight_7, settings.velocity_weight_15, settings.velocity_weight_30)
+        if sum(weights, Decimal("0")) != Decimal("1"):
+            raise ValidationError("3/7/15/30 天权重合计必须为 100%。")
+        forecast_policy = ForecastPolicy(target_days=Decimal(settings.target_days), coverage_days=profile.target_coverage_days if profile else settings.target_days, moq=profile.min_order_qty if profile else None, pack_size=profile.pack_size if profile else None, manual_lead_days=Decimal(profile.manual_lead_time_days or settings.default_lead_time_days) if profile else Decimal(settings.default_lead_time_days), safety_stock_units=sku.safety_stock)
         forecast = build_replenishment_forecast(
             organization=organization,
             sku=sku,
-            warehouse=warehouse,
+            warehouse=primary,
             supplier=sku.product.default_supplier,
             policy=forecast_policy,
             weights=weights,
@@ -936,7 +911,19 @@ def replenishment_recommendations(request):
             "sku_code": sku.code,
             "product": str(sku.product_id),
             "product_name": sku.product.name,
-            "policy": str(stored_policy.pk) if stored_policy is not None else None,
+            "profile": str(profile.pk) if profile else None,
+            "primary_warehouse": str(primary.pk),
+            "weight_source": "sku" if profile and profile.velocity_weight_3 is not None else "global",
+            "weights": {"w3": str(weights[0]), "w7": str(weights[1]), "w15": str(weights[2]), "w30": str(weights[3])},
+            "profile_config": {
+                "primary_warehouse": str(primary.pk),
+                "target_coverage_days": profile.target_coverage_days,
+                "manual_lead_time_days": profile.manual_lead_time_days,
+                "min_order_qty": str(profile.min_order_qty) if profile.min_order_qty is not None else None,
+                "pack_size": str(profile.pack_size) if profile.pack_size is not None else None,
+                "safety_stock": str(sku.safety_stock),
+            },
+            "calculation_version": "v3_all_warehouse_primary_warehouse",
             **asdict(forecast),
         })
     return Response(recommendations)
@@ -955,50 +942,54 @@ def replenishment_batch_policy(request):
     """Apply only explicitly supplied fields to selected SKUs in the selected warehouse."""
     organization = _require_replenishment_write(request)
     payload = request.data if isinstance(request.data, dict) else {}
-    warehouse_id = payload.get("warehouse")
     sku_ids = list(dict.fromkeys(str(value) for value in (payload.get("sku_ids") or []) if value))
     fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
-    allowed = {"lead_time_override", "coverage_days", "replenishment_enabled", "review_cycle_days", "target_days", "min_order_qty", "pack_size", "safety_stock_override"}
+    allowed = {"primary_warehouse", "velocity_weight_3", "velocity_weight_7", "velocity_weight_15", "velocity_weight_30", "target_coverage_days", "manual_lead_time_days", "min_order_qty", "pack_size", "safety_stock"}
     fields = {key: value for key, value in fields.items() if key in allowed}
-    if not warehouse_id or not sku_ids or not fields:
-        raise ValidationError("请选择仓库、至少一个 SKU 和至少一个需要修改的参数")
-    warehouse = Warehouse.objects.filter(pk=warehouse_id, organization=organization, active=True).first()
-    if warehouse is None:
-        raise ValidationError({"warehouse": "仓库不存在或已停用"})
+    if not sku_ids or not fields:
+        raise ValidationError("请选择至少一个 SKU 和至少一个需要修改的参数")
+    primary_id = fields.get("primary_warehouse")
+    if primary_id not in (None, "") and not Warehouse.objects.filter(pk=primary_id, organization=organization, active=True).exists():
+        raise ValidationError({"primary_warehouse": "主力仓库不存在或已停用"})
     skus = list(SKU.objects.filter(pk__in=sku_ids, organization=organization, active=True, product__status=Product.Status.ACTIVE))
     if len(skus) != len(sku_ids):
         raise ValidationError({"sku_ids": "包含无效或不属于当前组织的 SKU"})
-    integer_fields = {"lead_time_override", "coverage_days", "review_cycle_days", "target_days"}
-    decimal_fields = {"min_order_qty", "pack_size", "safety_stock_override"}
+    integer_fields = {"target_coverage_days", "manual_lead_time_days"}
+    nullable_fields = {"target_coverage_days", "manual_lead_time_days", "min_order_qty", "pack_size", "primary_warehouse"}
     cleaned = {}
     for key, value in fields.items():
-        if value in (None, "") and key in {"lead_time_override", "safety_stock_override"}:
+        if value in (None, "") and key in nullable_fields:
             cleaned[key] = None
+            continue
+        if key == "primary_warehouse":
+            cleaned[key] = Warehouse.objects.get(pk=value, organization=organization)
             continue
         try:
             cleaned[key] = int(value) if key in integer_fields else Decimal(str(value))
         except (ValueError, TypeError, InvalidOperation) as exc:
             raise ValidationError({key: "请输入有效数值"}) from exc
-        if cleaned[key] < 0 or (key not in {"safety_stock_override"} and cleaned[key] <= 0):
+        if cleaned[key] < 0 or (key not in {"safety_stock", "velocity_weight_3", "velocity_weight_7", "velocity_weight_15", "velocity_weight_30"} and cleaned[key] <= 0):
             raise ValidationError({key: "该参数必须为正数（安全库存可为 0）"})
     settings, _ = ReplenishmentSettings.objects.get_or_create(organization=organization)
+    weights = [fields.get(key) for key in ("velocity_weight_3", "velocity_weight_7", "velocity_weight_15", "velocity_weight_30")]
+    if any(value is not None for value in weights) and not all(value is not None for value in weights):
+        raise ValidationError("SKU 独立权重必须同时填写 3/7/15/30 天四项。")
+    if all(value is not None for value in weights) and sum((Decimal(str(value)) for value in weights), Decimal("0")) != Decimal("1"):
+        raise ValidationError("3/7/15/30 天权重合计必须为 100%。")
     saved = []
     with transaction.atomic():
         for sku in skus:
-            policy, _ = ReplenishmentPolicy.objects.get_or_create(
-                organization=organization, warehouse=warehouse, sku=sku,
-                defaults={
-                    "review_cycle_days": settings.review_cycle_days, "target_days": settings.target_days,
-                    "min_order_qty": Decimal("1"), "pack_size": Decimal("1"),
-                },
-            )
+            profile, _ = SKUReplenishmentProfile.objects.get_or_create(organization=organization, sku=sku, defaults={"target_coverage_days": settings.target_days})
             for key, value in cleaned.items():
-                setattr(policy, key, value)
-            policy.full_clean()
-            policy.save()
-            saved.append(str(policy.pk))
-            schedule_replenishment_ai_analysis(organization=organization, warehouse=warehouse, sku_id=sku.pk, reason="policy_changed")
-    return Response({"updated": len(saved), "policy_ids": saved})
+                if key == "safety_stock":
+                    sku.safety_stock = value
+                    sku.save(update_fields=["safety_stock", "updated_at"])
+                else:
+                    setattr(profile, key, value if value != "" else None)
+            profile.full_clean()
+            profile.save()
+            saved.append(str(profile.pk))
+    return Response({"updated": len(saved), "profile_ids": saved})
 
 
 @api_view(["POST"])

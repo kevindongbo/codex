@@ -297,6 +297,7 @@ test('warehouse modal APIs, cancellation restore, and partial transfer payloads 
   assert.equal(calls[3].path, '/orders/order-1/restore-fulfillment/');
   assert.equal(JSON.stringify(calls[4].options.body.quantities), JSON.stringify({ 'line-a': 2 }));
   assert.equal(JSON.stringify(calls[5].options.body.quantities), JSON.stringify({ 'line-b': 1 }));
+  assert.match(calls[5].options.body.idempotency_key, /^transfer-close-transit-exception:/);
 });
 
 test('order creation uses one idempotent create-and-ship request and keeps shortage outcome', async () => {

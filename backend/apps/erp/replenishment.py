@@ -156,7 +156,7 @@ def estimate_lead_time(
     *,
     organization,
     sku,
-    warehouse,
+    warehouse=None,
     supplier=None,
     route: object | None = None,
     route_resolver: Callable[[PurchaseOrder], object] | None = None,
@@ -336,7 +336,7 @@ def estimate_demand_velocity(
         Decimal("0.40"), Decimal("0.30"), Decimal("0.20"), Decimal("0.10"),
     ),
 ) -> DemandVelocity:
-    """Calculate warehouse-local weighted demand from final outbound ledgers.
+    """Calculate all-warehouse weighted demand from final outbound ledgers.
 
     ``shipment`` and ``manual_outbound`` are intentionally the only demand facts.
     Reservations are not deliveries; returns/inbound/adjustments do not represent sales.
@@ -359,7 +359,7 @@ def estimate_demand_velocity(
     lines = list(
         StockLedger.objects.filter(
             organization=organization,
-            warehouse=warehouse,
+            **({"warehouse": warehouse} if warehouse is not None else {}),
             sku=sku,
             event_type__in=(
                 StockLedger.Type.SHIPMENT,
@@ -371,22 +371,6 @@ def estimate_demand_velocity(
             reversal__isnull=True,
         ).order_by("occurred_at")
     )
-
-    # A customer return reverses demand on the *original sales date*, rather
-    # than the date it reached our warehouse.  RESTOCK and DAMAGED both reduce
-    # net sales; the receive service alone decides whether RESTOCK returns stock.
-    return_by_day: dict[date, Decimal] = defaultdict(lambda: ZERO)
-    return_lines = ReturnReceiptLine.objects.filter(
-        receipt__organization=organization, sku=sku,
-        receipt__return_order__warehouse=warehouse,
-        receipt__return_order__original_order__isnull=False,
-    ).select_related("receipt__return_order__original_order")
-    for return_line in return_lines:
-        shipment_line = ShipmentLine.objects.filter(
-            shipment__order=return_line.receipt.return_order.original_order, sku=sku,
-        ).select_related("shipment").order_by("shipment__shipped_at", "id").first()
-        if shipment_line is not None:
-            return_by_day[timezone.localtime(shipment_line.shipment.shipped_at).date()] += _decimal(return_line.quantity)
 
     order_quantities: dict[int, Decimal] = {}
     manual_quantities: dict[int, Decimal] = {}
@@ -412,22 +396,12 @@ def estimate_demand_velocity(
             ),
             ZERO,
         )
-        return_quantities[days] = sum(
-            (
-                quantity
-                for day, quantity in return_by_day.items()
-                if day >= timezone.localtime(threshold).date()
-            ),
-            ZERO,
-        )
-        quantities[days] = max(
-            ZERO,
-            order_quantities[days]
-            + manual_quantities[days]
-            - return_quantities[days],
-        )
+        return_quantities[days] = ZERO
+        quantities[days] = order_quantities[days] + manual_quantities[days]
     daily = {days: quantities[days] / Decimal(days) for days in windows}
-    velocity = sum((daily[days] * normalized_weights[index] for index, days in enumerate(windows)), ZERO)
+    weighted_numerator = sum((quantities[days] * normalized_weights[index] for index, days in enumerate(windows)), ZERO)
+    weighted_denominator = sum((Decimal(days) * normalized_weights[index] for index, days in enumerate(windows)), ZERO)
+    velocity = weighted_numerator / weighted_denominator if weighted_denominator else ZERO
     daily_3 = daily.get(3, ZERO)
     daily_7 = daily[7]
     daily_15 = daily[15]
@@ -442,15 +416,12 @@ def estimate_demand_velocity(
         day = timezone.localtime(line.occurred_at).date()
         if day in daily_quantities:
             daily_quantities[day] += -_decimal(line.on_hand_delta)
-    for day, quantity in return_by_day.items():
-        if day in daily_quantities:
-            daily_quantities[day] -= quantity
     daily_values = list(daily_quantities.values())
     daily_average = sum(daily_values, ZERO) / Decimal(len(daily_values))
     variance = sum(((value - daily_average) ** 2 for value in daily_values), ZERO) / Decimal(len(daily_values))
     daily_stddev = _rate(Decimal(str(math.sqrt(float(variance)))))
     reasons: list[str] = [
-        "日速度按近 3/7/15/30 日订单出库与手动销售出库加权计算；退货按原销售日回溯扣减，不含锁库、调拨、调整或已撤回流水"
+        "日速度按全仓近 3/7/15/30 日订单出库与手动销售出库的加权总量÷加权天数计算；退货、锁库、调拨、调整或已撤回流水均不计入需求"
     ]
     if not lines:
         confidence = "low"
@@ -487,6 +458,7 @@ def estimate_demand_velocity(
                 "returns_at_original_sale_date": _quantity(return_quantities[days]),
                 "net_sales": _quantity(quantities[days]),
                 "daily_average": _rate(daily[days]),
+                "weight": _rate(normalized_weights[windows.index(days)]),
             }
             for days in windows
         },
@@ -655,8 +627,8 @@ class ReplenishmentPolicy:
     safety_days: Decimal = Decimal("7")
     review_cycle_days: Decimal = Decimal("7")
     target_days: Decimal = Decimal("30")
-    moq: Decimal = ZERO
-    pack_size: Decimal = Decimal("1")
+    moq: Decimal | None = None
+    pack_size: Decimal | None = None
     manual_lead_days: Decimal = Decimal("14")
     coverage_days: Decimal | None = None
     replenishment_enabled: bool = True
@@ -707,13 +679,16 @@ def _stockout_date(
 
 
 def _round_order_quantity(
-    quantity: Decimal, moq: Decimal, pack_size: Decimal
+    quantity: Decimal, moq: Decimal | None, pack_size: Decimal | None
 ) -> Decimal:
     if quantity <= 0:
         return ZERO
-    required = max(quantity, moq)
-    packs = (required / pack_size).to_integral_value(rounding=ROUND_CEILING)
-    return _quantity(packs * pack_size)
+    required = max(quantity, _decimal(moq, ZERO))
+    size = _decimal(pack_size, ZERO)
+    if size <= ZERO:
+        return _quantity(required)
+    packs = (required / size).to_integral_value(rounding=ROUND_CEILING)
+    return _quantity(packs * size)
 
 
 def _combined_confidence(*values: str) -> str:
@@ -731,42 +706,30 @@ def calculate_replenishment(
     """Apply an inventory policy without performing database access."""
 
     policy = policy or ReplenishmentPolicy()
-    safety_days = _nonnegative("safety_days", _decimal(policy.safety_days))
-    review_days = _nonnegative("review_cycle_days", _decimal(policy.review_cycle_days))
     target_days = _nonnegative("target_days", _decimal(policy.target_days))
-    coverage_days = _nonnegative("coverage_days", _decimal(policy.coverage_days, target_days))
-    moq = _nonnegative("moq", _decimal(policy.moq))
-    pack_size = _decimal(policy.pack_size)
-    if pack_size <= 0:
-        raise ValueError("pack_size must be positive")
+    coverage_days = None if policy.coverage_days is None else _nonnegative("coverage_days", _decimal(policy.coverage_days))
+    moq = None if policy.moq is None else _nonnegative("moq", _decimal(policy.moq))
+    pack_size = None if policy.pack_size is None else _nonnegative("pack_size", _decimal(policy.pack_size))
 
     forecast_date = _as_date(as_of)
     velocity = max(ZERO, _decimal(demand.daily_velocity))
     lead_days = Decimal(lead_time.selected_days)
-    day_based_safety = velocity * safety_days
-    service_level_factor = _nonnegative("service_level_factor", _decimal(policy.service_level_factor))
-    configured_margin_ratio = _nonnegative(
-        "safety_margin_ratio", _decimal(policy.safety_margin_ratio)
-    )
-    if configured_margin_ratio > 1:
-        raise ValueError("safety_margin_ratio cannot exceed 1")
-    volatility_safety = demand.daily_stddev * Decimal(str(math.sqrt(float(lead_days + review_days)))) * service_level_factor
     manual_safety = _nonnegative(
         "safety_stock_units", _decimal(policy.safety_stock_units, ZERO)
     )
-    initial_reference = _nonnegative("initial_safety_reference", _decimal(policy.initial_safety_reference))
-    initial_safety = initial_reference if demand.shipment_count < policy.initial_reference_shipment_count else ZERO
-    safety_units = max(day_based_safety, volatility_safety, manual_safety, initial_safety)
-
-    effective_target_days = coverage_days
-    volatility_ratio = demand.daily_stddev / velocity if velocity > ZERO else ZERO
-    effective_margin_ratio = min(Decimal("1"), max(configured_margin_ratio, volatility_ratio))
-    reorder_demand = velocity * (lead_days + coverage_days)
-    reorder_margin = reorder_demand * effective_margin_ratio
-    target_demand = velocity * (lead_days + effective_target_days)
-    safety_margin_units = target_demand * effective_margin_ratio
-    reorder_point = reorder_demand + safety_units + reorder_margin
-    target_position = target_demand + safety_units + safety_margin_units
+    if coverage_days is not None:
+        effective_target_days = max(lead_days, coverage_days)
+        safety_units = ZERO
+        reorder_point = velocity * lead_days
+        target_position = velocity * effective_target_days
+        mode = "target_coverage"
+    else:
+        effective_target_days = lead_days
+        safety_units = manual_safety
+        reorder_point = velocity * lead_days + safety_units
+        target_position = reorder_point
+        mode = "safety_stock"
+    safety_margin_units = ZERO
     position = max(ZERO, _decimal(inventory.inventory_position))
     needs_reorder = position <= reorder_point and target_position > position
     raw_quantity = max(ZERO, target_position - position) if needs_reorder else ZERO
@@ -774,7 +737,7 @@ def calculate_replenishment(
 
     if needs_reorder:
         alert_level = "red"
-    elif velocity > 0 and position <= reorder_point + velocity * review_days:
+    elif velocity > 0:
         alert_level = "yellow"
     else:
         alert_level = "green"
@@ -787,22 +750,18 @@ def calculate_replenishment(
     )
     latest_order_date = None
     if projected_stockout is not None:
-        risk_buffer = math.ceil(float(lead_days + safety_days))
-        latest_order_date = projected_stockout - timedelta(days=risk_buffer)
+        latest_order_date = projected_stockout - timedelta(days=int(lead_days))
 
     reasons = list(lead_time.reasons) + list(demand.reasons)
     reasons.append(
-        "库存位置 = 可用库存 + 已确认在途；补货点 = 日速度 ×（采购周期 + 检查周期）+ 安全库存"
+        f"{mode}：库存位置 = 主力仓可用库存 + 已确认在途；触发点 = {_quantity(reorder_point)}，目标库存 = {_quantity(target_position)}"
     )
     reasons.append(
-        f"安全库存同时考虑覆盖天数和销量波动（近 30 天日波动 {demand.daily_stddev}，服务系数 {service_level_factor}）"
+        "目标覆盖模式不叠加安全天数、波动安全量、服务系数或安全余量。"
     )
     reasons.append(
-        f"补货安全余量 = 目标需求 {_quantity(target_demand)} × 有效比例 {effective_margin_ratio:.1%}；"
-        f"配置值 {configured_margin_ratio:.1%}，销量波动比例 {volatility_ratio:.1%}，取较高者。"
+        "可售天数只使用可用库存；补货库存位才计入已确认在途。"
     )
-    if initial_safety > ZERO:
-        reasons.append("出库历史不足，暂以首次录入的安全库存作为参考；后续会自动切换为销量与波动计算")
     if inventory.in_transit > 0:
         reasons.append(f"库存位置已计入 {inventory.in_transit} 件已确认在途")
     if needs_reorder:
@@ -812,7 +771,7 @@ def calculate_replenishment(
     elif velocity <= 0:
         reasons.append("当前预测日速度为 0；除非设置了人工安全库存，否则不建议自动采购")
     if suggested > raw_quantity and raw_quantity > 0:
-        reasons.append(f"建议量已按 MOQ {moq} 和整箱数 {pack_size} 向上取整")
+        reasons.append("建议量已按起订量和整箱数向上取整")
 
     return ReplenishmentForecast(
         as_of=forecast_date,
@@ -820,7 +779,7 @@ def calculate_replenishment(
         demand=demand,
         inventory=inventory,
         safety_stock_units=_quantity(safety_units),
-        safety_margin_ratio=effective_margin_ratio.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
+        safety_margin_ratio=ZERO,
         safety_margin_units=_quantity(safety_margin_units),
         reorder_point=_quantity(reorder_point),
         target_inventory_position=_quantity(target_position),
@@ -862,13 +821,15 @@ def build_replenishment_forecast(
         route=route,
         route_resolver=route_resolver,
         manual_lead_days=policy.manual_lead_days,
-        manual_is_final=True,
+        manual_is_final=False,
         as_of=current_time,
     )
     demand = estimate_demand_velocity(
         organization=organization,
         sku=sku,
-        warehouse=warehouse,
+        # Demand is an SKU-level all-warehouse fact. ``warehouse`` below is
+        # used only for the primary-warehouse inventory position.
+        warehouse=None,
         as_of=current_time,
         weights=weights,
     )

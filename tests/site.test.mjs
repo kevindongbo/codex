@@ -92,7 +92,7 @@ test("keeps the ERP polish controls and daily exchange-rate workflow wired", asy
   assert.match(html, /id="profitRateAuto"/);
   assert.match(html, /id="profitRateManual"/);
   assert.match(appScript, /purchase-detail-list/);
-  assert.match(appScript, /velocity3 \* 0\.4 \+ velocity7 \* 0\.3 \+ velocity15 \* 0\.2 \+ velocity30 \* 0\.1/);
+  assert.doesNotMatch(appScript, /velocity3 \* 0\.4 \+ velocity7 \* 0\.3 \+ velocity15 \* 0\.2 \+ velocity30 \* 0\.1/);
   assert.match(profitScript, /profit-calculator\/exchange-rates\//);
 });
 
@@ -263,7 +263,7 @@ test("contains product, warehouse, order and monitoring workflows", async () => 
     "transferRows", "transferModal", "transferForm", "transferDestination",
     "transferLineProduct", "transferLineQty", "transferLineList",
     "replenishmentRows", "refreshReplenishment", "openReplenishmentSettings", "replenishmentPolicyModal",
-    "replenishmentPolicyForm", "policyLeadDays", "policyReviewDays",
+    "replenishmentPolicyForm", "policyLeadDays", "policyPrimaryWarehouse",
     "policyTargetDays", "policyMoq", "policyPackSize", "policySafetyStock",
     "replenishmentSettingsModal", "replenishmentSettingsForm", "settingSafetyDays", "settingLeadDays",
     "aiProviderId", "aiProviderParameters", "aiProviderEnabled", "resetAIProvider", "aiUsageSummary",
@@ -343,9 +343,9 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /dispatchTransfer/);
   assert.match(scriptText, /receiveTransfer/);
   assert.match(scriptText, /replenishmentPolicies/);
-  assert.match(scriptText, /localReplenishmentRecommendation/);
-  assert.match(scriptText, /velocity3 \* 0\.4 \+ velocity7 \* 0\.3 \+ velocity15 \* 0\.2 \+ velocity30 \* 0\.1/);
-  assert.match(scriptText, /safetyMarginRatio/);
+  assert.doesNotMatch(scriptText, /function localReplenishmentRecommendation/);
+  assert.doesNotMatch(scriptText, /velocity3 \* 0\.4 \+ velocity7 \* 0\.3 \+ velocity15 \* 0\.2 \+ velocity30 \* 0\.1/);
+  assert.match(scriptText, /normalizeTeamRecommendation/);
   assert.match(scriptText, /purchase-detail-list/);
   assert.match(scriptText, /fillSnapshotHint/);
   assert.match(scriptText, /reserved > balance\.onHand/);

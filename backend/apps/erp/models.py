@@ -475,6 +475,29 @@ class ReplenishmentPolicy(OrganizationScopedModel):
         ]
 
 
+class SKUReplenishmentProfile(OrganizationScopedModel):
+    """One V3 replenishment policy per SKU; legacy warehouse policies remain historical."""
+    sku = models.OneToOneField(SKU, on_delete=models.PROTECT, related_name="replenishment_profile")
+    primary_warehouse = models.ForeignKey(
+        Warehouse, null=True, blank=True, on_delete=models.SET_NULL, related_name="primary_replenishment_skus"
+    )
+    velocity_weight_3 = models.DecimalField(max_digits=5, decimal_places=3, null=True, blank=True)
+    velocity_weight_7 = models.DecimalField(max_digits=5, decimal_places=3, null=True, blank=True)
+    velocity_weight_15 = models.DecimalField(max_digits=5, decimal_places=3, null=True, blank=True)
+    velocity_weight_30 = models.DecimalField(max_digits=5, decimal_places=3, null=True, blank=True)
+    target_coverage_days = models.PositiveIntegerField(null=True, blank=True, default=30)
+    manual_lead_time_days = models.PositiveIntegerField(null=True, blank=True)
+    min_order_qty = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
+    pack_size = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=Q(target_coverage_days__isnull=True) | Q(target_coverage_days__gt=0), name="sku_replenishment_coverage_positive"),
+            models.CheckConstraint(condition=Q(min_order_qty__isnull=True) | Q(min_order_qty__gt=0), name="sku_replenishment_moq_positive"),
+            models.CheckConstraint(condition=Q(pack_size__isnull=True) | Q(pack_size__gt=0), name="sku_replenishment_pack_positive"),
+        ]
+
+
 class ReplenishmentSettings(OrganizationScopedModel):
     """Organization-wide defaults for explainable automatic replenishment."""
 
