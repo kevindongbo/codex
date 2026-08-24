@@ -869,6 +869,36 @@ class StockTransferReceipt(OrganizationScopedModel):
         ]
 
 
+class StockTransferExceptionCloseEvent(OrganizationScopedModel):
+    """Durable idempotency and audit fact for a partial transit exception close."""
+
+    transfer = models.ForeignKey(
+        StockTransfer,
+        on_delete=models.PROTECT,
+        related_name="exception_close_events",
+    )
+    idempotency_key = models.CharField(max_length=120)
+    request_hash = models.CharField(max_length=64)
+    reason = models.CharField(max_length=240, blank=True)
+    quantities = models.JSONField(default=dict)
+    result = models.JSONField(default=dict)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="stock_transfer_exception_close_events",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "idempotency_key"],
+                name="uniq_org_transfer_exception_close_idem",
+            ),
+        ]
+
+
 class StockTransferCompletionEvent(OrganizationScopedModel):
     """Durable idempotency and audit fact for the final exception close."""
 
@@ -879,7 +909,7 @@ class StockTransferCompletionEvent(OrganizationScopedModel):
     )
     idempotency_key = models.CharField(max_length=120)
     request_hash = models.CharField(max_length=64)
-    reason = models.CharField(max_length=240)
+    reason = models.CharField(max_length=240, blank=True)
     quantities = models.JSONField(default=dict)
     result = models.JSONField(default=dict)
     completed_by = models.ForeignKey(

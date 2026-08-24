@@ -26,8 +26,6 @@ from .models import (
     PurchaseShipmentLine,
     Receipt,
     ReceiptLine,
-    ReturnReceiptLine,
-    ShipmentLine,
     StockLedger,
     StockBalance,
     StockTransfer,
@@ -457,6 +455,7 @@ def estimate_demand_velocity(
                 "manual_outbound": _quantity(manual_quantities[days]),
                 "returns_at_original_sale_date": _quantity(return_quantities[days]),
                 "net_sales": _quantity(quantities[days]),
+                "true_outbound": _quantity(quantities[days]),
                 "daily_average": _rate(daily[days]),
                 "weight": _rate(normalized_weights[windows.index(days)]),
             }
@@ -517,11 +516,11 @@ def get_inventory_position(*, organization, sku, warehouse) -> InventoryPosition
     )
 
 
-def warehouse_demand_detail(*, organization, sku, warehouse, days=7, as_of=None):
+def warehouse_demand_detail(*, organization, sku, warehouse, days=30, as_of=None):
     """Return exact warehouse-local sales demand for a half-open calendar window."""
 
-    if days != 7:
-        raise ValueError("当前周期明细只支持近 7 天")
+    if days not in {3, 7, 15, 30}:
+        raise ValueError("当前周期明细只支持近 3/7/15/30 天")
     try:
         warehouse_zone = ZoneInfo(str(warehouse.timezone or ""))
     except (ValueError, ZoneInfoNotFoundError) as exc:
@@ -551,29 +550,7 @@ def warehouse_demand_detail(*, organization, sku, warehouse, days=7, as_of=None)
         outbound.filter(event_type=StockLedger.Type.MANUAL_OUTBOUND).aggregate(total=Sum("on_hand_delta"))["total"]
     )
 
-    returns = ZERO
-    return_lines = ReturnReceiptLine.objects.filter(
-        receipt__organization=organization,
-        sku=sku,
-        receipt__return_order__warehouse=warehouse,
-        receipt__return_order__original_order__isnull=False,
-    ).select_related("receipt__return_order__original_order")
-    for return_line in return_lines:
-        original_shipment = (
-            ShipmentLine.objects.filter(
-                shipment__organization=organization,
-                shipment__warehouse=warehouse,
-                shipment__order=return_line.receipt.return_order.original_order,
-                sku=sku,
-            )
-            .select_related("shipment")
-            .order_by("shipment__shipped_at", "id")
-            .first()
-        )
-        if original_shipment is not None and start_at <= original_shipment.shipment.shipped_at < end_at:
-            returns += _decimal(return_line.quantity)
-
-    net_sales = max(ZERO, order_outbound + manual_outbound - returns)
+    true_outbound = order_outbound + manual_outbound
     return {
         "warehouse": str(warehouse.pk),
         "warehouse_code": warehouse.code,
@@ -584,13 +561,12 @@ def warehouse_demand_detail(*, organization, sku, warehouse, days=7, as_of=None)
         "days": days,
         "order_outbound": str(_quantity(order_outbound)),
         "manual_outbound": str(_quantity(manual_outbound)),
-        "returns_at_original_sale_date": str(_quantity(returns)),
-        "net_sales": str(_quantity(net_sales)),
-        "daily_average": str(_rate(net_sales / Decimal(days))),
+        "true_outbound": str(_quantity(true_outbound)),
+        "daily_average": str(_rate(true_outbound / Decimal(days))),
     }
 
 
-def multi_warehouse_demand_detail(*, organization, sku, warehouses, days=7, as_of=None):
+def multi_warehouse_demand_detail(*, organization, sku, warehouses, days=30, as_of=None, weights=None):
     rows = [
         warehouse_demand_detail(
             organization=organization,
@@ -603,13 +579,23 @@ def multi_warehouse_demand_detail(*, organization, sku, warehouses, days=7, as_o
     ]
     total = {
         key: sum((_decimal(row[key]) for row in rows), ZERO)
-        for key in (
-            "order_outbound",
-            "manual_outbound",
-            "returns_at_original_sale_date",
-            "net_sales",
-        )
+        for key in ("order_outbound", "manual_outbound", "true_outbound")
     }
+    demand = estimate_demand_velocity(
+        organization=organization, sku=sku, warehouse=None, as_of=as_of,
+        weights=weights or (Decimal("0.40"), Decimal("0.30"), Decimal("0.20"), Decimal("0.10")),
+    )
+    periods = [
+        {
+            "days": window_days,
+            "quantity": str(_quantity(demand.breakdown[str(window_days)]["true_outbound"])),
+            "weight": str(demand.breakdown[str(window_days)]["weight"]),
+        }
+        for window_days in (3, 7, 15, 30)
+    ]
+    weighted_denominator = sum(
+        (Decimal(period["days"]) * _decimal(period["weight"]) for period in periods), ZERO
+    )
     return {
         "sku": str(sku.pk),
         "sku_code": sku.code,
@@ -617,8 +603,11 @@ def multi_warehouse_demand_detail(*, organization, sku, warehouses, days=7, as_o
         "warehouses": rows,
         "total": {
             **{key: str(_quantity(value)) for key, value in total.items()},
-            "daily_average": str(_rate(total["net_sales"] / Decimal(days))),
+            "daily_average": str(_rate(total["true_outbound"] / Decimal(days))),
         },
+        "periods": periods,
+        "weighted_denominator": str(_rate(weighted_denominator)),
+        "weighted_daily_outbound": str(demand.daily_velocity),
     }
 
 

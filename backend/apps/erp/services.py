@@ -32,6 +32,7 @@ from .models import (
     StockLedgerReversal,
     StockReservation,
     StockTransfer,
+    StockTransferExceptionCloseEvent,
     StockTransferCompletionEvent,
     StockTransferLine,
     StockTransferPackage,
@@ -544,18 +545,38 @@ def receive_stock_transfer(*, transfer, idempotency_key, quantities=None, actor=
 
 
 @transaction.atomic
-def close_stock_transfer_exception(*, transfer, quantities, reason, actor=None):
+def close_stock_transfer_exception(*, transfer, quantities, reason="", idempotency_key="", actor=None):
     """Close lost/damaged transfer quantities at the destination without restoring source stock."""
-    if not str(reason or "").strip():
-        raise ValidationError("关闭调拨在途异常必须填写原因")
+    normalized_reason = str(reason or "").strip()
+    normalized_key = str(idempotency_key or "").strip()
+    if not normalized_key:
+        raise ValidationError("幂等键不能为空")
+    if len(normalized_key) > 120:
+        raise ValidationError("幂等键不能超过 120 个字符")
+    if len(normalized_reason) > 240:
+        raise ValidationError("异常原因不能超过 240 个字符")
+    normalized_quantities = {
+        str(line_id): str(_decimal(quantity))
+        for line_id, quantity in sorted((quantities or {}).items(), key=lambda item: str(item[0]))
+    }
+    if not normalized_quantities:
+        raise ValidationError("至少需要一条调拨异常明细")
     transfer = StockTransfer.objects.select_for_update().select_related(
         "organization", "destination_warehouse"
     ).get(pk=transfer.pk, organization=transfer.organization)
+    request_hash = sha256(json.dumps({
+        "transfer_id": str(transfer.pk), "reason": normalized_reason, "quantities": normalized_quantities,
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    existing = StockTransferExceptionCloseEvent.objects.filter(
+        organization=transfer.organization, idempotency_key=normalized_key,
+    ).first()
+    if existing is not None:
+        if existing.transfer_id == transfer.pk and existing.request_hash == request_hash:
+            return transfer
+        raise WorkflowConflictError("幂等键已用于不同的异常关闭请求", code="idempotency_conflict")
     if transfer.status not in {StockTransfer.Status.IN_TRANSIT, StockTransfer.Status.PARTIALLY_RECEIVED}:
         raise ValidationError("只有在途调拨可以关闭异常")
     lines = {str(line.pk): line for line in StockTransferLine.objects.select_for_update().select_related("sku").filter(transfer=transfer)}
-    if not quantities:
-        raise ValidationError("至少需要一条调拨异常明细")
     for line_id, raw_quantity in quantities.items():
         line = lines.get(str(line_id))
         if line is None:
@@ -572,21 +593,31 @@ def close_stock_transfer_exception(*, transfer, quantities, reason, actor=None):
                 f"transfer-exception-close:{transfer.pk}:{line.pk}:"
                 f"{line.received_quantity}:{line.exception_closed_quantity}"
             ), actor=actor,
-            reason=reason,
+            reason=normalized_reason,
         )
         line.exception_closed_quantity += quantity
         line.save(update_fields=["exception_closed_quantity", "updated_at"])
     settled_lines = list(StockTransferLine.objects.select_for_update().filter(transfer=transfer))
     fully_settled = all(line.received_quantity + line.exception_closed_quantity >= line.quantity for line in settled_lines)
     transfer.status = StockTransfer.Status.COMPLETED_WITH_EXCEPTION if fully_settled else StockTransfer.Status.PARTIALLY_RECEIVED
-    transfer.exception_reason = reason
+    transfer.exception_reason = normalized_reason
     transfer.save(update_fields=["status", "exception_reason", "updated_at"])
-    write_audit(organization=transfer.organization, actor=actor, action="stock_transfer.transit.exception_close", instance=transfer, after={"reason": reason, "quantities": {str(key): str(value) for key, value in quantities.items()}})
+    result = {
+        "transfer_id": str(transfer.pk), "status": transfer.status,
+        "quantities": normalized_quantities,
+    }
+    StockTransferExceptionCloseEvent.objects.create(
+        organization=transfer.organization, transfer=transfer,
+        idempotency_key=normalized_key, request_hash=request_hash,
+        reason=normalized_reason, quantities=normalized_quantities, result=result,
+        closed_by=actor if getattr(actor, "is_authenticated", False) else None,
+    )
+    write_audit(organization=transfer.organization, actor=actor, action="stock_transfer.transit.exception_close", instance=transfer, after={"idempotency_key": normalized_key, "reason": normalized_reason, "quantities": normalized_quantities}, request_id=normalized_key)
     return transfer
 
 
 @transaction.atomic
-def complete_stock_transfer_with_exception(*, transfer, idempotency_key, reason, actor=None):
+def complete_stock_transfer_with_exception(*, transfer, idempotency_key, reason="", actor=None):
     """Atomically close every remaining transfer line as a final exception.
 
     The quantities are always derived under row locks.  The caller supplies no
@@ -597,8 +628,6 @@ def complete_stock_transfer_with_exception(*, transfer, idempotency_key, reason,
     normalized_key = str(idempotency_key or "").strip()
     if not normalized_key:
         raise ValidationError("幂等键不能为空")
-    if not normalized_reason:
-        raise ValidationError("结束调拨必须填写异常原因")
     if len(normalized_key) > 120:
         raise ValidationError("幂等键不能超过 120 个字符")
     if len(normalized_reason) > 240:

@@ -1103,7 +1103,9 @@
     async closeTransferException(transfer, quantities, reason) {
       const lines = (quantities || []).map(function (line) {
         return { transfer_line: line.transferLineId || line.transfer_line || line.id, quantity: number(line.quantity) };
-      }).filter(function (line) { return line.transfer_line && line.quantity > 0; });
+      }).filter(function (line) { return line.transfer_line && line.quantity > 0; }).sort(function (left, right) {
+        return String(left.transfer_line).localeCompare(String(right.transfer_line));
+      });
       if (!lines.length) throw new ApiError('请至少填写一条异常关闭数量。', 400, null);
       const key = this.idempotencyKey('transfer-close-transit-exception', transfer.id + ':' + JSON.stringify(lines) + ':' + String(reason || '').trim());
       try {
@@ -1116,7 +1118,6 @@
 
     async completeTransferWithException(transfer, reason) {
       const normalizedReason = String(reason || '').trim();
-      if (!normalizedReason) throw new ApiError('请填写结束调拨的异常原因。', 400, null);
       const key = this.idempotencyKey('transfer-complete-with-exception', transfer.id + ':' + normalizedReason);
       try {
         const result = await this.request('/stock-transfers/' + transfer.id + '/complete-with-exception/', {
@@ -1311,7 +1312,7 @@
     async getReplenishmentDemandDetail(product, days) {
       const skuId = product && (product.skuId || product.sku_id || product.sku);
       if (!skuId) throw new ApiError('该商品没有可查询的 SKU。', 400, null);
-      return this.request('/replenishment/demand-detail/?sku=' + encodeURIComponent(skuId) + '&days=' + encodeURIComponent(days || 7));
+      return this.request('/replenishment/demand-detail/?sku=' + encodeURIComponent(skuId) + '&days=' + encodeURIComponent(days || 30));
     }
 
     analyticsQuery(filters) {

@@ -37,10 +37,10 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260821-data-profit-creator-workflow-2/);
-  assert.match(html, /team\.js\?v=20260821-data-profit-creator-workflow-2/);
-  assert.match(html, /profit-calculator\.js\?v=20260821-data-profit-creator-workflow-2/);
-  assert.match(html, /app\.js\?v=20260821-data-profit-creator-workflow-2/);
+  assert.match(html, /styles\.css\?v=20260824-erp-transfer-replenishment-v4-1/);
+  assert.match(html, /team\.js\?v=20260824-erp-transfer-replenishment-v4-1/);
+  assert.match(html, /profit-calculator\.js\?v=20260824-erp-transfer-replenishment-v4-1/);
+  assert.match(html, /app\.js\?v=20260824-erp-transfer-replenishment-v4-1/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
@@ -114,6 +114,24 @@ test("wires shared profit configuration, modal warehouse allocation, and transfe
   assert.match(appScript, /exception_closed_quantity/);
   assert.match(appScript, /function openTransferWorkflow/);
   assert.match(teamScript, /close-transit-exception/);
+});
+
+test("implements V4 transfer expansion and replenishment source table semantics", async () => {
+  const [html, appScript, teamScript] = await Promise.all([
+    (await fetchPath("/index.html")).text(), (await fetchPath("/app.js")).text(),
+    (await fetchPath("/team.js")).text(),
+  ]);
+  const replenishmentHead = html.match(/id="replenishmentTable"[\s\S]*?<thead><tr>([\s\S]*?)<\/tr><\/thead>/)?.[1] || "";
+  const headers = [...replenishmentHead.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/g)].map((row) => row[1].replace(/<[^>]+>/g, "").trim());
+  assert.deepEqual(headers, ["", "商品", "全仓加权日均出库", "近30天出库来源", "预测到货周期", "可用 / 在途", "可售天数", "最迟下单", "建议补货量", "紧急度", "操作"]);
+  assert.match(appScript, /function productQuantityMedia\(/);
+  assert.match(appScript, /<details class="transfer-detail-list">/);
+  assert.match(appScript, /异常原因（可选）/);
+  assert.doesNotMatch(appScript, /slice\(0, 2\)[\s\S]{0,220}等 '\s*\+ lines\.length/);
+  assert.match(appScript, /getReplenishmentDemandDetail\(product, 30\)/);
+  assert.doesNotMatch(appScript, /net\s*\/\s*7/);
+  assert.match(appScript, /Q' \+ period\.days/);
+  assert.match(teamScript, /days \|\| 30/);
 });
 
 test("keeps ERP cancellation as one confirmed internal API call and supports restore fulfillment", async () => {
@@ -426,3 +444,4 @@ test("Docker team deployment serves the API adapter and runtime mode", async () 
   assert.match(caddy, /mode: "team"/);
   assert.match(caddy, /apiBase: "\/api"/);
 });
+
