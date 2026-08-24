@@ -1893,13 +1893,13 @@ function renderPurchases() {
     const ordered = order.lines.reduce(function (sum, line) { return sum + integer(line.orderedQty); }, 0);
     const received = order.lines.reduce(function (sum, line) { return sum + integer(line.receivedQty); }, 0);
     const transit = order.lines.reduce(function (sum, line) { return sum + remainingPurchaseLine(line); }, 0);
-    const purchaseLineLabels = order.lines.map(function (line) {
+    const purchaseLineCards = order.lines.map(function (line) {
       const product = productById(line.productId);
-      return escapeHtml(product ? (product.sku + ' · ' + product.name) : '商品已移除');
+      return productQuantityMedia(product || { name: '商品已移除', sku: '' }, line.orderedQty);
     });
-    const lines = purchaseLineLabels.length > 1
-      ? '<details class="purchase-detail-list"><summary>' + purchaseLineLabels[0] + '<span>共 ' + purchaseLineLabels.length + ' 项</span></summary><div>' + purchaseLineLabels.map(function (label) { return '<p>' + label + '</p>'; }).join('') + '</div></details>'
-      : (purchaseLineLabels[0] ? '<span class="purchase-single-line">' + purchaseLineLabels[0] + '</span>' : '<span class="muted">无商品明细</span>');
+    const lines = purchaseLineCards.length > 1
+      ? '<details class="purchase-detail-list"><summary>' + purchaseLineCards[0] + '<span>共 ' + purchaseLineCards.length + ' 项</span></summary><div>' + purchaseLineCards.map(function (card) { return '<div class="transfer-product-line">' + card + '</div>'; }).join('') + '</div></details>'
+      : (purchaseLineCards[0] ? '<span class="purchase-single-line">' + purchaseLineCards[0] + '</span>' : '<span class="muted">无商品明细</span>');
     const overdue = purchaseIsOverdue(order);
     const shipments = order.shipments || [];
     const tracking = shipments.length ? ('<button class="link-button" data-toggle-purchase-shipments="' + escapeHtml(order.id) + '">' + escapeHtml(shipments[0].trackingNumber) + (shipments.length > 1 ? ' +' + (shipments.length - 1) : '') + '</button>' +
@@ -4258,8 +4258,8 @@ function renderReceiveLines() {
   $('#receiveLineList').innerHTML = lines.length ? lines.map(function (line) {
     const product = productById(line.productId);
     const remaining = remainingPurchaseLine(line);
-    return '<div class="line-list-item"><strong>' + escapeHtml(product ? product.sku + ' · ' + product.name : '未知商品') + '</strong>' +
-      '<span>未收 ' + remaining + ' 件</span><label>本次收货<input data-receive-line-id="' + escapeHtml(line.id) + '" data-receive-remaining="' + remaining + '" type="number" min="0" max="' + remaining + '" step="1" value="0"></label></div>';
+    return '<div class="line-list-item">' + productQuantityMedia(product || { name: '未知商品', sku: '' }, remaining) +
+      '<label>本次收货<input data-receive-line-id="' + escapeHtml(line.id) + '" data-receive-remaining="' + remaining + '" type="number" min="0" max="' + remaining + '" step="1" value="0"></label></div>';
   }).join('') : '<div class="last-value">该采购单没有待收货商品。</div>';
   updateReceiveHint();
 }
@@ -5801,3 +5801,4 @@ bindEvents();
 render();
 initializeTeamMode();
 startRealtimeSync();
+
