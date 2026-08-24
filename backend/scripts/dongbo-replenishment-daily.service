@@ -4,4 +4,5 @@ Description=Dongbo ERP daily replenishment V3 rule check
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/dongbo/app/backend
+EnvironmentFile=/opt/dongbo/app/.env
 ExecStart=/opt/dongbo/venv/bin/python manage.py check_replenishment_daily
