@@ -23,7 +23,7 @@ from apps.erp.models import (
     CompetitorSellerGroup, CompetitorSellerSnapshot, CompetitorSnapshot, ExchangeRateSnapshot, LocalImport, Membership, Organization, OwnStore,
     Product, ProductImage, PurchaseOrder, ReplenishmentPolicy, ReplenishmentSettings, ReturnOrder, SalesOrder,
     SalesOrderLine, Shipment, SKU, StockBalance, StockLedger, StockReservation, StockTransfer, TikTokShopConnection,
-    TikTokShopOAuthState,
+    TikTokShopOAuthState, SKUReplenishmentProfile,
     StoreProduct, Supplier, Warehouse,
 )
 
@@ -1885,6 +1885,9 @@ class ApiTests(TestCase):
         sku = SKU.objects.create(
             organization=self.organization, product=product, code="TRANSFER-SKU", cost="10"
         )
+        SKUReplenishmentProfile.objects.create(
+            organization=self.organization, sku=sku, primary_warehouse=destination,
+        )
         opening = self.client.post(
             "/api/stock-balances/adjust/",
             {
@@ -1970,10 +1973,10 @@ class ApiTests(TestCase):
         sku = SKU.objects.create(
             organization=self.organization, product=product, code="REC-SKU", cost="6"
         )
-        policy = ReplenishmentPolicy.objects.create(
-            organization=self.organization, warehouse=warehouse, sku=sku,
-            lead_time_override=12, review_cycle_days=7, target_days=30, coverage_days=30,
-            min_order_qty="10", pack_size="5", safety_stock_override="5",
+        profile = SKUReplenishmentProfile.objects.create(
+            organization=self.organization, primary_warehouse=warehouse, sku=sku,
+            manual_lead_time_days=12, target_coverage_days=30,
+            min_order_qty="10", pack_size="5",
         )
         inactive_product = Product.objects.create(
             organization=self.organization, name="停用商品", status=Product.Status.INACTIVE
@@ -1990,11 +1993,16 @@ class ApiTests(TestCase):
         self.assertEqual(len(response.data), 1)
         recommendation = response.data[0]
         self.assertEqual(recommendation["sku"], str(sku.pk))
-        self.assertEqual(recommendation["policy"], str(policy.pk))
+        self.assertEqual(recommendation["profile"], str(profile.pk))
+        self.assertEqual(recommendation["primary_warehouse"], str(warehouse.pk))
         self.assertEqual(recommendation["lead_time"]["selected_days"], 12)
-        self.assertEqual(recommendation["suggested_order_quantity"], 10)
-        self.assertTrue(recommendation["needs_reorder"])
-        self.assertEqual(recommendation["alert_level"], "red")
+        # No real sales: MOQ must not manufacture demand.
+        self.assertEqual(recommendation["suggested_order_quantity"], 0)
+        self.assertFalse(recommendation["needs_reorder"])
+        secondary = Warehouse.objects.create(organization=self.organization, code="SECONDARY", name="非主力仓")
+        scoped = self.client.get(f"/api/replenishment/recommendations/?warehouse={secondary.pk}", **headers)
+        self.assertEqual(scoped.status_code, 200)
+        self.assertEqual(scoped.data, [])
 
         other = Organization.objects.create(name="建议其他组织", slug="recommend-other")
         other_warehouse = Warehouse.objects.create(
@@ -2042,21 +2050,27 @@ class ApiTests(TestCase):
         second = Product.objects.create(organization=self.organization, name="批量补货 B", status=Product.Status.ACTIVE)
         first_sku = SKU.objects.create(organization=self.organization, product=first, code="BATCH-REC-A", cost="8")
         second_sku = SKU.objects.create(organization=self.organization, product=second, code="BATCH-REC-B", cost="9")
+        for sku, coverage in ((first_sku, 40), (second_sku, 60)):
+            SKUReplenishmentProfile.objects.create(
+                organization=self.organization, sku=sku, primary_warehouse=warehouse,
+                target_coverage_days=coverage,
+            )
         saved = self.client.post(
             "/api/replenishment/batch-policy/",
             {
                 "warehouse": str(warehouse.pk),
                 "sku_ids": [str(first_sku.pk), str(second_sku.pk)],
-                "fields": {"review_cycle_days": 9, "pack_size": "6"},
+                "fields": {"pack_size": "6"},
             },
             format="json", **headers,
         )
         self.assertEqual(saved.status_code, 200, saved.data)
         self.assertEqual(saved.data["updated"], 2)
-        policies = ReplenishmentPolicy.objects.filter(organization=self.organization, warehouse=warehouse).order_by("sku__code")
-        self.assertEqual([item.review_cycle_days for item in policies], [9, 9])
+        policies = SKUReplenishmentProfile.objects.filter(organization=self.organization).order_by("sku__code")
+        self.assertEqual([item.primary_warehouse_id for item in policies], [warehouse.pk, warehouse.pk])
         self.assertEqual([item.pack_size for item in policies], [Decimal("6.000"), Decimal("6.000")])
-        self.assertEqual([item.target_days for item in policies], [30, 30])
+        self.assertEqual([item.target_coverage_days for item in policies], [40, 60])
+        self.assertFalse(ReplenishmentPolicy.objects.filter(organization=self.organization).exists())
 
         recompute = self.client.post(
             "/api/replenishment/recompute/",
