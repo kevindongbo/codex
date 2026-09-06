@@ -1417,21 +1417,44 @@ function pulseStorage() {
   setText('#runtimeStateText', '刚刚已保存');
   setTimeout(function () { setText('#runtimeStateText', '已自动保存'); }, 1400);
 }
+const modalStack = [];
+const modalReturnFocus = new Map();
+function modalFocusableElements(modal) {
+  return Array.from(modal.querySelectorAll('input:not([type="hidden"]), select, textarea, button, a[href], [tabindex]')).filter(function (node) {
+    return !node.disabled && node.tabIndex >= 0 && node.getClientRects().length && !node.closest('[inert]');
+  });
+}
 function openModal(id) {
   const modal = $('#' + id);
   if (!modal) return;
+  if (!modal.classList.contains('open')) {
+    modalReturnFocus.set(id, document.activeElement);
+    modalStack.push(id);
+  }
+  modal.style.zIndex = String(100 + modalStack.indexOf(id));
   modal.classList.add('open');
   modal.setAttribute('aria-hidden', 'false');
   document.body.classList.add('modal-open');
-  const focusable = modal.querySelector('input:not([type="hidden"]), select, button');
-  if (focusable) setTimeout(function () { focusable.focus(); }, 40);
+  setTimeout(function () {
+    if (!modal.classList.contains('open') || modalStack[modalStack.length - 1] !== id) return;
+    const focusable = modalFocusableElements(modal)[0];
+    const target = focusable || modal.querySelector('[role="dialog"]') || modal;
+    if (!focusable) target.setAttribute('tabindex', '-1');
+    target.focus();
+  }, 40);
 }
 function closeModal(id) {
   const modal = $('#' + id);
   if (!modal) return;
+  const wasTop = modalStack[modalStack.length - 1] === id;
+  const index = modalStack.indexOf(id);
+  if (index >= 0) modalStack.splice(index, 1);
   modal.classList.remove('open');
   modal.setAttribute('aria-hidden', 'true');
   if (!$$('.modal-backdrop.open').length) document.body.classList.remove('modal-open');
+  const opener = modalReturnFocus.get(id);
+  modalReturnFocus.delete(id);
+  if (wasTop && opener && opener.isConnected && opener.getClientRects().length && !opener.closest('[aria-hidden="true"]')) opener.focus();
 }
 function askConfirm(text, callback) {
   pendingConfirm = callback;
@@ -1501,6 +1524,9 @@ function updateClonedStickyHeader(table, wrap, current, className) {
     document.body.appendChild(current);
   }
   current.innerHTML = '<table><thead>' + table.tHead.innerHTML + '</thead></table>';
+  // The visual clone must not duplicate IDs or create invisible tab stops.
+  current.inert = true;
+  current.querySelectorAll('[id]').forEach(function (node) { node.removeAttribute('id'); });
   const cloneTable = current.querySelector('table');
   const cloneHeaders = current.querySelectorAll('th');
   Array.from(table.tHead.querySelectorAll('th')).forEach(function (th, index) {
@@ -2276,7 +2302,7 @@ function renderReplenishment() {
     const product = recommendationProduct(item);
     return Boolean(product) && searchMatches(product, item.skuId || '');
   })
-    .sort(function (a, b) { return ({ urgent: 0, red: 0, soon: 1, yellow: 1, healthy: 2, green: 2 }[a.urgency] || 3) - ({ urgent: 0, red: 0, soon: 1, yellow: 1, healthy: 2, green: 2 }[b.urgency] || 3); });
+    .sort(function (a, b) { return ({ urgent: 0, red: 0, soon: 1, yellow: 1, healthy: 2, green: 2 }[a.urgency] ?? 3) - ({ urgent: 0, red: 0, soon: 1, yellow: 1, healthy: 2, green: 2 }[b.urgency] ?? 3); });
   const rows = $('#replenishmentRows');
   if (!rows) return;
   const visibleSkuIds = recommendations.map(function (item) { return String(item.skuId); });
@@ -5111,10 +5137,22 @@ function bindEvents() {
     backdrop.addEventListener('mousedown', function (event) { if (event.target === backdrop) closeModal(backdrop.id); });
   });
   document.addEventListener('keydown', function (event) {
+    const topId = modalStack[modalStack.length - 1];
+    const topModal = topId && $('#' + topId);
+    const focusScope = $('#confirmBar').classList.contains('show') ? $('#confirmBar') : topModal;
+    if (event.key === 'Tab' && focusScope) {
+      const nodes = modalFocusableElements(focusScope);
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (!first) { event.preventDefault(); return; }
+      if (!focusScope.contains(document.activeElement) || (event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+    }
     if (event.key === 'Escape') {
-      const open = $('.modal-backdrop.open');
-      if (open) closeModal(open.id);
-      else if ($('#confirmBar').classList.contains('show')) closeConfirm();
+      if ($('#confirmBar').classList.contains('show')) closeConfirm();
+      else if (topModal) closeModal(topId);
       else closeSidebar();
     }
   });
