@@ -758,6 +758,47 @@ class ReplenishmentPolicySerializer(OrganizationValidationMixin, ScopedSerialize
         fields = "__all__"
 
 
+class ReplenishmentBatchFieldsSerializer(serializers.Serializer):
+    primary_warehouse = serializers.UUIDField(required=False, allow_null=True)
+    target_coverage_days = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=2147483647)
+    manual_lead_time_days = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=2147483647)
+    min_order_qty = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=3, min_value=Decimal('0.001'))
+    pack_size = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=3, min_value=Decimal('0.001'))
+    safety_stock = serializers.DecimalField(required=False, max_digits=14, decimal_places=3, min_value=0)
+    velocity_weight_3 = serializers.DecimalField(required=False, max_digits=5, decimal_places=3, min_value=0, max_value=1)
+    velocity_weight_7 = serializers.DecimalField(required=False, max_digits=5, decimal_places=3, min_value=0, max_value=1)
+    velocity_weight_15 = serializers.DecimalField(required=False, max_digits=5, decimal_places=3, min_value=0, max_value=1)
+    velocity_weight_30 = serializers.DecimalField(required=False, max_digits=5, decimal_places=3, min_value=0, max_value=1)
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            # Preserve the existing UI's empty-string reset contract.
+            data = {key: None if value == '' and key in self.fields and self.fields[key].allow_null else value for key, value in data.items()}
+        return super().to_internal_value(data)
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError('请选择至少一个需要修改的参数')
+        keys = ('velocity_weight_3', 'velocity_weight_7', 'velocity_weight_15', 'velocity_weight_30')
+        if any(key in attrs for key in keys):
+            if not all(key in attrs for key in keys):
+                raise serializers.ValidationError('SKU 独立权重必须同时填写 3/7/15/30 天四项。')
+            if sum((attrs[key] for key in keys), Decimal('0')) != Decimal('1'):
+                raise serializers.ValidationError('3/7/15/30 天权重合计必须为 100%。')
+        return attrs
+
+
+class ReplenishmentRecomputeInputSerializer(serializers.Serializer):
+    warehouse = serializers.UUIDField()
+    sku_ids = serializers.ListField(child=serializers.UUIDField(), required=False, default=list)
+
+
+class ReplenishmentBatchInputSerializer(serializers.Serializer):
+    warehouse = serializers.UUIDField(required=False)
+    sku_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False)
+    fields = ReplenishmentBatchFieldsSerializer()
+
+
 class ReplenishmentRecommendationQuerySerializer(
     OrganizationValidationMixin, serializers.Serializer
 ):
