@@ -15,6 +15,20 @@ release_backup=''
 release_old=''
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
+# Keep backups/logs private, but let service users read newly checked-out code
+# and generated assets. The subshell prevents this mask leaking to secrets.
+runtime_command() { (umask 022; "$@"); }
+verify_runtime_readable() {
+  local service_user file
+  service_user=$(systemctl show "$release_service" -p User --value) || return 1
+  service_user=${service_user:-root}
+  for file in backend/apps/erp/views.py backend/apps/erp/serializers.py index.html app.js styles.css team.js profit-calculator.js dist/server/index.js; do
+    if ! runuser -u "$service_user" -- test -r "$release_app/$file"; then
+      printf 'Service user cannot read runtime file: %s\n' "$file" >&2
+      return 1
+    fi
+  done
+}
 health() {
   local attempt
   for attempt in {1..30}; do
@@ -53,8 +67,9 @@ on_error() {
   printf 'Release failed (exit %s). Backup: %s\n' "$status" "$release_backup" >&2
   if [[ "$release_changed" == 1 ]]; then
     # Code-only rollback. Never restore/fake/drop the production database.
-    if git -C "$release_app" switch --detach "$release_old" &&
-       (cd "$release_app" && node scripts/build-site.mjs) &&
+    if runtime_command git -C "$release_app" switch --detach "$release_old" &&
+       (cd "$release_app" && runtime_command node scripts/build-site.mjs) &&
+       verify_runtime_readable &&
        systemctl restart "$release_service" && health && verify_assets "$release_old"; then
       printf 'Code rollback verified: %s. Database untouched.\n' "$release_old" >&2
     else
@@ -67,7 +82,7 @@ on_error() {
 [[ "$EUID" == 0 ]] || fail 'Run as root in a separate bash process.'
 [[ "$release_target" =~ ^[0-9a-f]{40}$ ]] || fail 'Pass the exact reviewed 40-character Git SHA.'
 [[ -d "$release_app/.git" && -x "$release_python" && -f "$release_app/.env" ]] || fail 'Expected application, Python or .env is missing.'
-for command in git node curl sha256sum nginx systemctl flock; do command -v "$command" >/dev/null || fail "Missing command: $command"; done
+for command in git node curl sha256sum nginx systemctl flock runuser; do command -v "$command" >/dev/null || fail "Missing command: $command"; done
 exec 9>/run/lock/dongbo-erp-release.lock
 flock -n 9 || fail 'Another release is running.'
 cd "$release_app"
@@ -106,11 +121,12 @@ printf '%s\n' "$release_old" > "$release_backup/previous-sha.txt"
 printf '%s\n' "$release_target" > "$release_backup/target-sha.txt"
 git archive "$release_old" > "$release_backup/previous-code.tar"
 trap on_error ERR
-git switch --detach "$release_target"
+runtime_command git switch --detach "$release_target"
 release_changed=1
 node --check app.js
 node --check team.js
-node scripts/build-site.mjs
+runtime_command node scripts/build-site.mjs
+verify_runtime_readable
 "$release_python" backend/manage.py check
 "$release_python" backend/manage.py migrate --check
 systemctl restart "$release_service"
