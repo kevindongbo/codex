@@ -1528,6 +1528,7 @@ function updateClonedStickyHeader(table, wrap, current, className) {
   current.inert = true;
   current.querySelectorAll('[id]').forEach(function (node) { node.removeAttribute('id'); });
   const cloneTable = current.querySelector('table');
+  cloneTable.className = table.className;
   const cloneHeaders = current.querySelectorAll('th');
   Array.from(table.tHead.querySelectorAll('th')).forEach(function (th, index) {
     if (!cloneHeaders[index]) return;
@@ -2327,9 +2328,10 @@ function renderReplenishment() {
     if (teamCapabilityAllowed('replenishment') && hasPolicy) actions += rowButton('reset-replenishment', product.id, '恢复默认', 'danger');
     const selected = replenishmentSelectedSkuIds.has(String(item.skuId));
     const breakdown = item.demandBreakdown || {};
-    const thirtyDayQuantity = asNumber((breakdown[30] || breakdown['30'] || {}).quantity);
+    const window30 = breakdown['30'] || {};
+    const thirtyDayQuantity = asNumber(window30.true_outbound ?? window30.quantity);
     const noSalesReason = item.velocity === 0 ? '<small>近30天没有订单正式出库或手动销售出库。</small>' : '';
-    return '<tr><td class="replenishment-select-column"><input type="checkbox" data-replenishment-select="' + escapeHtml(item.skuId) + '"' + (selected ? ' checked' : '') + ' aria-label="选择 ' + escapeHtml(product.sku || product.name) + '"></td><td class="replenishment-product-column">' + productMedia(product) + '</td><td><strong>' + item.velocity.toFixed(2) + '</strong>' + noSalesReason + '</td><td><strong>' + thirtyDayQuantity.toFixed(0) + ' 件</strong><button class="replenishment-demand-link" type="button" data-action="view-demand-detail" data-id="' + escapeHtml(product.id) + '">查看周期明细</button></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong></td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
+    return '<tr><td class="replenishment-select-column"><input type="checkbox" data-replenishment-select="' + escapeHtml(item.skuId) + '"' + (selected ? ' checked' : '') + ' aria-label="选择 ' + escapeHtml(product.sku || product.name) + '"></td><td class="replenishment-product-column">' + productMedia(product) + '</td><td><strong>' + item.velocity.toFixed(2) + '</strong>' + noSalesReason + '</td><td><div class="replenishment-source"><strong>' + thirtyDayQuantity.toFixed(0) + ' 件</strong><button class="replenishment-demand-link" type="button" data-action="view-demand-detail" data-id="' + escapeHtml(product.id) + '">查看周期明细</button></div></td><td>' + escapeHtml(leadLabel) + '</td><td>' + item.available + ' / ' + item.inbound + '<br><small>库存位 ' + item.inventoryPosition + '</small></td><td>' + daysCover + '<br><small>' + (item.stockoutDate ? '预计缺货 ' + formatDate(item.stockoutDate, false) : '无法预计缺货日') + '</small></td><td>' + latestOrder + '</td><td><strong class="suggested-qty">' + item.suggestedQty + '</strong></td><td>' + statusPill(urgencyLabel, urgency) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
   }).join('');
   toggleEmpty('#replenishmentEmpty', recommendations.length === 0);
   const needCount = recommendations.filter(function (item) { return ['urgent', 'soon', 'red', 'yellow'].includes(item.urgency); }).length;
@@ -4147,7 +4149,12 @@ async function openBatchReplenishmentPolicy() {
       setControlValue('#batchWeight30', Math.round(Number(settings.velocity_weight_30 == null ? 0.1 : settings.velocity_weight_30) * 100));
     }
     const batchPrimaryWarehouse = $('#batchPolicyPrimaryWarehouse');
-    if (batchPrimaryWarehouse) batchPrimaryWarehouse.innerHTML = '<option value="">未设置</option>' + (state.warehouses || []).filter(function (row) { return row.active; }).map(function (row) { return '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(row.name + ' · ' + row.code) + '</option>'; }).join('');
+    const warehouse = selectedWarehouse();
+    if (!warehouse || !warehouse.active) return showToast('请先选择有效的当前仓库。');
+    if (batchPrimaryWarehouse) {
+      batchPrimaryWarehouse.innerHTML = '<option value="' + escapeHtml(warehouse.id) + '">' + escapeHtml(warehouse.name + ' · ' + warehouse.code) + '（当前仓库）</option>';
+      batchPrimaryWarehouse.dataset.warehouseId = String(warehouse.id);
+    }
     setText('#replenishmentBatchPolicyTitle', '调整已选 ' + replenishmentSelectedSkuIds.size + ' 个 SKU 参数');
     openModal('replenishmentBatchPolicyModal');
   } catch (error) { handleTeamError(error); }
@@ -4181,6 +4188,13 @@ async function handleBatchReplenishmentPolicySubmit(event) {
     fields.velocity_weight_30 = weights[3] / 100;
   }
   const skuIds = Array.from(replenishmentSelectedSkuIds);
+  if (Object.hasOwn(fields, 'primary_warehouse')) {
+    const warehouse = selectedWarehouse();
+    const input = $('#batchPolicyPrimaryWarehouse');
+    if (!warehouse || !input || input.dataset.warehouseId !== String(warehouse.id) || fields.primary_warehouse !== String(warehouse.id)) {
+      return showToast('批量覆盖主力仓库仅允许当前仓库，请重新打开参数窗口。');
+    }
+  }
   if (TEAM_MODE) {
     const saved = await executeTeamCommand(function () {
       return Object.keys(fields).length ? teamGateway.batchSaveReplenishmentPolicy(skuIds, fields) : teamGateway.recomputeReplenishment(skuIds);
