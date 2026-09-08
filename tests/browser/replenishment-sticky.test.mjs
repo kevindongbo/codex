@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
@@ -31,6 +31,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const pageErrors = [];
   const consoleErrors = [];
+  await page.route('**/api/replenishment-settings/**', route => route.fulfill({ json: { results: [] } }));
   await page.route('**/api/profit-calculator/**', route => {
     const path = new URL(route.request().url()).pathname;
     const fixtures = {
@@ -70,17 +71,19 @@ try {
   await page.evaluate(({ products, balances }) => {
     closeModal('sessionModal');
     state = normalizeV5({
-      warehouses: [{ id: 'warehouse-main', code: 'MAIN', name: '验收仓', active: true }],
+      warehouses: [{ id: 'warehouse-main', code: 'MAIN', name: '验收仓', active: true }, { id: 'warehouse-other', code: 'OTHER', name: '其他仓', active: true }],
       products, inventoryBalances: balances,
       replenishmentRecommendations: products.map((product, index) => ({
         product_id: product.id, sku: `sku-${index}`, weighted_daily_velocity: '2',
         available: '20', in_transit: '10', inventory_position: '30',
         available_days_of_cover: '10', suggested_order_quantity: '30',
         alert_level: index === 27 ? 'urgent' : 'healthy', lead_days: '15',
-        demand: { daily_velocity: '2', breakdown: { '30': { quantity: '60' } } },
+        demand: { daily_velocity: '2', breakdown: { '30': { true_outbound: '60' } } },
       })),
       ui: { module: 'warehouse', warehouseTab: 'replenishment' },
     });
+    teamGateway.warehouses = state.warehouses;
+    teamGateway.warehouseId = 'warehouse-main';
     render();
   }, { products, balances });
   try {
@@ -90,6 +93,17 @@ try {
   }
   assert.equal(await page.locator('#replenishmentRows tr').count(), 28);
   assert.match(await page.locator('#replenishmentRows tr').first().innerText(), /浏览器验收商品 28/, 'urgent recommendations appear first');
+  const source = page.locator('#replenishmentRows tr').first().locator('.replenishment-source');
+  assert.equal(await source.locator('strong').innerText(), '60 件', 'use backend true_outbound, not a nonexistent quantity field');
+  const quantityBox = await source.locator('strong').boundingBox();
+  const detailBox = await source.locator('button').boundingBox();
+  assert.ok(detailBox.y >= quantityBox.y + quantityBox.height, 'quantity above detail button');
+  await page.locator('#replenishmentRows input[type=checkbox]').first().check();
+  await page.getByRole('button', { name: '批量调整参数', exact: true }).click();
+  await page.locator('#replenishmentBatchPolicyModal').waitFor({ state: 'visible' });
+  assert.deepEqual(await page.locator('#batchPolicyPrimaryWarehouse option').evaluateAll(nodes => nodes.map(n => n.value)), ['warehouse-main']);
+  assert.match(await page.locator('#batchPolicyPrimaryWarehouse').innerText(), /当前仓库/);
+  await page.locator('#replenishmentBatchPolicyModal').getByRole('button', { name: '取消', exact: true }).click();
 
   await page.evaluate(() => {
     const table = document.querySelector('#replenishmentTable');
@@ -99,6 +113,8 @@ try {
   await sticky.waitFor({ state: 'visible' });
   assert.equal(await sticky.locator('[id]').count(), 0, 'cloned header has no duplicate IDs');
   assert.equal(await sticky.evaluate(node => node.inert), true, 'visual clone is not keyboard interactive');
+  assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.replenishment-sticky-header th:nth-child(2)')).textAlign), 'left');
+  assert.equal(await page.locator('#replenishmentTable th').nth(1).evaluate(n => getComputedStyle(n).textAlign), 'left');
 
   const geometry = async () => page.evaluate(() => {
     const clone = Array.from(document.querySelectorAll('.replenishment-sticky-header th')).map((node) => node.getBoundingClientRect());
@@ -118,6 +134,8 @@ try {
     assert.ok(state.product.left >= state.cells[1].left && state.product.right <= state.cells[1].right, 'product media must remain inside 商品 column');
   };
   assertAligned(await geometry());
+  mkdirSync(join(root, '.tmp/replenishment-layout'), { recursive: true });
+  await page.screenshot({ path: join(root, '.tmp/replenishment-layout/1440.png') });
 
   await page.locator('#replenishmentTableWrap').evaluate((node) => { node.scrollLeft = 300; node.dispatchEvent(new Event('scroll')); });
   await page.waitForTimeout(50);
@@ -128,6 +146,7 @@ try {
   await page.waitForTimeout(50);
   assertAligned(await geometry());
   assert.deepEqual(pageErrors, [], `pageerror: ${pageErrors.join('\n')}`);
+  await page.screenshot({ path: join(root, '.tmp/replenishment-layout/1920.png') });
   assert.deepEqual(consoleErrors, [], `console.error: ${consoleErrors.join('\n')}`);
 
   await page.getByRole('button', { name: /商品中心/ }).click();
