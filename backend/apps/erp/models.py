@@ -334,6 +334,8 @@ class PurchaseShipment(TimeStampedModel):
 
     purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name="shipments")
     tracking_number = models.CharField(max_length=120, blank=True)
+    domestic_tracking_number = models.CharField(max_length=120, blank=True, default="", db_default="")
+    international_tracking_number = models.CharField(max_length=120, blank=True, default="", db_default="", db_index=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
     confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="confirmed_purchase_shipments")
     closed_at = models.DateTimeField(null=True, blank=True)
@@ -344,6 +346,7 @@ class PurchaseShipment(TimeStampedModel):
             models.UniqueConstraint(
                 fields=["purchase_order", "tracking_number"],
                 name="uniq_purchase_tracking_number",
+                condition=~models.Q(tracking_number=""),
             )
         ]
         ordering = ["created_at", "id"]

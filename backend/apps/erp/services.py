@@ -1151,6 +1151,8 @@ def _purchase_audit_snapshot(purchase_order):
             {
                 "id": str(shipment.pk),
                 "tracking_number": shipment.tracking_number,
+                "domestic_tracking_number": shipment.domestic_tracking_number,
+                "international_tracking_number": shipment.international_tracking_number,
                 "lines": [
                     {"sku": item.purchase_line.sku.code, "quantity": str(item.quantity_shipped)}
                     for item in shipment.lines.select_related("purchase_line__sku").order_by("created_at", "id")
@@ -1242,7 +1244,9 @@ def edit_purchase(*, purchase_order, data, actor=None):
     desired_shipment_ids = set()
     for shipment_data in data.get("shipments", []):
         shipment = existing_shipments.get(str(shipment_data.get("id", "")))
-        if shipment is None:
+        if shipment_data.get("id") and shipment is None:
+            raise ValidationError("物流包裹不属于当前采购单。")
+        if shipment is None and shipment_data["tracking_number"].strip():
             shipment = PurchaseShipment.objects.filter(
                 purchase_order=purchase_order,
                 tracking_number=shipment_data["tracking_number"].strip(),
@@ -1255,6 +1259,11 @@ def edit_purchase(*, purchase_order, data, actor=None):
         else:
             shipment.tracking_number = shipment_data["tracking_number"].strip()
             shipment.save(update_fields=["tracking_number", "updated_at"])
+        tracking_fields = [key for key in ("domestic_tracking_number", "international_tracking_number") if key in shipment_data]
+        for key in tracking_fields:
+            setattr(shipment, key, shipment_data[key].strip())
+        if tracking_fields:
+            shipment.save(update_fields=tracking_fields + ["updated_at"])
         desired_shipment_ids.add(str(shipment.pk))
         shipment_lines = {
             str(item.purchase_line.sku_id): item

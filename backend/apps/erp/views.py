@@ -48,7 +48,7 @@ from .serializers import (
     ConfirmAndShipInputSerializer, LocalImportSerializer, OrganizationSerializer, OrderWarehouseInputSerializer,
     ProductImageSerializer, ProductSerializer, QuickSalesSnapshotInputSerializer, UploadedMediaAssetSerializer,
     PurchaseOrderEditInputSerializer, PurchaseOrderSerializer, PurchaseShipmentSerializer, PurchaseStageCloseInputSerializer, ReceiptSerializer, ReceiveInputSerializer,
-    ReplenishmentPolicySerializer, ReplenishmentRecommendationQuerySerializer, ReplenishmentSettingsSerializer, ReplenishmentRecommendationSerializer,
+    ReplenishmentPolicySerializer, ReplenishmentRecommendationQuerySerializer, ReplenishmentSettingsSerializer, ReplenishmentRecommendationSerializer, ReplenishmentBatchInputSerializer, ReplenishmentRecomputeInputSerializer,
     ReturnOrderSerializer, ReturnReceiveInputSerializer, SalesOrderSerializer,
     ShipmentSerializer, ShipInputSerializer, SKUSerializer, StockBalanceSerializer,
     StockLedgerReversalInputSerializer, StockLedgerSerializer, StockTransferSerializer, SupplierSerializer,
@@ -941,49 +941,38 @@ def _require_replenishment_write(request):
 def replenishment_batch_policy(request):
     """Apply only explicitly supplied fields to selected SKUs in the selected warehouse."""
     organization = _require_replenishment_write(request)
-    payload = request.data if isinstance(request.data, dict) else {}
-    sku_ids = list(dict.fromkeys(str(value) for value in (payload.get("sku_ids") or []) if value))
-    fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
-    allowed = {"primary_warehouse", "velocity_weight_3", "velocity_weight_7", "velocity_weight_15", "velocity_weight_30", "target_coverage_days", "manual_lead_time_days", "min_order_qty", "pack_size", "safety_stock"}
-    fields = {key: value for key, value in fields.items() if key in allowed}
-    if not sku_ids or not fields:
-        raise ValidationError("请选择至少一个 SKU 和至少一个需要修改的参数")
+    data = ReplenishmentBatchInputSerializer(data=request.data)
+    data.is_valid(raise_exception=True)
+    payload = data.validated_data
+    sku_ids = list(dict.fromkeys(payload["sku_ids"]))
+    fields = payload["fields"]
+    if "warehouse" in payload:
+        warehouse = Warehouse.objects.filter(pk=payload["warehouse"], organization=organization, active=True).first()
+        if warehouse is None:
+            raise ValidationError({"warehouse": "仓库不存在或已停用"})
+        _require_warehouse_access(request, organization, warehouse)
     primary_id = fields.get("primary_warehouse")
     if primary_id not in (None, "") and not Warehouse.objects.filter(pk=primary_id, organization=organization, active=True).exists():
         raise ValidationError({"primary_warehouse": "主力仓库不存在或已停用"})
     skus = list(SKU.objects.filter(pk__in=sku_ids, organization=organization, active=True, product__status=Product.Status.ACTIVE))
     if len(skus) != len(sku_ids):
         raise ValidationError({"sku_ids": "包含无效或不属于当前组织的 SKU"})
-    integer_fields = {"target_coverage_days", "manual_lead_time_days"}
-    nullable_fields = {"target_coverage_days", "manual_lead_time_days", "min_order_qty", "pack_size", "primary_warehouse"}
-    cleaned = {}
-    for key, value in fields.items():
-        if value in (None, "") and key in nullable_fields:
-            cleaned[key] = None
-            continue
-        if key == "primary_warehouse":
-            cleaned[key] = Warehouse.objects.get(pk=value, organization=organization)
-            continue
-        try:
-            cleaned[key] = int(value) if key in integer_fields else Decimal(str(value))
-        except (ValueError, TypeError, InvalidOperation) as exc:
-            raise ValidationError({key: "请输入有效数值"}) from exc
-        if cleaned[key] < 0 or (key not in {"safety_stock", "velocity_weight_3", "velocity_weight_7", "velocity_weight_15", "velocity_weight_30"} and cleaned[key] <= 0):
-            raise ValidationError({key: "该参数必须为正数（安全库存可为 0）"})
+    cleaned = dict(fields)
+    if primary_id is not None:
+        cleaned["primary_warehouse"] = Warehouse.objects.get(pk=primary_id, organization=organization)
+        _require_warehouse_access(request, organization, cleaned["primary_warehouse"])
     settings, _ = ReplenishmentSettings.objects.get_or_create(organization=organization)
-    weights = [fields.get(key) for key in ("velocity_weight_3", "velocity_weight_7", "velocity_weight_15", "velocity_weight_30")]
-    if any(value is not None for value in weights) and not all(value is not None for value in weights):
-        raise ValidationError("SKU 独立权重必须同时填写 3/7/15/30 天四项。")
-    if all(value is not None for value in weights) and sum((Decimal(str(value)) for value in weights), Decimal("0")) != Decimal("1"):
-        raise ValidationError("3/7/15/30 天权重合计必须为 100%。")
     saved = []
     with transaction.atomic():
         for sku in skus:
             profile, _ = SKUReplenishmentProfile.objects.get_or_create(organization=organization, sku=sku, defaults={"target_coverage_days": settings.target_days})
+            _require_warehouse_access(request, organization, profile.primary_warehouse)
             for key, value in cleaned.items():
                 if key == "safety_stock":
-                    sku.safety_stock = value
-                    sku.save(update_fields=["safety_stock", "updated_at"])
+                    # Blank means use the existing SKU safety stock, not NULL or zero.
+                    if value is not None:
+                        sku.safety_stock = value
+                        sku.save(update_fields=["safety_stock", "updated_at"])
                 else:
                     setattr(profile, key, value if value != "" else None)
             profile.full_clean()
@@ -995,10 +984,13 @@ def replenishment_batch_policy(request):
 @api_view(["POST"])
 def replenishment_recompute(request):
     organization = _require_replenishment_write(request)
-    payload = request.data if isinstance(request.data, dict) else {}
+    data = ReplenishmentRecomputeInputSerializer(data=request.data)
+    data.is_valid(raise_exception=True)
+    payload = data.validated_data
     warehouse = Warehouse.objects.filter(pk=payload.get("warehouse"), organization=organization, active=True).first()
     if warehouse is None:
         raise ValidationError({"warehouse": "仓库不存在或已停用"})
+    _require_warehouse_access(request, organization, warehouse)
     sku_ids = [str(value) for value in (payload.get("sku_ids") or []) if value]
     skus = SKU.objects.filter(organization=organization, active=True, product__status=Product.Status.ACTIVE)
     if sku_ids:
@@ -2069,7 +2061,7 @@ class ReplenishmentPolicyViewSet(OrganizationScopedViewSet):
 
 
 class ReplenishmentSettingsViewSet(OrganizationScopedViewSet):
-    queryset = ReplenishmentSettings.objects.all()
+    queryset = ReplenishmentSettings.objects.order_by("id")
     serializer_class = ReplenishmentSettingsSerializer
     capability = "replenishment"
 

@@ -567,6 +567,7 @@
           shipments: (item.shipments || []).map(function (shipment) {
             return {
               id: String(shipment.id), trackingNumber: shipment.tracking_number || '',
+              domesticTrackingNumber: shipment.domestic_tracking_number || '', internationalTrackingNumber: shipment.international_tracking_number || '',
               lines: (shipment.lines || []).map(function (line) {
                 const purchaseLine = (item.lines || []).find(function (orderLine) { return String(orderLine.id) === String(line.purchase_line); }) || {};
                 return { id: String(line.id), purchaseLineId: String(line.purchase_line), skuId: String(purchaseLine.sku || ''), quantity: number(line.quantity_shipped) };
@@ -951,6 +952,8 @@
           // API treats an omitted id as a tracking-number match, which is safe
           // for a second edit and avoids sending an invalid UUID to Django.
           tracking_number: trackingNumber,
+          domestic_tracking_number: String(shipment.domesticTrackingNumber || '').trim(),
+          international_tracking_number: String(shipment.internationalTrackingNumber || '').trim(),
           lines: (shipment.lines || []).map(function (line) {
             const orderLine = lineById.get(String(line.purchaseLineId));
             return { sku: line.skuId || (orderLine && orderLine.skuId), quantity_shipped: line.quantity };
@@ -958,7 +961,7 @@
         };
         if (isUuid(shipment.id)) normalizedShipment.id = shipment.id;
         return normalizedShipment;
-      }).filter(function (shipment) { return shipment.tracking_number; });
+      });
       const payload = {
         number: order.number, supplier: supplier ? supplier.id : null, warehouse: this.warehouseId || null,
         currency: (order.lines[0] && order.lines[0].currency) || 'CNY', extra_cost: order.extraCost || 0,
@@ -1403,11 +1406,12 @@
       const payload = {
         primary_warehouse: policy.primaryWarehouse, target_coverage_days: policy.targetDays,
         manual_lead_time_days: policy.leadTimeOverride, min_order_qty: policy.minOrderQty,
-        pack_size: policy.packSize, safety_stock: policy.safetyStockOverride,
+        pack_size: policy.packSize,
         velocity_weight_3: policy.velocityWeight3, velocity_weight_7: policy.velocityWeight7,
         velocity_weight_15: policy.velocityWeight15, velocity_weight_30: policy.velocityWeight30
       };
       Object.keys(payload).forEach(function (key) { if (payload[key] === undefined) delete payload[key]; });
+      if (policy.safetyStockOverride != null && policy.safetyStockOverride !== '') payload.safety_stock = policy.safetyStockOverride;
       return this.batchSaveReplenishmentPolicy([product.skuId], payload);
     }
 
