@@ -1909,7 +1909,8 @@ function purchaseAmount(order) {
 function purchaseTrackingCell(order, field) {
   const values = Array.from(new Set((order.shipments || []).map(row => String(row[field] || '').trim()).filter(Boolean)));
   const legacy = field === 'domesticTrackingNumber' ? Array.from(new Set((order.shipments || []).map(row => row.trackingNumber).filter(Boolean))) : [];
-  return values.map(value => '<div>' + escapeHtml(value) + '</div>').join('') + (legacy.length ? '<small>历史单号（未分类）：' + legacy.map(escapeHtml).join('、') + '</small>' : '') || '<span class="muted">未填写</span>';
+  const number = value => '<div class="purchase-tracking-number">' + escapeHtml(value) + '</div>';
+  return values.map(number).join('') + (legacy.length ? '<small class="purchase-tracking-label">历史单号（未分类）</small>' + legacy.map(number).join('') : '') || '<span class="muted">未填写</span>';
 }
 function groupPurchasesByInternationalTracking(orders) {
   // Connected groups keep each order exactly once, including multi-package orders.

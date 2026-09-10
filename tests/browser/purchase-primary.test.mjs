@@ -95,16 +95,23 @@ try {
   await local.evaluate(() => {
     state.products.push({ ...state.products[0], id: 'p2', name: '第二款商品', sku: 'QA-SECOND' });
     state.purchaseOrders.find(order => order.id === 'A').lines.push({ id: 'line-A2', productId: 'p2', orderedQty: 7, receivedQty: 2, unitCost: 3 });
+    state.purchaseOrders.find(order => order.id === 'C').shipments[0].trackingNumber = 'JT5520509184761';
     renderPurchases();
   });
   const details = local.locator('#purchaseRows .purchase-product-details');
   assert.equal(await details.count(), 1);
   assert.equal(await local.locator('#purchaseRows .product-quantity:visible').count(), 0);
-  for (const width of [1440, 1920]) {
+  for (const width of [1280, 1440, 1920]) {
     await local.setViewportSize({ width, height: width === 1440 ? 900 : 1080 });
     for (const expanded of [true, false]) {
       await details.locator('summary').click();
       assert.equal(await details.evaluate(n => n.open), expanded);
+      assert.equal(await details.locator('summary').evaluate(n => getComputedStyle(n, '::before').content), 'none');
+      assert.ok(await local.locator('#purchaseRows').evaluate(body => {
+        const starts = [...body.rows].map(row => row.querySelector('.purchase-products-column .product-media').getBoundingClientRect().x);
+        return Math.max(...starts) - Math.min(...starts) <= 1;
+      }), 'single and multi-SKU image starts align');
+      assert.ok(await local.locator('.purchase-tracking-number').first().evaluate(n => parseFloat(getComputedStyle(n).fontSize) >= 13));
       assert.equal(await local.locator('#purchaseRows .product-quantity:visible').count(), expanded ? 2 : 0);
       if (expanded) {
         assert.deepEqual(await details.locator('.product-quantity').allTextContents(), ['× 10', '× 7']);
@@ -114,7 +121,7 @@ try {
         const alignment = await local.locator('.purchase-orders-table').evaluate((table, scroll) => {
           table.parentElement.scrollLeft = scroll;
           const heads = [...table.tHead.rows[0].cells];
-          return [...table.tBodies[0].rows].every(row => row.cells.length === heads.length && heads.every((head, i) => {
+          return table.parentElement.scrollWidth <= table.parentElement.clientWidth + 1 && [...table.tBodies[0].rows].every(row => row.cells.length === heads.length && heads.every((head, i) => {
             const h = head.getBoundingClientRect(), c = row.cells[i].getBoundingClientRect();
             return Math.abs(h.x-c.x) <= 1 && Math.abs(h.width-c.width) <= 1 && getComputedStyle(head).textAlign === getComputedStyle(row.cells[i]).textAlign;
           }));
@@ -139,7 +146,7 @@ try {
   assert.equal(await local.locator('[data-purchase-tracking-field="internationalTrackingNumber"]').inputValue(), 'INT-SHARED');
   await local.screenshot({ path: join(root, '.tmp/purchase-tracking-editor.png') });
   assert.deepEqual(errors, []);
-  console.log('PASS: cross-warehouse UUID save/blank safety; purchase blank save, two-way tracking, grouping; details expand/collapse, single SKU hides quantity, 10-column alignment/scroll at 1440x900 and 1920x1080; pageerror=0 console.error=0');
+  console.log('PASS: purchase no horizontal overflow at 1280/1440/1920, aligned product starts, no arrow, tracking font >=13px; expand/collapse and purchase/primary warehouse regression; pageerror=0 console.error=0');
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));
