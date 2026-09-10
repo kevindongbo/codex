@@ -176,6 +176,34 @@ test('team gateway hard-deletes an eligible product and a draft purchase', async
   assert.deepEqual(calls.map((call) => call.options.method), ['DELETE', 'DELETE']);
 });
 
+test('primary warehouse save keeps server UUID and omits blank safety stock', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  let body;
+  gateway.request = async (path, options) => { body = options.body; return {}; };
+  await gateway.saveReplenishmentPolicy({ skuId: 'sku-1' }, { primaryWarehouse: '22222222-2222-4222-8222-222222222222', safetyStockOverride: null });
+  assert.equal(body.fields.primary_warehouse, '22222222-2222-4222-8222-222222222222');
+  assert.equal(Object.hasOwn(body.fields, 'safety_stock'), false);
+  await gateway.saveReplenishmentPolicy({ skuId: 'sku-1' }, { primaryWarehouse: null, safetyStockOverride: 0 });
+  assert.equal(body.fields.safety_stock, 0);
+});
+
+test('purchase edit retains blank packages and separate domestic/international tracking', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  let body;
+  gateway.request = async (path, options) => { body = options.body; return {}; };
+  await gateway.editPurchase({ id: 'po', supplierId: 'supplier', lines: [], shipments: [
+    { id: '11111111-1111-4111-8111-111111111111', trackingNumber: '', domesticTrackingNumber: '', internationalTrackingNumber: '', lines: [] },
+    { trackingNumber: 'LEGACY', domesticTrackingNumber: ' CN ', internationalTrackingNumber: ' INT ', lines: [] },
+  ] });
+  assert.equal(body.shipments.length, 2);
+  assert.equal(body.shipments[0].id, '11111111-1111-4111-8111-111111111111');
+  assert.equal(body.shipments[1].tracking_number, 'LEGACY');
+  assert.equal(body.shipments[1].domestic_tracking_number, 'CN');
+  assert.equal(body.shipments[1].international_tracking_number, 'INT');
+});
+
 test('second purchase edit normalizes legacy tracking data before it reaches the API', async () => {
   const Team = await loadTeam();
   const gateway = new Team.TeamGateway({ apiBase: '/api' });

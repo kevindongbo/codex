@@ -46,6 +46,20 @@ class ReplenishmentInputSafetyTests(TestCase):
         self.assertEqual(self.batch({'primary_warehouse': 'bad'}).status_code, 400)
         self.assertEqual(self.client.post('/api/replenishment/recompute/', {'warehouse': 'bad'}, format='json').status_code, 400)
 
+    def test_primary_warehouse_moves_and_blank_safety_stock_keeps_sku_value(self):
+        other = Warehouse.objects.create(organization=self.organization, code='TARGET', name='Target')
+        response = self.batch({'primary_warehouse': str(other.pk), 'safety_stock': None})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.profile.refresh_from_db()
+        self.sku.refresh_from_db()
+        self.assertEqual(self.profile.primary_warehouse_id, other.pk)
+        self.assertEqual(self.sku.safety_stock, Decimal('5'))
+        for warehouse, expected in [(self.warehouse, False), (other, True)]:
+            response = self.client.get('/api/replenishment/recommendations/', {'warehouse': str(warehouse.pk)})
+            self.assertEqual(response.status_code, 200, response.data)
+            rows = response.data.get('results', []) if isinstance(response.data, dict) else response.data
+            self.assertEqual(any(str(row['sku']) == str(self.sku.pk) for row in rows), expected)
+
     def test_recompute_and_profile_changes_require_warehouse_access(self):
         self.membership.role = Membership.Role.BUYER
         self.membership.save()

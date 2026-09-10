@@ -22,7 +22,7 @@ verify_runtime_readable() {
   local service_user file
   service_user=$(systemctl show "$release_service" -p User --value) || return 1
   service_user=${service_user:-root}
-  for file in backend/apps/erp/views.py backend/apps/erp/serializers.py index.html app.js styles.css team.js profit-calculator.js dist/server/index.js; do
+  for file in backend/apps/erp/views.py backend/apps/erp/serializers.py backend/apps/erp/models.py backend/apps/erp/services.py index.html app.js styles.css team.js profit-calculator.js dist/server/index.js; do
     if ! runuser -u "$service_user" -- test -r "$release_app/$file"; then
       printf 'Service user cannot read runtime file: %s\n' "$file" >&2
       return 1
@@ -71,7 +71,7 @@ on_error() {
        (cd "$release_app" && runtime_command node scripts/build-site.mjs) &&
        verify_runtime_readable &&
        systemctl restart "$release_service" && health && verify_assets "$release_old"; then
-      printf 'Code rollback verified: %s. Database untouched.\n' "$release_old" >&2
+      printf 'Code rollback verified: %s. Database not restored; any applied migration is retained.\n' "$release_old" >&2
     else
       printf 'ROLLBACK NOT VERIFIED. Stop and inspect services; do not restore the database.\n' >&2
     fi
@@ -82,7 +82,7 @@ on_error() {
 [[ "$EUID" == 0 ]] || fail 'Run as root in a separate bash process.'
 [[ "$release_target" =~ ^[0-9a-f]{40}$ ]] || fail 'Pass the exact reviewed 40-character Git SHA.'
 [[ -d "$release_app/.git" && -x "$release_python" && -f "$release_app/.env" ]] || fail 'Expected application, Python or .env is missing.'
-for command in git node curl sha256sum nginx systemctl flock runuser; do command -v "$command" >/dev/null || fail "Missing command: $command"; done
+for command in git node curl sha256sum nginx systemctl flock runuser pg_dump pg_restore; do command -v "$command" >/dev/null || fail "Missing command: $command"; done
 exec 9>/run/lock/dongbo-erp-release.lock
 flock -n 9 || fail 'Another release is running.'
 cd "$release_app"
@@ -96,7 +96,10 @@ git fetch origin "$release_branch"
 [[ "$(git rev-parse FETCH_HEAD)" == "$release_target" ]] || fail 'Remote SHA differs from the reviewed release. No checkout performed.'
 release_old=$(git rev-parse HEAD)
 git merge-base --is-ancestor "$release_old" "$release_target" || fail 'Server has divergent/newer history; no reset or overwrite allowed.'
-git diff --quiet "$release_old" "$release_target" -- backend/apps/erp/migrations backend/requirements.txt || fail 'Migration/dependency changes require a separate reviewed deployment.'
+git diff --quiet "$release_old" "$release_target" -- backend/requirements.txt || fail 'Dependency changes require a separate reviewed deployment.'
+while IFS= read -r migration_path; do
+  [[ "$migration_path" == backend/apps/erp/migrations/0037_purchase_domestic_international_tracking.py ]] || fail 'Unexpected migration change; stop for review.'
+done < <(git diff --name-only "$release_old" "$release_target" -- backend/apps/erp/migrations)
 [[ "$(systemctl show "$release_service" -p WorkingDirectory --value)" == "$release_app/backend" ]] || fail 'Unexpected service WorkingDirectory.'
 [[ "$(systemctl show "$release_service" -p EnvironmentFiles --value)" == *"$release_app/.env"* ]] || fail 'Service does not reference the expected production .env.'
 systemctl is-active --quiet "$release_service" || fail 'Service was not healthy before release.'
@@ -120,19 +123,24 @@ release_backup=$(mktemp -d /opt/dongbo/backups/erp-usability-XXXXXXXX)
 printf '%s\n' "$release_old" > "$release_backup/previous-sha.txt"
 printf '%s\n' "$release_target" > "$release_backup/target-sha.txt"
 git archive "$release_old" > "$release_backup/previous-code.tar"
+[[ "$("$release_python" backend/manage.py shell -c 'from django.db import connection; print(connection.settings_dict["NAME"])' | tail -n 1)" == dongbo_erp ]] || fail 'Unexpected database; do not back up or migrate another database.'
+runuser -u postgres -- pg_dump --dbname=dongbo_erp --format=custom > "$release_backup/dongbo_erp.dump"
+pg_restore --list "$release_backup/dongbo_erp.dump" >/dev/null
 trap on_error ERR
-runtime_command git switch --detach "$release_target"
 release_changed=1
+systemctl stop "$release_service"
+runtime_command git switch --detach "$release_target"
 node --check app.js
 node --check team.js
 runtime_command node scripts/build-site.mjs
 verify_runtime_readable
 "$release_python" backend/manage.py check
+"$release_python" backend/manage.py migrate erp 0037_purchase_domestic_international_tracking --noinput
 "$release_python" backend/manage.py migrate --check
 systemctl restart "$release_service"
 health
 systemctl is-active --quiet "$release_service"
 verify_assets "$release_target"
 trap - ERR
-printf 'RELEASE VERIFIED AT LOCAL NGINX ORIGIN\nSHA: %s\nBackup: %s\nDatabase unchanged; no migrations, collectstatic, dependency installs or timer changes.\n' "$release_target" "$release_backup"
+printf 'RELEASE VERIFIED AT LOCAL NGINX ORIGIN\nSHA: %s\nBackup: %s\nMigration 0037 applied/verified. No collectstatic, dependency installs or timer changes. Roll back code only; retain migration and logistics data.\n' "$release_target" "$release_backup"
 printf 'Public CDN/browser cache and signed-in business acceptance remain to be verified at https://%s/\n' "$release_domain"

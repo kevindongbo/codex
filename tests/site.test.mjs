@@ -37,10 +37,10 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260908-replenishment-layout-1/);
-  assert.match(html, /team\.js\?v=20260908-replenishment-layout-1/);
-  assert.match(html, /profit-calculator\.js\?v=20260908-replenishment-layout-1/);
-  assert.match(html, /app\.js\?v=20260908-replenishment-layout-1/);
+  assert.match(html, /styles\.css\?v=20260910-purchase-primary-1/);
+  assert.match(html, /team\.js\?v=20260910-purchase-primary-1/);
+  assert.match(html, /profit-calculator\.js\?v=20260910-purchase-primary-1/);
+  assert.match(html, /app\.js\?v=20260910-purchase-primary-1/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
 });
@@ -91,7 +91,7 @@ test("keeps the ERP polish controls and daily exchange-rate workflow wired", asy
   assert.match(html, /id="batchWeight30"[^>]*value="10"/);
   assert.match(html, /id="profitRateAuto"/);
   assert.match(html, /id="profitRateManual"/);
-  assert.match(appScript, /purchase-detail-list/);
+  assert.match(appScript, /groupPurchasesByInternationalTracking/);
   assert.doesNotMatch(appScript, /velocity3 \* 0\.4 \+ velocity7 \* 0\.3 \+ velocity15 \* 0\.2 \+ velocity30 \* 0\.1/);
   assert.match(profitScript, /profit-calculator\/exchange-rates\//);
 });
@@ -364,7 +364,7 @@ test("serves application assets with local and team data modes", async () => {
   assert.doesNotMatch(scriptText, /function localReplenishmentRecommendation/);
   assert.doesNotMatch(scriptText, /velocity3 \* 0\.4 \+ velocity7 \* 0\.3 \+ velocity15 \* 0\.2 \+ velocity30 \* 0\.1/);
   assert.match(scriptText, /normalizeTeamRecommendation/);
-  assert.match(scriptText, /purchase-detail-list/);
+  assert.match(scriptText, /groupPurchasesByInternationalTracking/);
   assert.match(scriptText, /fillSnapshotHint/);
   assert.match(scriptText, /reserved > balance\.onHand/);
   assert.match(scriptText, /modal\.classList\.add\('open'\)/);
@@ -377,8 +377,8 @@ test("serves application assets with local and team data modes", async () => {
   assert.match(scriptText, /inventorySection = parts\[2\] === 'movements'/);
   assert.match(scriptText, /executeTeamCommand/);
   assert.match(scriptText, /Treat the currently typed tracking number as a pending logistics record/);
-  assert.match(scriptText, /const pendingTrackingNumber = \$\('#purchaseTrackingNumber'\)\.value\.trim\(\)/);
-  assert.match(scriptText, /draftPurchaseShipments\.push\(\{ id: '', trackingNumber: pendingTrackingNumber, lines: \[\] \}\)/);
+  assert.match(scriptText, /const pendingDomestic = \$\('#purchaseTrackingNumber'\)\.value\.trim\(\)/);
+  assert.match(scriptText, /internationalTrackingNumber: pendingInternational/);
   assert.match(scriptText, /保存成功，但页面数据刷新失败/);
   assert.match(scriptText, /applyResult: function \(savedPurchase\) \{ return teamGateway\.applyPurchaseOrderResult\(savedPurchase\); \}/);
   assert.match(scriptText, /refreshOnError: false/);

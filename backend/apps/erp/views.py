@@ -969,8 +969,10 @@ def replenishment_batch_policy(request):
             _require_warehouse_access(request, organization, profile.primary_warehouse)
             for key, value in cleaned.items():
                 if key == "safety_stock":
-                    sku.safety_stock = value
-                    sku.save(update_fields=["safety_stock", "updated_at"])
+                    # Blank means use the existing SKU safety stock, not NULL or zero.
+                    if value is not None:
+                        sku.safety_stock = value
+                        sku.save(update_fields=["safety_stock", "updated_at"])
                 else:
                     setattr(profile, key, value if value != "" else None)
             profile.full_clean()

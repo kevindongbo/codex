@@ -1906,6 +1906,29 @@ function purchaseAmount(order) {
   }
   return groups.size ? '多币种 ' + groups.size + ' 组' : money(order.extraCost, 'CNY');
 }
+function purchaseTrackingCell(order, field) {
+  const values = Array.from(new Set((order.shipments || []).map(row => String(row[field] || '').trim()).filter(Boolean)));
+  const legacy = field === 'domesticTrackingNumber' ? Array.from(new Set((order.shipments || []).map(row => row.trackingNumber).filter(Boolean))) : [];
+  return values.map(value => '<div>' + escapeHtml(value) + '</div>').join('') + (legacy.length ? '<small>历史单号（未分类）：' + legacy.map(escapeHtml).join('、') + '</small>' : '') || '<span class="muted">未填写</span>';
+}
+function groupPurchasesByInternationalTracking(orders) {
+  // Connected groups keep each order exactly once, including multi-package orders.
+  const groups = [];
+  orders.forEach(order => {
+    const numbers = new Set((order.shipments || []).map(row => String(row.internationalTrackingNumber || '').trim().toUpperCase()).filter(Boolean));
+    const matches = groups.filter(group => numbers.size && Array.from(numbers).some(number => group.numbers.has(number)));
+    if (!matches.length) return groups.push({ numbers, orders: [order] });
+    const target = matches[0];
+    target.orders.push(order);
+    numbers.forEach(number => target.numbers.add(number));
+    matches.slice(1).forEach(group => {
+      target.orders.push(...group.orders);
+      group.numbers.forEach(number => target.numbers.add(number));
+      groups.splice(groups.indexOf(group), 1);
+    });
+  });
+  return groups.flatMap(group => group.orders);
+}
 function renderPurchases() {
   let orders = state.purchaseOrders.filter(function (order) {
     if (!isCurrentWarehouseRecord(order)) return false;
@@ -1916,21 +1939,10 @@ function renderPurchases() {
     return !searchTerm || [order.number, order.supplier, order.note].join(' ').toLowerCase().includes(searchTerm) ||
       order.lines.some(function (line) { return searchMatches(productById(line.productId), order.number); });
   }).sort(function (a, b) { return new Date(b.createdAt) - new Date(a.createdAt); });
+  orders = groupPurchasesByInternationalTracking(orders);
   $('#purchaseRows').innerHTML = orders.map(function (order) {
-    const ordered = order.lines.reduce(function (sum, line) { return sum + integer(line.orderedQty); }, 0);
-    const received = order.lines.reduce(function (sum, line) { return sum + integer(line.receivedQty); }, 0);
     const transit = order.lines.reduce(function (sum, line) { return sum + remainingPurchaseLine(line); }, 0);
-    const purchaseLineCards = order.lines.map(function (line) {
-      const product = productById(line.productId);
-      return productQuantityMedia(product || { name: '商品已移除', sku: '' }, line.orderedQty);
-    });
-    const lines = purchaseLineCards.length > 1
-      ? '<details class="purchase-detail-list"><summary>' + purchaseLineCards[0] + '<span>共 ' + purchaseLineCards.length + ' 项</span></summary><div>' + purchaseLineCards.map(function (card) { return '<div class="transfer-product-line">' + card + '</div>'; }).join('') + '</div></details>'
-      : (purchaseLineCards[0] ? '<span class="purchase-single-line">' + purchaseLineCards[0] + '</span>' : '<span class="muted">无商品明细</span>');
     const overdue = purchaseIsOverdue(order);
-    const shipments = order.shipments || [];
-    const tracking = shipments.length ? ('<button class="link-button" data-toggle-purchase-shipments="' + escapeHtml(order.id) + '">' + escapeHtml(shipments[0].trackingNumber) + (shipments.length > 1 ? ' +' + (shipments.length - 1) : '') + '</button>' +
-      (order.showShipments ? '<div class="shipment-summary">' + shipments.map(function (shipment) { return '<div><strong>' + escapeHtml(shipment.trackingNumber) + '</strong>：' + shipment.lines.map(function (line) { const product = productById((order.lines.find(function (item) { return item.id === line.purchaseLineId; }) || {}).productId); return escapeHtml((product && product.sku) || 'SKU') + '×' + integer(line.quantity); }).join('，') + '</div>'; }).join('') + '</div>' : '')) : '<span class="muted">未填写</span>';
     let actions = '';
     const canEditPurchase = TEAM_MODE
       ? !['completed', 'cancelled', 'received'].includes(order.status)
@@ -1945,7 +1957,7 @@ function renderPurchases() {
     const statusClass = overdue ? 'overdue' : order.status;
     const statusLabel = overdue ? '已逾期' : PURCHASE_LABELS[order.status];
     return '<tr><td><strong>' + escapeHtml(order.number) + '</strong><br><small>' + formatDate(order.orderedAt, false) + '</small></td>' +
-      '<td>' + escapeHtml(order.purchaserName || '操作员') + '</td><td>' + tracking + '</td><td>' + lines + '</td><td>' + ordered + ' / ' + received + '</td>' +
+      '<td>' + escapeHtml(order.purchaserName || '操作员') + '</td><td>' + purchaseTrackingCell(order, 'domesticTrackingNumber') + '</td><td>' + purchaseTrackingCell(order, 'internationalTrackingNumber') + '</td>' +
       '<td><span class="stock-number transit">' + (isPurchaseOpen(order) ? transit : 0) + '</span></td>' +
       '<td class="' + (overdue ? 'overdue-copy' : '') + '">' + formatDate(order.expectedAt, false) + '</td><td>' + purchaseAmount(order) + '</td>' +
       '<td>' + statusPill(statusLabel, statusClass) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';
@@ -3717,7 +3729,7 @@ function renderPurchaseShipments() {
       return '<label>' + escapeHtml(product ? (product.sku + ' · ' + product.name) : 'SKU') +
         '<input data-shipment-quantity="' + shipmentIndex + ':' + escapeHtml(line.productId) + '" type="number" min="0" step="1" max="' + integer(line.quantity) + '" value="' + (saved.quantity == null ? '' : integer(saved.quantity)) + '" placeholder="本包裹数量"></label>';
     }).join('');
-    return '<div class="shipment-editor"><div><strong>物流单号：' + escapeHtml(shipment.trackingNumber) + '</strong><button class="line-remove" data-remove-purchase-shipment="' + shipmentIndex + '" type="button">移除</button></div><div class="shipment-line-grid">' + allocations + '</div></div>';
+    return '<div class="shipment-editor">' + (shipment.trackingNumber ? '<small>历史单号（未分类）：' + escapeHtml(shipment.trackingNumber) + '</small>' : '') + '<div class="form-grid"><label>国内物流单号（可留空）<input maxlength="120" data-purchase-tracking-field="domesticTrackingNumber" data-package-index="' + shipmentIndex + '" value="' + escapeHtml(shipment.domesticTrackingNumber || '') + '"></label><label>国际物流单号（可留空）<input maxlength="120" data-purchase-tracking-field="internationalTrackingNumber" data-package-index="' + shipmentIndex + '" value="' + escapeHtml(shipment.internationalTrackingNumber || '') + '"></label></div><button class="line-remove" data-remove-purchase-shipment="' + shipmentIndex + '" type="button">移除</button><div class="shipment-line-grid">' + allocations + '</div></div>';
   }).join('') : '<div class="last-value">尚未填写物流单号。可在创建后继续编辑补充，物流不调用付费接口。</div>';
 }
 function renderPurchaseSkuPicker() {
@@ -3792,7 +3804,7 @@ async function openPurchaseEditor(existingOrder) {
     return { productId: line.productId, skuId: line.skuId, purchaseLineId: line.id, quantity: line.orderedQty, unitCost: line.unitCost, receivedQty: line.receivedQty || 0 };
   }) : [];
   draftPurchaseShipments = existingOrder ? (existingOrder.shipments || []).map(function (shipment) {
-    return { id: shipment.id, trackingNumber: shipment.trackingNumber, lines: (shipment.lines || []).map(function (line) {
+    return { id: shipment.id, trackingNumber: shipment.trackingNumber, domesticTrackingNumber: shipment.domesticTrackingNumber || '', internationalTrackingNumber: shipment.internationalTrackingNumber || '', lines: (shipment.lines || []).map(function (line) {
       const linked = existingOrder.lines.find(function (item) { return item.id === line.purchaseLineId; }) || {};
       return { productId: linked.productId, skuId: line.skuId || linked.skuId, purchaseLineId: line.purchaseLineId, quantity: line.quantity };
     }) };
@@ -4054,7 +4066,7 @@ function openReplenishmentPolicy(productId) {
   setText('#replenishmentPolicyIntro', (product.sku || '无 SKU') + ' · ' + product.name + '；参数跟随 SKU，未设置主力仓时不会产生正式建议。');
   const primaryWarehouse = $('#policyPrimaryWarehouse');
   if (primaryWarehouse) {
-    primaryWarehouse.innerHTML = '<option value="">未设置</option>' + (state.warehouses || []).filter(function (row) { return row.active; }).map(function (row) { return '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(row.name + ' · ' + row.code) + '</option>'; }).join('');
+    primaryWarehouse.innerHTML = '<option value="">未设置</option>' + (TEAM_MODE && teamGateway ? teamGateway.warehouses : state.warehouses || []).filter(function (row) { return row.active; }).map(function (row) { return '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(row.name + ' · ' + row.code) + '</option>'; }).join('');
   }
   setControlValue('#policyPrimaryWarehouse', profileConfig.primary_warehouse || serverRecommendation.primary_warehouse || '');
   setControlValue('#policyLeadDays', profileConfig.manual_lead_time_days == null ? (policy.leadTimeOverride == null ? '' : policy.leadTimeOverride) : profileConfig.manual_lead_time_days);
@@ -4149,11 +4161,9 @@ async function openBatchReplenishmentPolicy() {
       setControlValue('#batchWeight30', Math.round(Number(settings.velocity_weight_30 == null ? 0.1 : settings.velocity_weight_30) * 100));
     }
     const batchPrimaryWarehouse = $('#batchPolicyPrimaryWarehouse');
-    const warehouse = selectedWarehouse();
-    if (!warehouse || !warehouse.active) return showToast('请先选择有效的当前仓库。');
     if (batchPrimaryWarehouse) {
-      batchPrimaryWarehouse.innerHTML = '<option value="' + escapeHtml(warehouse.id) + '">' + escapeHtml(warehouse.name + ' · ' + warehouse.code) + '（当前仓库）</option>';
-      batchPrimaryWarehouse.dataset.warehouseId = String(warehouse.id);
+      const warehouses = TEAM_MODE && teamGateway ? teamGateway.warehouses : state.warehouses || [];
+      batchPrimaryWarehouse.innerHTML = '<option value="">未设置</option>' + warehouses.filter(row => row.active).map(row => '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(row.name + ' · ' + row.code) + '</option>').join('');
     }
     setText('#replenishmentBatchPolicyTitle', '调整已选 ' + replenishmentSelectedSkuIds.size + ' 个 SKU 参数');
     openModal('replenishmentBatchPolicyModal');
@@ -4188,13 +4198,7 @@ async function handleBatchReplenishmentPolicySubmit(event) {
     fields.velocity_weight_30 = weights[3] / 100;
   }
   const skuIds = Array.from(replenishmentSelectedSkuIds);
-  if (Object.hasOwn(fields, 'primary_warehouse')) {
-    const warehouse = selectedWarehouse();
-    const input = $('#batchPolicyPrimaryWarehouse');
-    if (!warehouse || !input || input.dataset.warehouseId !== String(warehouse.id) || fields.primary_warehouse !== String(warehouse.id)) {
-      return showToast('批量覆盖主力仓库仅允许当前仓库，请重新打开参数窗口。');
-    }
-  }
+
   if (TEAM_MODE) {
     const saved = await executeTeamCommand(function () {
       return Object.keys(fields).length ? teamGateway.batchSaveReplenishmentPolicy(skuIds, fields) : teamGateway.recomputeReplenishment(skuIds);
@@ -4276,7 +4280,7 @@ function openReceiveEditor(purchaseId) {
   }).join('');
   $('#receivePurchaseId').value = order.id;
   $('#receiveShipmentId').innerHTML = '<option value="">不指定物流单（按采购单收货）</option>' + (order.shipments || []).map(function (shipment) {
-    return '<option value="' + escapeHtml(shipment.id) + '">' + escapeHtml(shipment.trackingNumber) + '</option>';
+    return '<option value="' + escapeHtml(shipment.id) + '">' + escapeHtml([shipment.domesticTrackingNumber, shipment.internationalTrackingNumber, shipment.trackingNumber].filter(Boolean).join(' / ') || '未填写单号包裹') + '</option>';
   }).join('');
   $('#receiveAt').value = localDateTime(new Date());
   renderReceiveLines();
@@ -4291,7 +4295,7 @@ function renderReceiveLines() {
   $('#receiveIntro').textContent = order.number + ' · ' + order.supplier + '：可一次性登记该采购单所有商品。';
   const selectedShipmentId = $('#receiveShipmentId').value;
   $('#receiveShipmentId').innerHTML = '<option value="">不指定物流单（按采购单收货）</option>' + (order.shipments || []).map(function (shipment) {
-    return '<option value="' + escapeHtml(shipment.id) + '">' + escapeHtml(shipment.trackingNumber) + '</option>';
+    return '<option value="' + escapeHtml(shipment.id) + '">' + escapeHtml([shipment.domesticTrackingNumber, shipment.internationalTrackingNumber, shipment.trackingNumber].filter(Boolean).join(' / ') || '未填写单号包裹') + '</option>';
   }).join('');
   $('#receiveShipmentId').value = selectedShipmentId;
   const lines = order.lines.filter(function (line) { return remainingPurchaseLine(line) > 0; });
@@ -4542,14 +4546,12 @@ async function handlePurchaseSubmit(event) {
   // broken: the operator could see the number in the field while the payload
   // silently omitted it.  A shipment without per-SKU allocations is valid and
   // can be allocated later before a partial receipt.
-  const pendingTrackingNumber = $('#purchaseTrackingNumber').value.trim();
-  if (pendingTrackingNumber) {
-    const duplicateTracking = draftPurchaseShipments.some(function (item) {
-      return String(item.trackingNumber || '').trim().toLowerCase() === pendingTrackingNumber.toLowerCase();
-    });
-    if (duplicateTracking) return showToast('同一采购单的物流单号不能重复。');
-    draftPurchaseShipments.push({ id: '', trackingNumber: pendingTrackingNumber, lines: [] });
+  const pendingDomestic = $('#purchaseTrackingNumber').value.trim();
+  const pendingInternational = $('#purchaseInternationalTrackingNumber').value.trim();
+  if (pendingDomestic || pendingInternational) {
+    draftPurchaseShipments.push({ id: '', trackingNumber: '', domesticTrackingNumber: pendingDomestic, internationalTrackingNumber: pendingInternational, lines: [] });
     $('#purchaseTrackingNumber').value = '';
+    $('#purchaseInternationalTrackingNumber').value = '';
   }
   const number = $('#purchaseNumber').value.trim();
   if (number && state.purchaseOrders.some(function (item) { return item.id !== purchaseEditId && item.number.toLowerCase() === number.toLowerCase(); })) return showToast('采购单号不能重复。');
@@ -4565,7 +4567,7 @@ async function handlePurchaseSubmit(event) {
       return { id: line.purchaseLineId || uid('pol'), productId: line.productId, skuId: line.skuId || (product ? product.skuId : ''), currency: product ? product.costCurrency : 'CNY', orderedQty: integer(line.quantity), quantity: integer(line.quantity), receivedQty: line.receivedQty || 0, cancelledQty: 0, unitCost: nonNegative(line.unitCost) };
     }),
     shipments: draftPurchaseShipments.map(function (shipment) {
-      return { id: shipment.id || '', trackingNumber: shipment.trackingNumber, lines: (shipment.lines || []).map(function (line) {
+      return { id: shipment.id || '', trackingNumber: shipment.trackingNumber, domesticTrackingNumber: shipment.domesticTrackingNumber || '', internationalTrackingNumber: shipment.internationalTrackingNumber || '', lines: (shipment.lines || []).map(function (line) {
         const product = productById(line.productId);
         const purchaseLine = draftPurchaseLines.find(function (item) { return item.productId === line.productId; }) || {};
         return { purchaseLineId: line.purchaseLineId || purchaseLine.purchaseLineId || '', skuId: line.skuId || purchaseLine.skuId || (product && product.skuId), quantity: integer(line.quantity) };
@@ -4586,7 +4588,13 @@ async function handlePurchaseSubmit(event) {
     if (savedTeam) closeModal('purchaseModal');
     return;
   }
-  const saved = commit(function (next) { next.purchaseOrders.push(order); }, status === 'draft' ? '采购草稿已保存，不计入在途。' : '采购单已创建，已自动计入在途。');
+  const saved = commit(function (next) {
+    const index = next.purchaseOrders.findIndex(item => item.id === purchaseEditId);
+    if (index >= 0) {
+      order.createdAt = next.purchaseOrders[index].createdAt;
+      next.purchaseOrders[index] = order;
+    } else next.purchaseOrders.push(order);
+  }, purchaseEditId ? '采购单已更新。' : (status === 'draft' ? '采购草稿已保存，不计入在途。' : '采购单已创建，已自动计入在途。'));
   if (saved) closeModal('purchaseModal');
 }
 async function handleReceiveSubmit(event) {
@@ -5614,11 +5622,9 @@ function bindEvents() {
   });
   $('#purchaseForm').addEventListener('submit', handlePurchaseSubmit);
   $('#addPurchaseShipment').addEventListener('click', function () {
-    const trackingNumber = $('#purchaseTrackingNumber').value.trim();
-    if (!trackingNumber) return showToast('请先填写物流单号。');
-    if (draftPurchaseShipments.some(function (item) { return item.trackingNumber.toLowerCase() === trackingNumber.toLowerCase(); })) return showToast('同一采购单的物流单号不能重复。');
-    draftPurchaseShipments.push({ id: '', trackingNumber: trackingNumber, lines: [] });
+    draftPurchaseShipments.push({ id: '', trackingNumber: '', domesticTrackingNumber: $('#purchaseTrackingNumber').value.trim(), internationalTrackingNumber: $('#purchaseInternationalTrackingNumber').value.trim(), lines: [] });
     $('#purchaseTrackingNumber').value = '';
+    $('#purchaseInternationalTrackingNumber').value = '';
     renderPurchaseShipments();
   });
   $('#purchaseShipmentList').addEventListener('click', function (event) {
@@ -5628,6 +5634,12 @@ function bindEvents() {
     renderPurchaseShipments();
   });
   $('#purchaseShipmentList').addEventListener('input', function (event) {
+    const tracking = event.target.closest('[data-purchase-tracking-field]');
+    if (tracking) {
+      const shipment = draftPurchaseShipments[Number(tracking.dataset.packageIndex)];
+      if (shipment) shipment[tracking.dataset.purchaseTrackingField] = tracking.value.trim();
+      return;
+    }
     const input = event.target.closest('[data-shipment-quantity]');
     if (!input) return;
     const parts = input.dataset.shipmentQuantity.split(':');

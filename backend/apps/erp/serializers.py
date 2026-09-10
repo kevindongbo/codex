@@ -403,7 +403,7 @@ class PurchaseShipmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseShipment
-        fields = ["id", "tracking_number", "confirmed_at", "confirmed_by", "closed_at", "closed_reason", "lines", "created_at", "updated_at"]
+        fields = ["id", "tracking_number", "domestic_tracking_number", "international_tracking_number", "confirmed_at", "confirmed_by", "closed_at", "closed_reason", "lines", "created_at", "updated_at"]
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
@@ -534,7 +534,9 @@ class PurchaseShipmentEditLineInputSerializer(serializers.Serializer):
 
 class PurchaseShipmentEditInputSerializer(serializers.Serializer):
     id = serializers.UUIDField(required=False)
-    tracking_number = serializers.CharField(max_length=120)
+    tracking_number = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    domestic_tracking_number = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    international_tracking_number = serializers.CharField(max_length=120, required=False, allow_blank=True)
     lines = PurchaseShipmentEditLineInputSerializer(many=True, required=False)
 
 
@@ -594,9 +596,7 @@ class PurchaseOrderEditInputSerializer(OrganizationValidationMixin, serializers.
         shipment_numbers = set()
         for shipment in attrs.get("shipments", []):
             number = shipment["tracking_number"].strip()
-            if not number:
-                raise serializers.ValidationError({"shipments": "物流单号不能为空。"})
-            if number.lower() in shipment_numbers:
+            if number and number.lower() in shipment_numbers:
                 raise serializers.ValidationError({"shipments": "同一采购单的物流单号不能重复。"})
             shipment_numbers.add(number.lower())
             for shipment_line in shipment.get("lines", []):
@@ -764,7 +764,7 @@ class ReplenishmentBatchFieldsSerializer(serializers.Serializer):
     manual_lead_time_days = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=2147483647)
     min_order_qty = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=3, min_value=Decimal('0.001'))
     pack_size = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=3, min_value=Decimal('0.001'))
-    safety_stock = serializers.DecimalField(required=False, max_digits=14, decimal_places=3, min_value=0)
+    safety_stock = serializers.DecimalField(required=False, allow_null=True, max_digits=14, decimal_places=3, min_value=0)
     velocity_weight_3 = serializers.DecimalField(required=False, max_digits=5, decimal_places=3, min_value=0, max_value=1)
     velocity_weight_7 = serializers.DecimalField(required=False, max_digits=5, decimal_places=3, min_value=0, max_value=1)
     velocity_weight_15 = serializers.DecimalField(required=False, max_digits=5, decimal_places=3, min_value=0, max_value=1)

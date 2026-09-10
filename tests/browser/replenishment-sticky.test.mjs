@@ -101,8 +101,9 @@ try {
   await page.locator('#replenishmentRows input[type=checkbox]').first().check();
   await page.getByRole('button', { name: '批量调整参数', exact: true }).click();
   await page.locator('#replenishmentBatchPolicyModal').waitFor({ state: 'visible' });
-  assert.deepEqual(await page.locator('#batchPolicyPrimaryWarehouse option').evaluateAll(nodes => nodes.map(n => n.value)), ['warehouse-main']);
-  assert.match(await page.locator('#batchPolicyPrimaryWarehouse').innerText(), /当前仓库/);
+  assert.deepEqual(await page.locator('#batchPolicyPrimaryWarehouse option').evaluateAll(nodes => nodes.map(n => n.value)), ['', 'warehouse-main', 'warehouse-other']);
+  await page.locator('#batchPolicyPrimaryWarehouse').selectOption('warehouse-other');
+  assert.equal(await page.locator('#batchPolicyPrimaryWarehouse').inputValue(), 'warehouse-other');
   await page.locator('#replenishmentBatchPolicyModal').getByRole('button', { name: '取消', exact: true }).click();
 
   await page.evaluate(() => {
