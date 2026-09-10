@@ -37,12 +37,23 @@ test("serves the Dongbo cross-border Chinese operations shell", async () => {
 
 test("versions browser assets so production never mixes new markup with cached scripts", async () => {
   const html = await (await fetchPath("/index.html")).text();
-  assert.match(html, /styles\.css\?v=20260910-purchase-primary-1/);
-  assert.match(html, /team\.js\?v=20260910-purchase-primary-1/);
-  assert.match(html, /profit-calculator\.js\?v=20260910-purchase-primary-1/);
-  assert.match(html, /app\.js\?v=20260910-purchase-primary-1/);
+  assert.match(html, /styles\.css\?v=20260910-purchase-details-2/);
+  assert.match(html, /team\.js\?v=20260910-purchase-details-2/);
+  assert.match(html, /profit-calculator\.js\?v=20260910-purchase-details-2/);
+  assert.match(html, /app\.js\?v=20260910-purchase-details-2/);
   assert.match(html, /for="productImageFile">从电脑选择<\/label>/);
   assert.match(html, /id="productImageStatus" aria-live="polite"/);
+});
+
+test("restores purchase details with quantities only inside the expandable body", async () => {
+  const html = await (await fetchPath('/index.html')).text();
+  const script = await (await fetchPath('/app.js')).text();
+  assert.match(html, /class="purchase-orders-table"/);
+  assert.match(html, /<th>国内物流单号<\/th><th>国际物流单号<\/th><th class="purchase-products-column">商品明细<\/th><th>在途<\/th>/);
+  const renderer = script.slice(script.indexOf('function purchaseProductDetails('), script.indexOf('function renderPurchases('));
+  assert.match(renderer, /lines.length === 1\) return productMedia/);
+  assert.match(renderer, /purchase-product-lines/);
+  assert.match(renderer, /productQuantityMedia\(productFor\(line\), integer\(line.orderedQty\)\)/);
 });
 
 test("keeps the profit advertising controls on one visual baseline", async () => {

@@ -1929,6 +1929,18 @@ function groupPurchasesByInternationalTracking(orders) {
   });
   return groups.flatMap(group => group.orders);
 }
+function purchaseProductDetails(order) {
+  const lines = order.lines || [];
+  if (!lines.length) return '<span class="muted">暂无商品</span>';
+  const productFor = line => productById(line.productId) || { name: '未知商品', sku: line.sku || '' };
+  // A single SKU needs no duplicate quantity beside the in-transit column.
+  if (lines.length === 1) return productMedia(productFor(lines[0]));
+  return '<details class="purchase-product-details"><summary>' + productMedia(productFor(lines[0])) +
+    '<span class="purchase-details-toggle">共 ' + lines.length + ' 项 · 展开／收起</span></summary>' +
+    '<div class="purchase-product-lines">' + lines.map(line =>
+      productQuantityMedia(productFor(line), integer(line.orderedQty))
+    ).join('') + '</div></details>';
+}
 function renderPurchases() {
   let orders = state.purchaseOrders.filter(function (order) {
     if (!isCurrentWarehouseRecord(order)) return false;
@@ -1958,6 +1970,7 @@ function renderPurchases() {
     const statusLabel = overdue ? '已逾期' : PURCHASE_LABELS[order.status];
     return '<tr><td><strong>' + escapeHtml(order.number) + '</strong><br><small>' + formatDate(order.orderedAt, false) + '</small></td>' +
       '<td>' + escapeHtml(order.purchaserName || '操作员') + '</td><td>' + purchaseTrackingCell(order, 'domesticTrackingNumber') + '</td><td>' + purchaseTrackingCell(order, 'internationalTrackingNumber') + '</td>' +
+      '<td class="purchase-products-column">' + purchaseProductDetails(order) + '</td>' +
       '<td><span class="stock-number transit">' + (isPurchaseOpen(order) ? transit : 0) + '</span></td>' +
       '<td class="' + (overdue ? 'overdue-copy' : '') + '">' + formatDate(order.expectedAt, false) + '</td><td>' + purchaseAmount(order) + '</td>' +
       '<td>' + statusPill(statusLabel, statusClass) + '</td><td><div class="row-actions">' + actions + '</div></td></tr>';

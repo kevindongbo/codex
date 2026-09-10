@@ -796,6 +796,23 @@ body.team-readonly [data-team-write] { opacity: .5; pointer-events: none; }
 .replenishment-actions { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .recommendation-note { margin-bottom: 12px; padding: 10px 13px; border: 1px solid #cfe0f8; border-radius: 9px; color: #4c6380; background: var(--blue-soft); font-size: 10px; }
 .suggested-qty { color: var(--teal-dark); font-size: 17px; }
+.purchase-orders-table { min-width: 1590px; table-layout: fixed; }
+.purchase-orders-table th, .purchase-orders-table td { box-sizing: border-box; text-align: left; vertical-align: middle; white-space: normal; overflow-wrap: anywhere; }
+.purchase-orders-table th:nth-child(6), .purchase-orders-table td:nth-child(6),
+.purchase-orders-table th:nth-child(7), .purchase-orders-table td:nth-child(7),
+.purchase-orders-table th:nth-child(8), .purchase-orders-table td:nth-child(8),
+.purchase-orders-table th:nth-child(9), .purchase-orders-table td:nth-child(9) { text-align: center; }
+.purchase-orders-table .product-cell { min-width: 0; }
+.purchase-orders-table .product-copy { flex: 1; }
+.purchase-orders-table .product-copy strong, .purchase-orders-table .product-copy span { white-space: normal; overflow-wrap: anywhere; }
+.purchase-orders-table .row-actions { justify-content: flex-start; flex-wrap: wrap; }
+.purchase-product-details summary { cursor: pointer; display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; gap: 6px; list-style: none; }
+.purchase-product-details summary::-webkit-details-marker { display: none; }
+.purchase-product-details summary::before { content: '▸'; color: var(--teal-dark); }
+.purchase-product-details[open] summary::before { content: '▾'; }
+.purchase-details-toggle { grid-column: 2; font-size: 10px; color: var(--teal-dark); }
+.purchase-product-lines { display: grid; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.purchase-product-details:not([open]) > .purchase-product-lines { display: none; }
 .purchase-detail-list { min-width: 220px; text-align: left; white-space: normal; }
 .purchase-detail-list summary { color: var(--navy); cursor: pointer; font-weight: 750; list-style-position: outside; }
 .purchase-detail-list summary span { margin-left: 7px; color: var(--teal-dark); font-size: 10px; }
