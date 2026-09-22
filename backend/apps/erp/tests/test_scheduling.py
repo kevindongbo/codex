@@ -94,6 +94,7 @@ class SchedulingTests(TestCase):
         payload['reason'] = '私密请假原因'
         result = self.send('adjustments/', payload)
         self.assertEqual(result.status_code, 200, result.data)
+
         revised, _ = self.draft()
         self.assertEqual(self.confirm(revised, replace=True).status_code, 200)
         self.assertEqual(WorkScheduleCell.objects.get(date=self.start, period=2).effective_status, 'leave')
@@ -147,6 +148,11 @@ class SchedulingTests(TestCase):
         provider = AIProviderConfig.objects.create(organization=self.org, name='vision', api_base_url='https://example.com', model_name='vision')
         result = self.send('terms/' + self.term['id'] + '/', {'recognition_provider_id': str(provider.pk)}, 'patch')
         self.assertEqual(result.status_code, 200, result.data)
+        context = self.client.get('/api/scheduling/context/').data
+        self.assertEqual(context['recognition_providers'][0]['id'], str(provider.pk))
+        self.assertNotIn('api_key_encrypted', context['recognition_providers'][0])
+        self.client.force_authenticate(self.member)
+        self.assertEqual(self.client.get('/api/scheduling/context/').data['recognition_providers'], [])
 
     @override_settings(SCHEDULING_ENABLED=False)
     def test_disabled_context_does_not_query_new_tables(self):
@@ -154,6 +160,17 @@ class SchedulingTests(TestCase):
             response = self.client.get('/api/scheduling/context/')
         self.assertFalse(response.data['enabled'])
         self.assertEqual(self.client.get('/api/scheduling/board/').status_code, 404)
+
+    def test_historical_correction_requires_superuser_and_preserves_versions(self):
+        draft, _ = self.draft()
+        with patch('apps.erp.scheduling_services.today', return_value=date(2035, 1, 22)):
+            payload = {'revision': draft['revision'], 'expected_week_revisions': draft['expected_week_revisions'], 'historical_correction': True}
+            self.assertEqual(self.send('imports/' + draft['id'] + '/confirm/', payload).status_code, 403)
+            self.client.force_authenticate(self.owner)
+            response = self.send('imports/' + draft['id'] + '/confirm/', payload)
+            self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(MemberWeekPlan.objects.count(), 2)
+        self.assertTrue(all(p.versions.count() == 1 for p in MemberWeekPlan.objects.all()))
 
 
 @override_settings(SCHEDULING_ENABLED=True)

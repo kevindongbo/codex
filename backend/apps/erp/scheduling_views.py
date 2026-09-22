@@ -104,6 +104,7 @@ class ScheduleAPI(APIView):
                 return Response({'enabled': False, 'user': {'id': request.user.pk, 'is_superuser': is_owner(request.user)}, 'terms': [], 'revision': 0, 'week_start': str(service.monday(service.today()))})
             return Response(dict(enabled=getattr(settings, 'SCHEDULING_ENABLED', False), user={'id': request.user.pk, 'is_superuser': is_owner(request.user)},
                 business_date=str(service.today()), week_start=str(service.monday(service.today())), periods=default_periods(),
+                recognition_providers=[{'id': str(p.pk), 'name': p.name, 'model_name': p.model_name} for p in AIProviderConfig.objects.filter(organization=org, enabled=True)] if is_owner(request.user) else [],
                 terms=[term_json(t) for t in ScheduleTerm.objects.filter(organization=org).order_by('first_monday')], revision=service.revision(org)))
         if op == 'terms':
             return Response({'results': [term_json(t) for t in ScheduleTerm.objects.filter(organization=org).order_by('first_monday')]})

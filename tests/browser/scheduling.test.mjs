@@ -27,7 +27,7 @@ try {
       privateScheduleImage:async () => new Blob(['test'],{type:'image/png'}),
       request:async (path,opts={}) => {
         calls.push({path,body:opts.body,method:opts.method});
-        if(path === '/scheduling/context/') return {enabled:true,user:{id:1,is_superuser:false},business_date:dates[0],week_start:dates[0],terms:[term],periods,revision:1};
+        if(path === '/scheduling/context/') return {enabled:true,user:{id:1,is_superuser:!!window.testAdmin},business_date:dates[0],week_start:dates[0],terms:[term],periods,revision:1};
         if(path.startsWith('/scheduling/board/')) return {days:dates,periods,pending:[],cells:dates.flatMap(date => periods.map(p => ({date,period:p.number,members:Array.from({length:100},(_,i)=>({user_id:i+1,name:'成员'+(i+1),status:'work',revision:1}))})))};
         if(path === '/scheduling/evidence/' && opts.method === 'POST') { evidence=[{id:'e',original_name:'课表.png',created_at:'2035-01-01',size:100}]; return {results:evidence}; }
         if(path.startsWith('/scheduling/evidence/?')) return {results:evidence};
@@ -35,9 +35,10 @@ try {
         if(path.startsWith('/scheduling/imports/?')) return {results:imports};
         if(path.endsWith('/recognize/')) throw new Error('测试未配置识别');
         if(path === '/scheduling/imports/i/') { if(opts.method==='PATCH') Object.assign(imports[0],opts.body,{revision:imports[0].revision+1}); return structuredClone(imports[0]); }
-        if(path.endsWith('/confirm/')) { if(!opts.body.expected_week_revisions) throw new Error('missing revision'); return {}; }
+        if(path.endsWith('/confirm/')) { if(!opts.body.expected_week_revisions) throw new Error('missing revision'); imports[0].state='confirmed'; return {}; }
         if(path === '/scheduling/adjustments/') { if(!opts.body.reason) throw new Error('reason required'); return {}; }
-        if(path === '/scheduling/history/') return {adjustments:[{id:'a',date:dates[0],period:1,status:'leave',reason:'去办理业务',revision:1}]};
+        if(path.startsWith('/scheduling/history/')) return {adjustments:[{id:'a',date:dates[0],period:1,status:'leave',reason:'去办理业务',revision:1}],versions:[]};
+        if(path === '/scheduling/terms/term/' && opts.method === 'PATCH') { Object.assign(term,opts.body); return term; }
         throw new Error('unexpected API: '+path);
       }};
     DongboScheduling.mount(gateway,true);
@@ -65,8 +66,27 @@ try {
   await page.waitForFunction(() => calls.some(c=>c.path==='/scheduling/adjustments/'));
   await page.locator('[data-sc=history]').click();
   assert.match(await page.locator('#sc-dialog').innerText(), /去办理业务/);
+  await page.locator('[data-sc=close]').click();
+  await page.evaluate(() => { window.testAdmin = true; });
+  await page.locator('[data-sc=refresh]').click();
+  await page.locator('[data-schedule-page=evidence]').click();
+  await page.locator('[data-sc=edit]').click();
+  await page.locator('[data-sc=clone-draft]').click();
+  await page.locator('[name=historical_correction]').check();
+  await page.locator('[data-sc=publish]').click();
+  await page.waitForFunction(() => calls.some(c => c.path.endsWith('/confirm/') && c.body.historical_correction === true));
+  await page.locator('[data-schedule-page=board]').click();
+  await page.locator('[data-sc-change=member]').selectOption('2');
+  await page.locator('[data-sc=history]').click();
+  await page.waitForFunction(() => calls.some(c => c.path === '/scheduling/history/?owner=2'));
+  await page.locator('[data-sc=close]').click();
+  await page.locator('[data-sc=settings]').click();
+  await page.locator('[data-sc=time-template]').click();
+  await page.locator('[name=start1]').fill('08:15');
+  await page.locator('#sc-periods button[type=submit]').click();
+  await page.waitForFunction(() => calls.some(c => c.path === '/scheduling/terms/term/' && c.body.periods?.[0].start === '08:15'));
   assert.deepEqual(errors, []);
   await mkdir(new URL('../../.tmp/',import.meta.url),{recursive:true});
   await page.screenshot({path:new URL('../../.tmp/scheduling-browser.png',import.meta.url).pathname.replace(/^\/(.:\/)/,'$1')});
-  console.log('Scheduling browser: upload/review/confirm/leave/history + 5 viewports passed (mock transport).');
+  console.log('Scheduling browser: upload/review/confirm/leave/history/admin historical correction + 5 viewports passed (mock transport).');
 } finally { await browser.close(); }

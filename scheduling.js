@@ -74,7 +74,7 @@
     const people = new Map(); if (b) b.cells.forEach(c => c.members.forEach(m => people.set(String(m.user_id), m.name)));
     const term = terms.find(t => s.week >= t.first_monday && s.week < addDays(t.first_monday, t.week_count * 7));
     const weekIndex = term ? Math.floor((Date.parse(s.week) - Date.parse(term.first_monday)) / 604800000) + 1 : 0;
-    let html = '<div class="sc-toolbar">' + button('previous', '上一周') + '<strong>' + esc(s.week) + ' — ' + esc(addDays(s.week, 6)) + '</strong>' + button('next', '下一周') + button('today', '回到本周') + '<label>学期<select data-sc-change="term">' + option('', '选择学期', !term) + terms.map(t => option(t.id, t.name, term && term.id === t.id)).join('') + '</select></label>' + (term ? '<label>周次<select data-sc-change="week">' + Array.from({ length: term.week_count }, (_, i) => option(addDays(term.first_monday, i * 7), '第 ' + (i + 1) + ' 周', weekIndex === i + 1)).join('') + '</select></label>' : '') + '<label>成员<select data-sc-change="member">' + option('', '全部成员', !s.filter) + Array.from(people, ([id, name]) => option(id, name, s.filter === id)).join('') + '</select></label>' + button('mine', '仅看本人') + button('adjust', '请假 / 调整', 'data-sc-write') + button('weekend', '周末工作日', 'data-sc-write') + button('history', '我的修改记录') + '</div>';
+    let html = '<div class="sc-toolbar">' + button('previous', '上一周') + '<strong>' + esc(s.week) + ' — ' + esc(addDays(s.week, 6)) + '</strong>' + button('next', '下一周') + button('today', '回到本周') + '<label>学期<select data-sc-change="term">' + option('', '选择学期', !term) + terms.map(t => option(t.id, t.name, term && term.id === t.id)).join('') + '</select></label>' + (term ? '<label>周次<select data-sc-change="week">' + Array.from({ length: term.week_count }, (_, i) => option(addDays(term.first_monday, i * 7), '第 ' + (i + 1) + ' 周', weekIndex === i + 1)).join('') + '</select></label>' : '') + '<label>成员<select data-sc-change="member">' + option('', '全部成员', !s.filter) + Array.from(people, ([id, name]) => option(id, name, s.filter === id)).join('') + '</select></label>' + button('mine', '仅看本人') + button('adjust', '请假 / 调整', 'data-sc-write') + button('weekend', '周末工作日', 'data-sc-write') + button('history', admin() ? '所选成员修改记录' : '我的修改记录') + '</div>';
     if (!term) html += '<p class="sc-notice">当前不在已配置学期，不会自动安排未提交成员。</p>';
     if (!b) return html + '<p>正在加载安排…</p>';
     html += '<p class="sc-legend">上班 · 请假 · 外出 · 休息 · 有课 · 待确认</p><p class="sc-notice">待提交：' + (b.pending.map(m => esc(m.name)).join('、') || '无') + '</p><div class="sc-day-tabs">' + b.days.map((d, i) => button('day', days[i] + '<small>' + d.slice(5) + '</small>', 'data-day="' + i + '" aria-pressed="' + (i === s.selectedDay) + '"')).join('') + '</div><div class="sc-board" role="table" aria-label="本周工作安排"><div class="sc-time sc-colhead" role="columnheader">节次 / 时间</div>' + b.days.map((d, i) => '<div class="sc-colhead sc-day-' + i + (d === s.context.business_date ? ' sc-today' : '') + '" role="columnheader">' + days[i] + '<small>' + d + '</small></div>').join('');
@@ -109,7 +109,7 @@
   }
   function editor() {
     const d = s.draft; const term = s.context.terms.find(t => t.id === d.term_id); const readonly = d.state !== 'draft';
-    dialog('校对课表 · 版本 ' + d.revision, '<div class="sc-editor"><div><img id="sc-image" alt="上传的原始课表"><label>原图大小<input type="range" min="100" max="250" value="100" data-sc-change="zoom"></label></div><form id="sc-editor-form"><p>点击格子依次切换：待确认 → 无课 → 有课。必须检查全部七天，包括周末。</p><div class="sc-edit-grid"><span>节次</span>' + days.map(d => '<strong>' + d + '</strong>').join('') + Array.from({ length: 12 }, (_, p) => '<strong>' + (p + 1) + '</strong>' + days.map((_, day) => { const c = d.draft_grid[day][p]; return button('grid', { unknown: '?', free: '无课', class: '有课' }[c.status], 'class="sc-grid-' + c.status + '" data-day="' + day + '" data-period="' + p + '" aria-label="' + days[day] + '第' + (p + 1) + '节 ' + c.status + '"' + (readonly ? ' disabled' : '')); }).join('')).join('') + '</div>' + (!readonly ? button('free', '确认剩余待确认格均无课') + '<label>课程备注（选填，仅本人/管理员可见）<input name="course_note" maxlength="200" placeholder="点选有课格后可逐格标记；识别课程名保留"></label>' : '') + weekChoices(term, d.selected_weeks) + '<label>周末工作日<select name="weekend_day">' + option('sat', '周六', d.weekend_day === 'sat') + option('sun', '周日', d.weekend_day === 'sun') + '</select></label>' + (!readonly ? '<div class="sc-actions">' + button('recognize', '重新识别', 'data-sc-write') + button('save-draft', '保存草稿', 'data-sc-write') + button('publish', '确认并自动排班', 'data-sc-write') + button('reload-draft', '读取最新版本') + '</div>' : '<p>已确认版本只读。请上传新凭证创建新版本。</p>') + '<p id="sc-job-status" role="status"></p></form></div>');
+    dialog('校对课表 · 版本 ' + d.revision, '<div class="sc-editor"><div><img id="sc-image" alt="上传的原始课表"><label>原图大小<input type="range" min="100" max="250" value="100" data-sc-change="zoom"></label></div><form id="sc-editor-form"><p>点击格子依次切换：待确认 → 无课 → 有课。必须检查全部七天，包括周末。</p><div class="sc-edit-grid"><span>节次</span>' + days.map(d => '<strong>' + d + '</strong>').join('') + Array.from({ length: 12 }, (_, p) => '<strong>' + (p + 1) + '</strong>' + days.map((_, day) => { const c = d.draft_grid[day][p]; return button('grid', { unknown: '?', free: '无课', class: '有课' }[c.status], 'class="sc-grid-' + c.status + '" data-day="' + day + '" data-period="' + p + '" aria-label="' + days[day] + '第' + (p + 1) + '节 ' + c.status + '"' + (readonly ? ' disabled' : '')); }).join('')).join('') + '</div>' + (!readonly ? button('free', '确认剩余待确认格均无课') + '<label>课程备注（选填，仅本人/管理员可见）<input name="course_note" maxlength="200" placeholder="点选有课格后可逐格标记；识别课程名保留"></label>' : '') + weekChoices(term, d.selected_weeks) + '<label>周末工作日<select name="weekend_day">' + option('sat', '周六', d.weekend_day === 'sat') + option('sun', '周日', d.weekend_day === 'sun') + '</select></label>' + (!readonly ? '<div class="sc-actions">' + button('recognize', '重新识别', 'data-sc-write') + button('save-draft', '保存草稿', 'data-sc-write') + button('publish', '确认并自动排班', 'data-sc-write') + button('reload-draft', '读取最新版本') + (admin() ? '<label><input type="checkbox" name="historical_correction">历史修正：允许更新已开始时段，保留历史版本</label>' : '') + '</div>' : '<p>已确认版本只读，修改会新建版本，原凭证保留。</p>' + button('clone-draft', '基于此凭证新建修正草稿', 'data-sc-write')) + '<p id="sc-job-status" role="status"></p></form></div>');
   }
   function captureDraft() { const f = document.getElementById('sc-editor-form'); if (f) { s.draft.selected_weeks = Array.from(f.querySelectorAll('[name=weeks]:checked'), x => Number(x.value)); s.draft.weekend_day = f.elements.weekend_day.value; } }
   async function saveDraft() { captureDraft(); const d = s.draft; s.draft = await mutation('imports/' + d.id + '/', { revision: d.revision, draft_grid: d.draft_grid, selected_weeks: d.selected_weeks, weekend_day: d.weekend_day }, 'PATCH'); s.dirty = false; }
@@ -136,15 +136,22 @@
     dialog('请假 / 工作调整', '<form id="sc-adjust"><label>成员<select name="target_user">' + Array.from(people).filter(([id]) => admin() || id === String(s.context.user.id)).map(([id, name]) => option(id, name, id === String(s.context.user.id))).join('') + '</select></label><fieldset><legend>日期（可多选）</legend>' + s.board.days.map(d => '<label><input type="checkbox" name="dates" value="' + d + '">' + d + '</label>').join('') + '</fieldset><fieldset><legend>节次（整天则全选；本人仅修改尚未开始的节次）</legend>' + Array.from({ length: 12 }, (_, i) => '<label><input name="periods" type="checkbox" value="' + (i + 1) + '" checked>第' + (i + 1) + '节</label>').join('') + '</fieldset><label>状态<select name="status"><option value="leave">请假</option><option value="out">外出办事</option>' + (admin() ? '<option value="work">上班</option><option value="rest">休息</option>' : '') + '</select></label><label>原因 / 去向<textarea name="reason" maxlength="500"' + (!admin() ? ' required minlength="2"' : '') + '></textarea></label>' + (admin() ? '<label><input name="show_annotation" type="checkbox" checked>显示人工调整标注</label><label><input name="force" type="checkbox">明确允许覆盖有课或未确认课表的冲突</label>' : '') + '<p>原因仅本人及超级管理员可见。提交立即生效。</p><button type="submit" data-sc-write>确认提交</button></form>');
   }
   async function historyDialog() {
-    const history = await api('history/'); const records = items(history.adjustments);
-    dialog('我的修改记录', records.length ? records.map(r => '<article class="sc-panel"><strong>' + esc(r.date) + ' 第' + esc(r.period) + '节 · ' + esc(labels[r.status] || r.status) + '</strong><p>' + esc(r.reason) + '</p>' + (!r.revoked_at ? button('revoke', '撤销并恢复最新课表安排', 'data-id="' + esc(r.id) + '" data-revision="' + esc(r.revision) + '" data-sc-write') : '<p>已撤销</p>') + '</article>').join('') : '<p>暂无调整记录。</p>');
+    const owner = admin() ? (s.filter || s.scope) : ''; const history = await api('history/' + (owner ? '?owner=' + encodeURIComponent(owner) : '')); const records = items(history.adjustments);
+    dialog(owner ? '所选成员修改记录' : '我的修改记录', (records.length ? records.map(r => '<article class="sc-panel"><strong>' + esc(r.date) + ' 第' + esc(r.period) + '节 · ' + esc(labels[r.status] || r.status) + '</strong><p>' + esc(r.reason) + '</p>' + (!r.revoked_at ? button('revoke', '撤销并恢复最新课表安排', 'data-id="' + esc(r.id) + '" data-revision="' + esc(r.revision) + '" data-sc-write') : '<p>已撤销</p>') + '</article>').join('') : '<p>暂无调整记录。</p>') + '<h3>课表版本记录</h3>' + items(history.versions).map(v => '<p>' + esc(v.week_start) + ' · 版本 ' + esc(v.version) + ' · ' + esc(v.created_at) + '</p>').join(''));
   }
   async function weekendDialog() {
     const plans = items(await api('plans/')); s.weekendPlans = plans;
     dialog('调整周末工作日', '<form id="sc-weekend"><p>仅重新计算未来时段，保留请假与管理员调整。</p>' + plans.map(p => '<label><input type="checkbox" name="plan" value="' + esc(p.week_start) + '">' + esc(p.week_start) + ' · ' + (p.weekend_day === 'sun' ? '周日' : '周六') + '</label>').join('') + '<label>工作日<select name="weekend_day"><option value="sat">周六</option><option value="sun">周日</option></select></label><button type="submit" data-sc-write>保存所选周</button></form>');
   }
   function settingsDialog() {
-    dialog('学期设置', '<p>学期首周必须从周一开始；确认课表后起始日与时间模板锁定。</p>' + s.context.terms.map(t => '<p>' + esc(t.name) + ' · ' + t.first_monday + ' · ' + t.week_count + '周 ' + (t.locked_at ? '已锁定' : '') + '</p>').join('') + '<form id="sc-term"><label>学期名称<input name="name" required maxlength="100"></label><label>第一周周一<input name="first_monday" type="date" required></label><label>周数<input name="week_count" type="number" min="20" max="52" value="20" required></label><button type="submit" data-sc-write>创建学期</button></form><hr><form id="sc-provider"><label>课表视觉识别模型配置ID<input name="provider_id" placeholder="AI模型配置的UUID"></label><p>使用支持图片输入的已配置模型；未配置时允许手动校对。</p><button type="submit" data-sc-write>保存识别配置</button></form>');
+    dialog('学期设置', '<p>学期首周必须从周一开始；确认课表后起始日与时间模板锁定。</p>' + s.context.terms.map(t => '<p>' + esc(t.name) + ' · ' + t.first_monday + ' · ' + t.week_count + '周 ' + (t.locked_at ? '已锁定' : button('time-template', '编辑时间模板', 'data-id="' + esc(t.id) + '"')) + '</p>').join('') + '<form id="sc-term"><label>学期名称<input name="name" required maxlength="100"></label><label>第一周周一<input name="first_monday" type="date" required></label><label>周数<input name="week_count" type="number" min="20" max="52" value="20" required></label><button type="submit" data-sc-write>创建学期</button></form><hr><form id="sc-provider"><label>应用学期<select name="term_id">' + termOptions() + '</select></label><label>课表视觉识别模型<select name="provider_id">' + option('', '未配置（手工校对）', true) + (s.context.recognition_providers || []).map(p => option(p.id, p.name + ' · ' + p.model_name)).join('') + '</select></label><p>使用支持图片输入的已配置模型；未配置时允许手动校对。</p><button type="submit" data-sc-write>保存识别配置</button></form>');
+    const providerForm = document.getElementById('sc-provider');
+    providerForm.elements.provider_id.value = (s.context.terms[0] || {}).recognition_provider_id || '';
+  }
+  function timeTemplateDialog(id) {
+    const term = s.context.terms.find(t => t.id === id);
+    if (!term || term.locked_at) throw new Error('已有确认课表的时间模板不能修改。');
+    dialog('时间模板 · ' + esc(term.name), '<form id="sc-periods" data-term="' + esc(id) + '"><p>修改仅适用于本学期；首次确认课表后锁定。</p>' + (term.periods || s.context.periods).map(p => '<fieldset><legend>第 ' + p.number + ' 节</legend><label>开始<input type="time" name="start' + p.number + '" value="' + esc(p.start) + '" required></label><label>结束<input type="time" name="end' + p.number + '" value="' + esc(p.end) + '" required></label></fieldset>').join('') + '<button type="submit" data-sc-write>保存时间模板</button></form>');
   }
   async function dialogRun(task) { const el = document.getElementById('sc-dialog-error'); if (el) el.textContent = ''; try { await task(); } catch (e) { const target = document.getElementById('sc-dialog-error'); if (target) target.textContent = e.message || '操作失败，编辑已保留。'; else throw e; } }
   async function click(event) {
@@ -157,11 +164,13 @@
     if (action === 'day') { s.selectedDay = Number(el.dataset.day); render(); return; }
     if (action === 'mine') { s.filter = String(s.context.user.id); render(); return; }
     if (action === 'settings') { settingsDialog(); return; }
-    if (['save-draft', 'publish', 'recognize', 'reload-draft', 'revoke'].includes(action)) {
+    if (action === 'time-template') { await dialogRun(async () => timeTemplateDialog(el.dataset.id)); return; }
+    if (['save-draft', 'publish', 'recognize', 'reload-draft', 'revoke', 'clone-draft'].includes(action)) {
       return dialogRun(async () => {
         if (action === 'reload-draft') { if (!s.dirty || root.confirm('放弃未保存编辑并读取最新版本？')) await editImport(s.draft.id); }
         if (action === 'save-draft') { await saveDraft(); document.getElementById('sc-dialog-error').textContent = '草稿已保存。'; }
-        if (action === 'publish') { captureDraft(); if (!knownGrid(s.draft.draft_grid)) throw new Error('请先确认全部84格，包括周末。'); await saveDraft(); const revisions = s.draft.expected_week_revisions || {}; const replacing = Object.values(revisions).some(v => v > 0); if (!root.confirm('将发布第 ' + s.draft.selected_weeks.join('、') + ' 周' + (replacing ? '，并替换这些周已有课表' : '') + '，保留请假和人工调整。确认？')) return; await mutation('imports/' + s.draft.id + '/confirm/', { revision: s.draft.revision, expected_week_revisions: revisions, replace_existing: replacing }); closeDialog(); await refresh(); render(); }
+        if (action === 'clone-draft') { const previous = s.draft; const created = await mutation('imports/', { evidence_id: previous.evidence_id, term_id: previous.term_id, selected_weeks: previous.selected_weeks, weekend_day: previous.weekend_day }); await mutation('imports/' + created.id + '/', { revision: created.revision, draft_grid: previous.draft_grid }, 'PATCH'); await refresh(); await editImport(created.id); }
+        if (action === 'publish') { const historical = admin() && !!document.querySelector('[name=historical_correction]:checked'); captureDraft(); if (!knownGrid(s.draft.draft_grid)) throw new Error('请先确认全部84格，包括周末。'); await saveDraft(); const revisions = s.draft.expected_week_revisions || {}; const replacing = Object.values(revisions).some(v => v > 0); if (!root.confirm('将发布第 ' + s.draft.selected_weeks.join('、') + ' 周' + (replacing ? '，并替换这些周已有课表' : '') + '，保留请假和人工调整。' + (historical ? '本次历史修正将更新已开始时段。' : '') + '确认？')) return; await mutation('imports/' + s.draft.id + '/confirm/', { revision: s.draft.revision, expected_week_revisions: revisions, replace_existing: replacing, historical_correction: historical }); closeDialog(); await refresh(); render(); }
         if (action === 'recognize') { await saveDraft(); await recognize(s.draft.id); }
         if (action === 'revoke') { const reason = root.prompt('请填写撤销原因（至少2字）'); if (reason == null) return; await mutation('adjustments/' + el.dataset.id + '/revoke/', { reason, revision: Number(el.dataset.revision) }); await historyDialog(); await refresh(); render(); }
       });
@@ -182,6 +191,11 @@
     const el = event.target; const action = el.dataset.scChange;
     if (action === 'zoom') { document.getElementById('sc-image').style.width = el.value + '%'; return; }
     if (action === 'upload-term') { const term = s.context.terms.find(t => t.id === el.value); document.getElementById('sc-upload-weeks').innerHTML = weekChoices(term, [1]); return; }
+    if (event.target.closest('#sc-provider') && el.name === 'term_id') {
+      const term = s.context.terms.find(t => t.id === el.value);
+      el.form.elements.provider_id.value = term && term.recognition_provider_id || '';
+      return;
+    }
     if (event.target.closest('#sc-editor-form')) s.dirty = true;
     if (action === 'member') { s.filter = el.value; render(); return; }
     if (action === 'participant') return dialogRun(() => mutation('participants/', { target_user: el.dataset.id, active: el.checked }, 'PATCH'));
@@ -190,13 +204,18 @@
   async function submit(event) {
     const f = event.target; if (!f.id.startsWith('sc-')) return; event.preventDefault();
     const submitTask = async () => {
+      if (f.id === 'sc-periods') {
+        const periods = Array.from({length:12}, (_, i) => ({number:i+1, start:f.elements['start'+(i+1)].value, end:f.elements['end'+(i+1)].value}));
+        await mutation('terms/' + f.dataset.term + '/', {periods}, 'PATCH');
+        await refresh(); settingsDialog(); render();
+      }
       if (f.id === 'sc-upload') {
         const files = Array.from(f.elements.images.files); const weeks = Array.from(f.querySelectorAll('[name=weeks]:checked'), x => Number(x.value));
         if (!files.length || files.length > 10 || !weeks.length) throw new Error('请选择1—10张图片及至少一个适用周。');
         if (files.some(file => file.size > 10 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(file.type))) throw new Error('仅支持不超过10MB的JPG、PNG、WebP图片。');
         let last; const warnings = [];
         for (const file of files) {
-          const data = new FormData(); data.append('file', file);
+          const data = new FormData(); data.append('file', file); if (admin() && s.scope) data.append('owner', s.scope);
           const uploaded = await api('evidence/', { method: 'POST', body: data });
           const evidence = items(uploaded)[0];
           if (!evidence) throw new Error('上传未返回凭证，请刷新后核对。');
@@ -207,7 +226,7 @@
         if (warnings.length) document.getElementById('sc-dialog-error').textContent = '原图已保存。' + warnings.join('；') + ' 可直接手工校对。';
       }
       if (f.id === 'sc-term') { await mutation('terms/', { name: f.elements.name.value.trim(), first_monday: f.elements.first_monday.value, week_count: Number(f.elements.week_count.value), periods: s.context.periods }); await refresh(); settingsDialog(); render(); }
-      if (f.id === 'sc-provider') { const terms = s.context.terms || []; if (!terms.length) throw new Error('请先创建学期。'); for (const term of terms) await mutation('terms/' + term.id + '/', { recognition_provider_id: f.elements.provider_id.value.trim() || null }, 'PATCH'); await context(); document.getElementById('sc-dialog-error').textContent = '所有学期的识别配置已保存。'; }
+      if (f.id === 'sc-provider') { if (!f.elements.term_id.value) throw new Error('请先创建学期。'); await mutation('terms/' + f.elements.term_id.value + '/', { recognition_provider_id: f.elements.provider_id.value || null }, 'PATCH'); await context(); document.getElementById('sc-dialog-error').textContent = '所选学期的识别配置已保存。'; }
       if (f.id === 'sc-weekend') { const selected = Array.from(f.querySelectorAll('[name=plan]:checked'), e => e.value); if (!selected.length) throw new Error('请选择至少一周。'); const revisions = {}; s.weekendPlans.filter(p => selected.includes(p.week_start)).forEach(p => { revisions[p.week_start] = p.revision; }); await mutation('plans/weekend/', { week_starts: selected, weekend_day: f.elements.weekend_day.value, expected_revisions: revisions }); closeDialog(); await refresh(); render(); }
       if (f.id === 'sc-adjust') {
         const dates = Array.from(f.querySelectorAll('[name=dates]:checked'), e => e.value); const periods = Array.from(f.querySelectorAll('[name=periods]:checked'), e => Number(e.value));

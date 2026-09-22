@@ -37,10 +37,25 @@ from .models import (
     StockTransferLine,
     StockTransferPackage,
     StockTransferPackageLine,
+    SKU,
+    Warehouse,
 )
 
 
 logger = logging.getLogger(__name__)
+
+
+def _locked_sales_orders():
+    # Preserve locks on existing related rows without locking a nullable JOIN.
+    return SalesOrder.objects.select_for_update().select_related("organization").prefetch_related(
+        models.Prefetch("warehouse", queryset=Warehouse.objects.select_for_update())
+    )
+
+
+def _locked_return_orders():
+    return ReturnOrder.objects.select_for_update().select_related("organization", "warehouse").prefetch_related(
+        models.Prefetch("original_order", queryset=SalesOrder.objects.select_for_update())
+    )
 
 
 class WorkflowValidationError(ValidationError):
@@ -92,7 +107,12 @@ def _order_lines_or_raise(order, *, lock=False):
     queryset = order.lines
     if lock:
         queryset = queryset.select_for_update()
-    lines = list(queryset.select_related("sku__product").order_by("pk"))
+    # Imported order lines may have no mapped SKU. Lock existing SKU/product
+    # rows separately; PostgreSQL rejects FOR UPDATE on an outer join.
+    skus = SKU.objects.select_related("product")
+    if lock:
+        skus = skus.select_for_update()
+    lines = list(queryset.prefetch_related(models.Prefetch("sku", queryset=skus)).order_by("pk"))
     if not lines:
         raise ValidationError("订单没有明细")
     for line in lines:
@@ -1571,7 +1591,7 @@ def receive_purchase(*, organization, purchase_order, number, lines, idempotency
 
 @transaction.atomic
 def confirm_order(*, order, actor=None):
-    order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(pk=order.pk)
+    order = _locked_sales_orders().get(pk=order.pk)
     if order.warehouse_id is None:
         raise ValidationError("订单出库前必须人工指定仓库")
     _assert_organization(order.organization, warehouse=order.warehouse)
@@ -1592,7 +1612,7 @@ def confirm_order(*, order, actor=None):
 
 @transaction.atomic
 def cancel_order(*, order, actor=None):
-    order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(pk=order.pk)
+    order = _locked_sales_orders().get(pk=order.pk)
     _assert_organization(order.organization, warehouse=order.warehouse)
     if order.status == SalesOrder.Status.CANCELLED:
         return order
@@ -1778,7 +1798,7 @@ def cancel_order(*, order, actor=None):
 
 @transaction.atomic
 def start_picking(*, order, actor=None):
-    order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(pk=order.pk)
+    order = _locked_sales_orders().get(pk=order.pk)
     _assert_organization(order.organization, warehouse=order.warehouse)
     if order.status in {SalesOrder.Status.PICKING, SalesOrder.Status.VERIFIED}:
         return order
@@ -1798,7 +1818,7 @@ def start_picking(*, order, actor=None):
 
 @transaction.atomic
 def verify_order(*, order, actor=None):
-    order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(pk=order.pk)
+    order = _locked_sales_orders().get(pk=order.pk)
     _assert_organization(order.organization, warehouse=order.warehouse)
     if order.status == SalesOrder.Status.VERIFIED:
         return order
@@ -1819,7 +1839,7 @@ def verify_order(*, order, actor=None):
 
 @transaction.atomic
 def allocate_order(*, order, idempotency_key, actor=None):
-    order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(pk=order.pk)
+    order = _locked_sales_orders().get(pk=order.pk)
     if order.warehouse_id is None:
         raise ValidationError("请先人工选择仓库后再锁定库存")
     _assert_organization(order.organization, warehouse=order.warehouse)
@@ -1887,9 +1907,7 @@ def confirm_and_ship_or_shortage(
     if not idempotency_key:
         raise ValidationError("幂等键不能为空")
     expected_organization = order.organization
-    order = SalesOrder.objects.select_for_update().select_related(
-        "organization", "warehouse"
-    ).get(pk=order.pk, organization=expected_organization)
+    order = _locked_sales_orders().get(pk=order.pk, organization=expected_organization)
     if order.warehouse_id is None:
         raise ValidationError("订单出库前必须指定仓库")
     existing = Shipment.objects.filter(
@@ -1936,7 +1954,7 @@ def assign_order_warehouse(*, order, warehouse, idempotency_key, actor=None):
     if not idempotency_key:
         raise ValidationError("幂等键不能为空")
     organization = order.organization
-    order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(
+    order = _locked_sales_orders().get(
         pk=order.pk, organization=organization
     )
     _assert_organization(order.organization, warehouse=warehouse)
@@ -1969,7 +1987,7 @@ def change_order_warehouse(*, order, warehouse, idempotency_key, actor=None):
     if not idempotency_key:
         raise ValidationError("幂等键不能为空")
     organization = order.organization
-    order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(
+    order = _locked_sales_orders().get(
         pk=order.pk, organization=organization
     )
     _assert_organization(order.organization, warehouse=warehouse)
@@ -2018,7 +2036,7 @@ def change_order_warehouse(*, order, warehouse, idempotency_key, actor=None):
 @transaction.atomic
 def ship_order(*, order, number, idempotency_key, tracking_number="", actor=None):
     expected_organization = order.organization
-    order = SalesOrder.objects.select_for_update().select_related("organization", "warehouse").get(
+    order = _locked_sales_orders().get(
         pk=order.pk, organization=expected_organization
     )
     _assert_organization(order.organization, warehouse=order.warehouse)
@@ -2091,9 +2109,7 @@ def confirm_and_ship_order(
     if not idempotency_key:
         raise ValidationError("幂等键不能为空")
     expected_organization = order.organization
-    order = SalesOrder.objects.select_for_update().select_related(
-        "organization", "warehouse"
-    ).get(pk=order.pk, organization=expected_organization)
+    order = _locked_sales_orders().get(pk=order.pk, organization=expected_organization)
     existing = Shipment.objects.filter(
         organization=order.organization, idempotency_key=idempotency_key
     ).first()
@@ -2140,9 +2156,7 @@ def confirm_and_ship_order(
 @transaction.atomic
 def receive_return(*, return_order, quantities, idempotency_key, actor=None):
     expected_organization = return_order.organization
-    return_order = ReturnOrder.objects.select_for_update().select_related(
-        "organization", "warehouse", "original_order"
-    ).get(pk=return_order.pk, organization=expected_organization)
+    return_order = _locked_return_orders().get(pk=return_order.pk, organization=expected_organization)
     _assert_organization(
         return_order.organization,
         warehouse=return_order.warehouse,
@@ -2261,9 +2275,7 @@ def receive_return(*, return_order, quantities, idempotency_key, actor=None):
 
 @transaction.atomic
 def reject_return(*, return_order, actor=None):
-    return_order = ReturnOrder.objects.select_for_update().select_related(
-        "organization", "warehouse", "original_order"
-    ).get(pk=return_order.pk)
+    return_order = _locked_return_orders().get(pk=return_order.pk)
     _assert_organization(
         return_order.organization,
         warehouse=return_order.warehouse,

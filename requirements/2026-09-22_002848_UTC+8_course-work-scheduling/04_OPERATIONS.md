@@ -2,6 +2,31 @@
 
 此文件是操作说明，当前任务没有执行生产部署。不要沿用旧的仅迁移到0037的ERP发布脚本来宣称排班已上线。
 
+## 本次可执行发布脚本
+
+使用仓库 `deploy/course-scheduling-release.sh`，先从**已核验的完整提交SHA**提取到 `/tmp`，运行 `bash -n`，再用独立Bash进程执行，并把该SHA作为唯一参数。最终交付消息提供精确SHA和完整复制命令。不要直接执行checkout内的脚本，否则切换版本可能改变正在执行的脚本。
+
+脚本适用于当前已知架构：`/opt/dongbo/app`、`/opt/dongbo/venv/bin/python`、`dongbo-erp.service`、本机5432端口数据库 `dongbo_erp`、域名 `dongbokeji.com`；现场不匹配会停止，不自行改成其他数据库、服务或路径。要求当前代码是目标祖先，已应用旧迁移，无已跟踪改动；不改main、不强制重置、不修改表所有者、不fake迁移。
+
+执行有短暂服务暂停，请在维护窗口运行。脚本在停止Web和已有worker后备份数据库及现有原图，再更新代码，执行0038，启动服务并验证源站资源。备份放在 `/opt/dongbo/backups/course-scheduling-*`，备份日志保持私有。
+
+- 私有原图：`/var/lib/dongbo-timetables`，由现有非root Web运行账号持有，目录0700；不会放入静态或MEDIA目录。
+- 功能配置：`/etc/dongbo/scheduling.env`，仅写功能开关和私有目录，不含模型密钥，不覆盖生产 `.env`。
+- Web附加配置：`/etc/systemd/system/dongbo-erp.service.d/50-course-scheduling.conf`，加载上述配置并允许受限服务写私有目录。
+- 独立worker：`dongbo-timetable-worker.service`，与Web使用同一账号和数据库配置，失败自动重启。
+- 依赖：仅在缺失/不兼容时安装 `Pillow>=11,<13`，不升级现有Django等依赖。失败回滚保留这个新增兼容依赖。
+- 失败后自动恢复上一代码及上述配置的备份，并验证健康及资源hash；**保留新表、原图、期间业务数据**。回滚不恢复整库，不反向执行0038。
+
+若提示历史迁移、所有权、目录或SHA不符，把错误日志发回核对；不要重复旧SQL、递归chmod、手工fake或移除脚本检查。
+
+## 部署后首次使用
+
+1. 超级管理员登录，进入“团队排班 → 学期与识别设置”，配置真实第一周周一日期和20—52周，按需在首次确认前调整时间模板。
+2. 选择已有的支持图片输入的视觉模型。模型尚未配置时可上传、保存原图并手工校对；此时不能说自动识别已验证。
+3. 成员进入“原始凭证”，上传、选择周次及周末工作日，检查七天84格后确认。未确认不会被当成有空。
+4. “工作安排”默认显示实际当前周；验证请假、管理员标注、其他成员不可读取原图/私有原因。
+5. 刷新浏览器缓存并核对新JS/CSS。观察 `systemctl is-active dongbo-erp.service dongbo-timetable-worker.service`；服务active不替代真实识别验收。
+
 ## 预检
 
 1. 确认待发布为独立实现分支的已验收精确提交，工作区干净；不要切换、覆盖或推送main。
