@@ -208,6 +208,17 @@
       return payload;
     }
 
+    async privateScheduleImage(id) {
+      const path = '/scheduling/evidence/' + encodeURIComponent(id) + '/content/';
+      const fetchImage = () => root.fetch(this.buildUrl(path), { credentials: 'same-origin', headers: {
+        Authorization: 'Bearer ' + this.accessToken, 'X-Organization-ID': this.organizationId
+      } });
+      let response = await fetchImage();
+      if (response.status === 401 && this.refreshToken) { await this.refreshAccessToken(); response = await fetchImage(); }
+      if (!response.ok) throw new ApiError('无法读取原始凭证。', response.status);
+      return response.blob();
+    }
+
     async login(username, password) {
       const payload = await this.request('/auth/token/', {
         method: 'POST', auth: false, organization: false,

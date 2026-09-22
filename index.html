@@ -21,6 +21,7 @@
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
   <link rel="stylesheet" href="styles.css?v=20260910-purchase-fit-3" />
+  <link rel="stylesheet" href="scheduling.css?v=20260922-1" />
 </head>
 <body>
   <header class="app-header">
@@ -30,6 +31,7 @@
     </a>
 
     <nav class="primary-nav" aria-label="主导航">
+      <button class="primary-nav-item" data-module="scheduling" id="scheduleNav" hidden><span>团队排班</span></button>
       <button class="primary-nav-item active" data-module="products"><span>商品中心</span><b id="navProductCount">0</b></button>
       <button class="primary-nav-item" data-module="warehouse"><span>仓配中心</span><b id="navWarehouseCount">0</b></button>
       <button class="primary-nav-item" data-module="analytics"><span>数据分析</span><b id="navAlertCount">0</b></button>
@@ -49,6 +51,10 @@
 
   <div class="app-body">
     <aside class="module-sidebar" id="moduleSidebar" aria-label="当前模块功能导航">
+      <section class="sidebar-module" data-sidebar-module="scheduling" hidden>
+        <div class="sidebar-heading"><span>团队排班</span><small>课表凭证与工作安排</small></div>
+        <nav class="sidebar-nav" aria-label="团队排班功能"><button class="side-link" data-schedule-page="board">工作安排</button><button class="side-link" data-schedule-page="evidence">原始凭证</button></nav>
+      </section>
       <section class="sidebar-module active" data-sidebar-module="products">
         <div class="sidebar-heading"><span>商品中心</span><small>商品主数据</small></div>
         <nav class="sidebar-nav" aria-label="商品中心功能">
@@ -161,6 +167,7 @@
 
     <main class="workspace">
     <div class="connection-banner" id="connectionBanner" role="status" hidden><strong id="connectionBannerTitle"></strong><span id="connectionBannerDetail"></span><button class="button tiny secondary" id="retryConnection" type="button">重新连接</button></div>
+    <section class="module-page" id="module-scheduling" data-module-page="scheduling" hidden><div id="schedulingRoot"></div></section>
     <section class="module-page active" id="module-products" data-module-page="products">
       <div class="page-heading">
         <div>
@@ -1352,9 +1359,10 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js?v=20260728-profit-calculator-server-1"></script>
-  <script src="team.js?v=20260910-purchase-fit-3"></script>
+  <script src="team.js?v=20260922-scheduling-1"></script>
   <script src="profit-calculator.js?v=20260910-purchase-fit-3"></script>
-  <script src="app.js?v=20260910-purchase-fit-3"></script>
+  <script src="scheduling.js?v=20260922-1"></script>
+  <script src="app.js?v=20260922-scheduling-1"></script>
 </body>
 </html>
 

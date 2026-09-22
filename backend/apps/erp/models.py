@@ -1738,3 +1738,9 @@ class LocalImport(OrganizationScopedModel):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("本机迁移报告不可删除")
+
+
+# Registered here so the existing erp app owns the isolated scheduling tables.
+from .scheduling_models import (ScheduleTerm, ScheduleParticipant, TimetableEvidence,
+    TimetableImport, TimetableRecognitionJob, MemberWeekPlan, MemberWeekPlanVersion,
+    WorkScheduleCell, ScheduleOverride, ScheduleMutation)

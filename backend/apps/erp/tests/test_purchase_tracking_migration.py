@@ -13,7 +13,9 @@ class PurchaseTrackingMigrationTests(TransactionTestCase):
         return executor.loader.project_state(target).apps
 
     def tearDown(self):
-        self.migrate(self.after)
+        # Restore the current schema, including migrations added after this test.
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
         super().tearDown()
 
     def test_upgrade_preserves_legacy_and_old_code_writes_and_reverse_is_guarded(self):

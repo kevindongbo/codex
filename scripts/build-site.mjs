@@ -6,6 +6,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = resolve(root, "dist");
 
 const sources = {
+  "/scheduling.js": { file: "scheduling.js", type: "text/javascript; charset=utf-8" },
+  "/scheduling.css": { file: "scheduling.css", type: "text/css; charset=utf-8" },
   "/": { file: "index.html", type: "text/html; charset=utf-8" },
   "/index.html": { file: "index.html", type: "text/html; charset=utf-8" },
   "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },

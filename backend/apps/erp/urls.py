@@ -47,6 +47,7 @@ router.register("ai-invocations", views.AIInvocationLogViewSet, basename="ai-inv
 router.register("ai-recommendations", views.AIRecommendationViewSet, basename="ai-recommendation")
 
 urlpatterns = [
+    path("scheduling/", include("apps.erp.scheduling_urls")),
     path("health/", views.health, name="health"),
     path("profit-calculator/config/", views.profit_calculator_config, name="profit-calculator-config"),
     path("profit-calculator/working-config/", views.profit_calculator_working_config, name="profit-calculator-working-config"),

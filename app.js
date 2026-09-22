@@ -345,7 +345,7 @@ function normalizeV5(saved) {
   base.selectedProductId = saved.selectedProductId || '';
   const savedUi = saved.ui && typeof saved.ui === 'object' ? saved.ui : {};
   if (savedUi.module === 'competitors') base.ui.module = 'analytics';
-  else if (['products', 'selection', 'warehouse', 'analytics', 'creators', 'profit'].includes(savedUi.module)) base.ui.module = savedUi.module;
+  else if (['products', 'selection', 'warehouse', 'analytics', 'creators', 'profit', 'scheduling'].includes(savedUi.module)) base.ui.module = savedUi.module;
   if (['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(savedUi.warehouseTab)) base.ui.warehouseTab = savedUi.warehouseTab;
   if (['overview', 'stores', 'skus', 'products', 'snapshots', 'trends', 'alerts'].includes(savedUi.competitorTab)) base.ui.competitorTab = savedUi.competitorTab;
   const activeWarehouse = base.warehouses.find(function (item) { return item.active && item.id === savedUi.warehouseId; }) ||
@@ -551,7 +551,7 @@ function restoreUiPreferences() {
   try {
     const saved = JSON.parse(localStorage.getItem(UI_STORAGE_KEY) || '{}');
     if (saved.ui && saved.ui.module === 'competitors') state.ui.module = 'analytics';
-    else if (saved.ui && ['products', 'selection', 'warehouse', 'analytics', 'creators', 'profit'].includes(saved.ui.module)) state.ui.module = saved.ui.module;
+    else if (saved.ui && ['products', 'selection', 'warehouse', 'analytics', 'creators', 'profit', 'scheduling'].includes(saved.ui.module)) state.ui.module = saved.ui.module;
     if (saved.ui && ['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(saved.ui.warehouseTab)) state.ui.warehouseTab = saved.ui.warehouseTab;
     if (saved.ui && saved.ui.warehouseId) state.ui.warehouseId = saved.ui.warehouseId;
     if (saved.ui && ['overview', 'stores', 'skus', 'products', 'snapshots', 'trends', 'alerts'].includes(saved.ui.competitorTab)) state.ui.competitorTab = saved.ui.competitorTab;
@@ -1616,7 +1616,7 @@ function applyHashRoute() {
   if (parts[0] === 'competitors') {
     state.ui.module = 'analytics';
     if (typeof history !== 'undefined' && history.replaceState) history.replaceState(null, '', '#analytics/' + (parts[1] || 'products'));
-  } else if (['products', 'selection', 'warehouse', 'analytics', 'creators', 'profit'].includes(parts[0])) state.ui.module = parts[0];
+  } else if (['products', 'selection', 'warehouse', 'analytics', 'creators', 'profit', 'scheduling'].includes(parts[0])) state.ui.module = parts[0];
   if (parts[0] === 'products') productFilter = ['own', 'direct', 'indirect', 'inactive'].includes(parts[1]) ? parts[1] : 'all';
   if (parts[0] === 'warehouse' && ['purchase', 'inventory', 'transfers', 'replenishment', 'orders'].includes(parts[1])) {
     state.ui.warehouseTab = parts[1];
@@ -3402,6 +3402,7 @@ function importSelectionProduct(index) {
 }
 
 function render() {
+  if (globalThis.DongboScheduling) globalThis.DongboScheduling.mount(teamGateway, state.ui.module === 'scheduling');
   renderNavigation();
   renderSidebar();
   renderProductSummary();

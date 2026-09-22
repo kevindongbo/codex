@@ -126,7 +126,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE", str(25 * 1024 * 1024)))
 
 CORS_ALLOWED_ORIGINS = [v.strip() for v in os.getenv("DJANGO_CORS_ALLOWED_ORIGINS", "").split(",") if v.strip()]
-CORS_ALLOW_HEADERS = (*default_headers, "x-organization-id")
+CORS_ALLOW_HEADERS = (*default_headers, "x-organization-id", "idempotency-key")
 CSRF_TRUSTED_ORIGINS = [v.strip() for v in os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if v.strip()]
 
 # The API container is only reachable through the trusted Caddy service in the
@@ -151,3 +151,6 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "apps.erp.exceptions.erp_exception_handler",
     "PAGE_SIZE": 50,
 }
+
+SCHEDULING_ENABLED = env_bool("SCHEDULING_ENABLED")
+SCHEDULING_PRIVATE_ROOT = Path(os.getenv("SCHEDULING_PRIVATE_ROOT", str(BASE_DIR / "private_timetables")))
