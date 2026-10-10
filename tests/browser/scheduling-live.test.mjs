@@ -31,7 +31,9 @@ try {
     window.fixtureWeek = (await gateway.request('/scheduling/context/')).terms[0].first_monday;
     DongboScheduling.mount(gateway,true);
   }, {password:process.env.SCHEDULING_TEST_PASSWORD,org:process.env.SCHEDULING_TEST_ORG,user:Number(process.env.SCHEDULING_TEST_USER)});
-  await page.locator('.sc-board').waitFor();
+  await page.locator('.sc-empty h2').waitFor();
+  assert.match(await page.locator('.sc-empty').innerText(), /不在已配置学期/);
+  assert.equal(await page.locator('.sc-board').count(), 0);
   await page.locator('[data-schedule-page=evidence]').click();
   await page.locator('#sc-upload input[type=file]').setInputFiles({name:'original.png',mimeType:'image/png',buffer:Buffer.from(process.env.SCHEDULING_TEST_IMAGE,'base64')});
   await page.locator('#sc-upload button[type=submit]').click();

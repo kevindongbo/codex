@@ -110,6 +110,19 @@ h1, h2, h3, p { margin-top: 0; }
 .side-link.active b { color: white; background: var(--teal); }
 .side-icon { width: 22px; color: #7e8fa2; text-align: center; font-size: 14px; font-weight: 800; }
 .side-link.active .side-icon { color: var(--teal); }
+.side-link > span:not(.side-icon) { min-width: 0; }
+.profit-results-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:16px 0; }
+.profit-results-toolbar > span { color:var(--muted); font-size:13px; }
+.profit-results .profit-summary { grid-template-columns:repeat(4,minmax(0,1fr)); }
+.profit-results .profit-summary article { min-width:0; padding:16px; min-height:112px; }
+.profit-results .profit-summary strong { font-size:clamp(20px,2vw,30px); overflow-wrap:anywhere; font-variant-numeric:tabular-nums; letter-spacing:-.5px; }
+.profit-results .profit-summary article small { font-size:12px; line-height:1.5; }
+.profit-results .profit-rebate-summary article { min-height:92px; box-shadow:none; background:#f8fbfc; }
+.profit-results .profit-rebate-summary strong { font-size:clamp(18px,1.7vw,25px); }
+.profit-page #profitStrategyList { flex-wrap:wrap; overflow-x:visible; align-items:center; }
+.profit-page #profitStrategyList .profit-strategy-chip { font-size:13px; max-width:100%; white-space:normal; overflow-wrap:anywhere; }
+.profit-page .profit-strategy-list .session-help { flex:1 1 260px; }
+@media(max-width:1000px) { .profit-results .profit-summary { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 .sidebar-status { margin-top: auto; padding: 13px 10px; border: 1px solid #dce7e4; border-radius: 10px; background: #f2f8f6; display: flex; align-items: flex-start; gap: 9px; }
 .sidebar-status > i { flex: none; width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); }
 .sidebar-status strong, .sidebar-status span { display: block; }

@@ -31,6 +31,7 @@
   let workingConfigRetryMode = 'load';
   let workingConfigSaveFailed = false;
   let profitPlanSaveContext = null;
+  let calculationRevision = 0;
   const manualCommissionByRow = new Map();
 
   function el(id) { return document.getElementById(id); }
@@ -123,6 +124,7 @@
   }
 
   async function loadExchangeRates(force, preserveMode) {
+    invalidateCalculation();
     const saved = preserveMode ? {} : ratePreference();
     if (!preserveMode) rateMode = saved.mode === 'manual' ? 'manual' : 'auto';
     if (rateMode === 'manual' && !force) {
@@ -139,7 +141,6 @@
       el('profitUsdRate').value = number(rates.usd_per_myr).toFixed(6);
       saveRatePreference({ mode: 'auto', date: rates.date, source: rates.source, cny_per_myr: el('profitExchangeRate').value, usd_per_myr: el('profitUsdRate').value });
       updateRateUi(rates);
-      rerenderLastResult();
     } catch (_) {
       if (saved.cny_per_myr) el('profitExchangeRate').value = saved.cny_per_myr;
       if (saved.usd_per_myr) el('profitUsdRate').value = saved.usd_per_myr;
@@ -200,6 +201,7 @@
       return;
     }
     const category = categoryByCode(value);
+    invalidateCalculation();
     row.querySelector('[data-profit-field="category_code"]').value = value;
     row.querySelector('.profit-category-path').textContent = category && category.path ? category.path.join(' / ') : value;
     row.querySelector('.profit-category-popover').hidden = true;
@@ -207,6 +209,7 @@
   }
 
   function addRow(seed) {
+    invalidateCalculation();
     const rowId = 'profit-row-' + (++rowSequence);
     const item = Object.assign({
       sku_name: 'SKU-' + String(rowSequence).padStart(3, '0'),
@@ -358,9 +361,9 @@
     settlement('profitSettlementGross').textContent = formatDualMoney(summary.gross_profit == null ? result.gross_profit : summary.gross_profit);
     settlement('profitGrossMargin').textContent = fixed(summary.gross_margin == null ? result.gross_margin : summary.gross_margin) + '%';
     const beforeRebate = settlement('profitAdCostBeforeRebate');
-    if (beforeRebate) beforeRebate.textContent = result.has_ad_cost ? formatDualMoney(result.advertising_cost_before_rebate) : '未填写广告';
+    if (beforeRebate) { beforeRebate.textContent = result.has_ad_cost ? formatSingleMoney(result.advertising_cost_before_rebate) : '未填写广告'; beforeRebate.title = result.has_ad_cost ? formatDualMoney(result.advertising_cost_before_rebate) : ''; }
     const rebateAmount = settlement('profitAdRebateAmount');
-    if (rebateAmount) rebateAmount.textContent = result.has_ad_cost ? formatDualMoney(result.advertising_rebate_amount) : '未填写广告';
+    if (rebateAmount) { rebateAmount.textContent = result.has_ad_cost ? formatSingleMoney(result.advertising_rebate_amount) : '未填写广告'; rebateAmount.title = result.has_ad_cost ? formatDualMoney(result.advertising_rebate_amount) : ''; }
     const actualAdCost = settlement('profitActualAdCost');
     if (actualAdCost) actualAdCost.textContent = result.has_ad_cost ? formatDualMoney(result.advertising_cost) : '未填写广告';
     const trueRoi = settlement('profitTrueRoi');
@@ -386,6 +389,11 @@
     const saved = el('profitResultPanel').dataset.lastResult;
     if (saved) renderResult(JSON.parse(saved), false);
   }
+  function invalidateCalculation() {
+    calculationRevision++;
+    const panel = el('profitResultPanel');
+    if (panel) { panel.hidden = true; delete panel.dataset.lastResult; }
+  }
 
   function closeFeeModal() {
     const modal = el('profitFeeModal');
@@ -402,21 +410,6 @@
     }).join('');
     const modal = el('profitFeeModal');
     modal.dataset.mode = 'commission';
-    modal.hidden = false;
-    modal.setAttribute('aria-hidden', 'false');
-    const input = modal.querySelector('input');
-    if (input) input.focus();
-  }
-  function openBuyerShippingEditor() {
-    const rows = Array.from(document.querySelectorAll('[data-profit-row]'));
-    el('profitFeeModalTitle').textContent = '编辑买家运费';
-    el('profitFeeModalDescription').textContent = '默认 RM0.00。买家运费不增加收入、不抵扣商家运费，仅进入支付交易手续费基数；刷新页面后恢复为 0。';
-    el('profitFeeModalBody').innerHTML = rows.map(function (row) {
-      const sku = row.querySelector('[data-profit-field="sku_name"]').value || 'SKU';
-      return '<label class="profit-modal-field">' + escapeHtml(sku) + '（MYR）<input data-buyer-shipping-row="' + escapeHtml(row.dataset.profitRow) + '" type="number" min="0" step="0.01" value="' + escapeHtml(buyerShippingByRow.get(row.dataset.profitRow) || '0.00') + '" /></label>';
-    }).join('');
-    const modal = el('profitFeeModal');
-    modal.dataset.mode = 'buyer_shipping';
     modal.hidden = false;
     modal.setAttribute('aria-hidden', 'false');
     const input = modal.querySelector('input');
@@ -459,6 +452,7 @@
     };
   }
   function applyStrategyConfig(config) {
+    invalidateCalculation();
     ['country', 'seller_type', 'shop_identity', 'commission_adjustment', 'transaction_fee_adjustment'].forEach(function (key) {
       const field = el('profit' + key.split('_').map(function (part) { return part.charAt(0).toUpperCase() + part.slice(1); }).join(''));
       if (field && config[key] != null) field.value = config[key];
@@ -546,6 +540,7 @@
     return saveWorkingConfig();
   }
   function applyStrategy(strategy) {
+    invalidateCalculation();
     applyStrategyConfig(strategy.config || {});
     loadedStrategyId = strategy.id;
     renderStrategyBar();
@@ -563,11 +558,32 @@
     el('profitStrategySaveCurrent').disabled = !hasCurrent;
     el('profitStrategyDelete').disabled = !hasCurrent;
   }
-  async function loadStrategies() {
-    const payload = await request('/profit-calculator/strategies/');
-    loadedStrategies = Array.isArray(payload) ? payload : (payload.results || []);
-    const initial = loadedStrategies.find(function (item) { return item.is_default; });
-    if (initial) applyStrategy(initial); else applySystemStrategy();
+  async function loadStrategies(initialize) {
+    const rows = []; let page = 1;
+    while (true) {
+      const payload = await request('/profit-calculator/strategies/' + (page === 1 ? '' : '?page=' + page));
+      const batch = Array.isArray(payload) ? payload : (payload.results || []);
+      rows.push(...batch);
+      if (Array.isArray(payload) || !payload.next || !batch.length) break;
+      page++;
+    }
+    loadedStrategies = rows;
+    if (initialize) {
+      const initial = loadedStrategies.find(item => item.is_default);
+      if (initial) applyStrategy(initial); else applySystemStrategy();
+    } else {
+      if (!loadedStrategies.some(item => item.id === loadedStrategyId)) loadedStrategyId = '';
+      renderStrategyBar();
+    }
+  }
+  function strategyFailure(error) {
+    const message = error.status === 403 ? '当前账号没有利润策略权限，请联系管理员开通。'
+      : error.status === 401 ? '登录已过期，请重新登录。'
+      : error.status >= 500 ? '策略服务暂时不可用，请重试；若持续失败，请检查服务器日志及策略表权限。'
+      : '策略加载失败，请检查连接后重试。';
+    el('profitStrategyList').innerHTML = '<span class="session-help error" role="alert">' + escapeHtml(message) + '</span><button type="button" class="profit-strategy-chip" data-profit-strategy-retry>重新加载策略</button>';
+    el('profitStrategySaveCurrent').disabled = true;
+    el('profitStrategyDelete').disabled = true;
   }
   function openStrategyModal(mode) {
     strategyModalMode = mode;
@@ -657,7 +673,7 @@
     closeStrategyModal('profitStrategyDeleteModal');
     loadedStrategyId = '';
     await loadStrategies();
-    setStatus(loadedStrategyId ? '策略已删除，已加载新的默认策略。' : '策略已删除，当前使用系统默认配置。');
+    setStatus('策略已删除；本页输入已保留，可选择其他策略。');
   }
   function updateBuyerShippingUi() {
     if (!el('profitBuyerPaysShipping').checked) buyerShippingRegion = 'west_malaysia';
@@ -718,10 +734,10 @@
       failures.push('基础费率');
     }
     try {
-      await loadStrategies();
-    } catch (_) {
+      await loadStrategies(true);
+    } catch (error) {
       failures.push('命名策略');
-      el('profitStrategyList').innerHTML = '<span class="session-help error">命名策略加载失败</span>';
+      strategyFailure(error);
     }
     try {
       await loadWorkingConfig();
@@ -739,6 +755,8 @@
     if (!rows.length) return setStatus('请至少添加一个 SKU。', true);
     const button = el('profitCalculatorForm').querySelector('[type="submit"]');
     button.disabled = true;
+    invalidateCalculation();
+    const revision = calculationRevision;
     setStatus('正在按每个 SKU 匹配类目佣金、10g 运费档和税费…');
     try {
       const result = await request('/profit-calculator/calculate/', {
@@ -759,6 +777,7 @@
           items: rows.map(collectRow)
         }
       });
+      if (revision !== calculationRevision) { setStatus('计算期间输入已修改，请重新计算最新配置。', true); return; }
       renderResult(result, shouldScroll);
       setStatus('计算完成：跨境商家运费按各 SKU 包装后重量向上取整至 10g；买家运费默认 0。');
     } catch (error) {
@@ -872,6 +891,7 @@
     el('profitSellerType').addEventListener('change', function () { updateBuyerShippingUi(); scheduleWorkingConfigSave(); });
 
     document.addEventListener('change', function (event) {
+      if (event.target.closest('#profitCalculatorForm') || event.target.matches('#profitExchangeRate, #profitUsdRate')) invalidateCalculation();
       if (event.target.matches('[data-profit-field="ad_cost_type"]')) {
         const input = event.target.closest('[data-profit-row]').querySelector('[data-profit-field="ad_cost_value"]');
         const type = event.target.value;
@@ -887,9 +907,14 @@
       if (event.target.matches('#profitCountry, #profitShopIdentity, #profitBxp, #profitCommissionAdjustment, #profitTransactionFeeAdjustment, #profitAdvertisingRebatePercent')) scheduleWorkingConfigSave();
     });
     document.addEventListener('input', function (event) {
+      if (event.target.closest('#profitCalculatorForm') || event.target.matches('#profitExchangeRate, #profitUsdRate')) invalidateCalculation();
       if (event.target.matches('#profitCommissionAdjustment, #profitTransactionFeeAdjustment, #profitAdvertisingRebatePercent, #profitExchangeRate, #profitUsdRate') && (rateMode === 'manual' || !event.target.matches('#profitExchangeRate, #profitUsdRate'))) scheduleWorkingConfigSave();
     });
     document.addEventListener('click', function (event) {
+      if (event.target.closest('[data-profit-strategy-retry]')) {
+        loadStrategies(false).catch(strategyFailure);
+        return;
+      }
       const currency = event.target.closest('[data-profit-currency]');
       if (currency) {
         displayCurrency = currency.dataset.profitCurrency;
@@ -941,6 +966,7 @@
         const row = remove.closest('[data-profit-row]');
         manualCommissionByRow.delete(row.dataset.profitRow);
         row.remove();
+        invalidateCalculation();
       }
     });
     document.addEventListener('keydown', function (event) {

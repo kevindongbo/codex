@@ -11,6 +11,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import FileResponse, Http404
+from django.shortcuts import get_object_or_404
 from django.db import IntegrityError, connection, transaction
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
@@ -1229,7 +1230,7 @@ class ProfitCalculationStrategyViewSet(OrganizationScopedViewSet):
     @transaction.atomic
     def activate(self, request, pk=None):
         organization = self._lock_organization(self.get_organization())
-        instance = ProfitCalculationStrategy.objects.select_for_update().get(pk=pk, organization=organization)
+        instance = get_object_or_404(ProfitCalculationStrategy.objects.select_for_update(), pk=pk, organization=organization)
         before = {"is_default": instance.is_default}
         self._make_default(organization, instance)
         instance.updated_by = request.user

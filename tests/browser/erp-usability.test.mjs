@@ -60,6 +60,15 @@ try {
     }
   }
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => {
+    document.querySelectorAll('.sidebar-module').forEach(el => el.classList.toggle('active', el.dataset.sidebarModule === 'scheduling'));
+    document.querySelector('[data-sidebar-module="scheduling"]').hidden = false;
+  });
+  for (const link of await page.locator('[data-sidebar-module="scheduling"] .side-link').all()) {
+    const text = link.locator('span:not(.side-icon)');
+    const box = await text.boundingBox();
+    assert.ok(box.width > 60 && box.height < 30, 'scheduling sidebar text uses content column, not narrow icon column');
+  }
   const opener = page.locator('#runtimeStateButton');
   await opener.click();
   await page.waitForTimeout(60);

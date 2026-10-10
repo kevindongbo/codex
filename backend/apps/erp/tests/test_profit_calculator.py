@@ -480,6 +480,11 @@ assert.deepEqual(hooks.strategyActivationPayload(9), {working_revision: 9});
 
 
 class ProfitCalculatorApiTests(TestCase):
+    def test_activating_deleted_strategy_returns_404_without_changing_defaults(self):
+        response = self.client.post('/api/profit-calculator/strategies/00000000-0000-0000-0000-000000000001/activate/', {'working_revision': 0}, format='json')
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(ProfitCalculationWorkingConfig.objects.filter(organization=self.organization).exists())
+
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="calculator", password="test-pass-123")
         self.organization = Organization.objects.create(name="东铂", slug="profit-calculator")

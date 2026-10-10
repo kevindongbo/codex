@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
@@ -51,6 +51,9 @@ const working = {
   rate_mode: 'manual', manual_cny_per_myr: '1.680000', manual_usd_per_myr: '0.235000', updated_by_name: '验收用户'
 };
 const savedPayloads = [];
+let strategiesUnavailable = true;
+let strategyErrorStatus = 500;
+let delayedCalculation = null;
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.route('**/api/profit-calculator/**', async (route) => {
@@ -59,7 +62,10 @@ try {
     const path = url.pathname;
     const json = (payload, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(payload) });
     if (path.endsWith('/config/')) return json({ categories: [{ code: 'bag-womens-womens-tote-bags', label: '女士托特包', path: ['箱包', '女包', '女士托特包'] }], category_tree: categoryTree, default_commission_adjustment: '1.00' });
-    if (path.endsWith('/strategies/')) return json([]);
+    if (path.endsWith('/strategies/')) {
+      if (strategiesUnavailable) return json({detail:'temporary outage'}, strategyErrorStatus);
+      return json({count:2,next:url.searchParams.get('page') ? null : '/api/profit-calculator/strategies/?page=2',results:[{id:url.searchParams.get('page') ? 'strategy-2' : 'strategy-1',name:'测试策略',is_default:true,config:{seller_type:'local',advertising_rebate_percent:'99'}}]});
+    }
     if (path.endsWith('/exchange-rates/')) return json({ cny_per_myr: '1.680000', usd_per_myr: '0.235000', date: '2026-08-21', source: 'test' });
     if (path.endsWith('/working-config/') && request.method() === 'GET') return json(working);
     if (path.endsWith('/working-config/') && request.method() === 'PUT') {
@@ -72,7 +78,10 @@ try {
       working.manual_usd_per_myr = body.manual_usd_per_myr;
       return json(working);
     }
-    if (path.endsWith('/calculate/')) return json(result);
+    if (path.endsWith('/calculate/')) {
+      if (delayedCalculation) await delayedCalculation;
+      return json(result);
+    }
     if (path.endsWith('/plans/') && request.method() === 'POST') {
       savedPayloads.push(request.postDataJSON());
       const version = savedPayloads.length;
@@ -84,6 +93,14 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/#profit/calculator`, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => document.querySelector('#profitWorkingConfigStatus')?.textContent.includes('已恢复'));
   assert.equal(await page.locator('#profitAdvertisingRebatePercent').inputValue(), '3.00');
+  assert.match(await page.locator('#profitStrategyList').innerText(), /服务暂时不可用/);
+  strategyErrorStatus = 403;
+  await page.locator('[data-profit-strategy-retry]').click();
+  await page.waitForFunction(() => document.querySelector('#profitStrategyList').textContent.includes('没有利润策略权限'));
+  strategiesUnavailable = false;
+  await page.locator('[data-profit-strategy-retry]').click();
+  await page.waitForFunction(() => document.querySelectorAll('[data-profit-strategy-id]').length === 2);
+  assert.equal(await page.locator('#profitAdvertisingRebatePercent').inputValue(), '3.00', 'retry must not overwrite working input');
   await page.locator('[data-profit-field="sku_name"]').fill('仅本页临时 SKU');
   await page.locator('#profitAdvertisingRebatePercent').fill('12.50');
   await page.waitForFunction(() => document.querySelector('#profitWorkingConfigStatus')?.textContent.includes('已保存'));
@@ -97,6 +114,15 @@ try {
   await page.evaluate((input) => window.DongboProfitCalculator.loadCalculation(input, null), historicalInput);
   await page.locator('#profitCalculatorForm button[type="submit"]').click();
   await page.locator('#profitResultPanel:not([hidden])').waitFor();
+  for (const width of [1366, 1920, 390]) {
+    await page.setViewportSize({width,height:900});
+    for (const card of await page.locator('.profit-summary article').all()) {
+      assert.ok(await card.evaluate(el => el.scrollWidth <= el.clientWidth + 1), `metric overflow at ${width}`);
+    }
+  }
+  await page.setViewportSize({width:1440,height:900});
+  mkdirSync(join(root, '.tmp'), {recursive:true});
+  await page.locator('#profitResultPanel').screenshot({path:join(root,'.tmp','profit-results-20261011.png')});
   await page.locator('#profitSaveToPlans').click();
   await page.waitForFunction(() => document.querySelector('#profitFormStatus')?.textContent.includes('已保存'));
   assert.equal(savedPayloads[0].items[0].action, 'new_plan');
@@ -117,6 +143,17 @@ try {
   await page.waitForFunction(() => document.querySelector('#profitFormStatus')?.textContent.includes('已保存 1 个'));
   assert.equal(savedPayloads[2].items[0].action, 'new_plan');
   assert.equal(savedPayloads[2].items[0].target_plan, undefined);
+  await page.locator('[data-profit-field="item_price"]').fill('99.90');
+  assert.equal(await page.locator('#profitResultPanel').isVisible(), false, 'changed inputs invalidate old results');
+  let releaseCalculation;
+  delayedCalculation = new Promise(resolve => { releaseCalculation = resolve; });
+  const sent = page.waitForRequest('**/api/profit-calculator/calculate/');
+  await page.locator('#profitCalculatorForm button[type="submit"]').click();
+  await sent;
+  await page.locator('[data-profit-field="item_price"]').fill('109.90');
+  releaseCalculation();
+  await page.waitForFunction(() => document.querySelector('#profitFormStatus').textContent.includes('计算期间输入已修改'));
+  assert.equal(await page.locator('#profitResultPanel').isVisible(), false, 'late response must not revive outdated results');
   console.log('PASS profit browser workflow: working-config debounce/F5, temporary SKU isolation, save, reopen, recalculate/new version, save-as');
 } finally {
   await browser.close();

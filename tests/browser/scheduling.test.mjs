@@ -27,7 +27,7 @@ try {
       privateScheduleImage:async () => new Blob(['test'],{type:'image/png'}),
       request:async (path,opts={}) => {
         calls.push({path,body:opts.body,method:opts.method});
-        if(path === '/scheduling/context/') return {enabled:true,user:{id:1,is_superuser:!!window.testAdmin},business_date:dates[0],week_start:dates[0],terms:[term],periods,revision:1};
+        if(path === '/scheduling/context/') return {enabled:true,user:{id:1,is_superuser:!!window.testAdmin},business_date:dates[0],week_start:dates[0],terms:window.noTerm ? [] : [term],periods,revision:1};
         if(path.startsWith('/scheduling/board/')) return {days:dates,periods,pending:[],cells:dates.flatMap(date => periods.map(p => ({date,period:p.number,members:Array.from({length:100},(_,i)=>({user_id:i+1,name:'成员'+(i+1),status:'work',revision:1}))})))};
         if(path === '/scheduling/evidence/' && opts.method === 'POST') { evidence=[{id:'e',original_name:'课表.png',created_at:'2035-01-01',size:100}]; return {results:evidence}; }
         if(path.startsWith('/scheduling/evidence/?')) return {results:evidence};
@@ -86,7 +86,13 @@ try {
   await page.locator('#sc-periods button[type=submit]').click();
   await page.waitForFunction(() => calls.some(c => c.path === '/scheduling/terms/term/' && c.body.periods?.[0].start === '08:15'));
   assert.deepEqual(errors, []);
+  await page.locator('[data-sc=close]').click();
   await mkdir(new URL('../../.tmp/',import.meta.url),{recursive:true});
   await page.screenshot({path:new URL('../../.tmp/scheduling-browser.png',import.meta.url).pathname.replace(/^\/(.:\/)/,'$1')});
+  await page.evaluate(() => { window.noTerm = true; });
+  await page.locator('[data-sc=refresh]').click();
+  await page.locator('.sc-empty').waitFor();
+  assert.equal(await page.locator('.sc-board').count(), 0, 'unconfigured term must not appear as zero-person schedule');
+  assert.match(await page.locator('.sc-empty').innerText(), /学期/);
   console.log('Scheduling browser: upload/review/confirm/leave/history/admin historical correction + 5 viewports passed (mock transport).');
 } finally { await browser.close(); }
