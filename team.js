@@ -793,6 +793,16 @@
     }
 
     async saveProduct(product, initialSnapshot) {
+      // Validate the whole listing draft before any product/SKU API mutation.
+      const listingKeys = new Set();
+      for (const listing of product.storeListings || []) {
+        const key = (listing.skuId || listing.skuCode) + ':' + listing.store;
+        if (!listing.store || !(listing.skuId || listing.skuCode)) throw new ApiError('请为每条售价选择 SKU 和店铺。', 400);
+        if (listingKeys.has(key)) throw new ApiError('同一 SKU 在同一家店铺只能配置一次。', 400);
+        listingKeys.add(key);
+        if (listing.salePrice === '' || !Number.isFinite(Number(listing.salePrice)) || Number(listing.salePrice) < 0) throw new ApiError('请填写有效的店铺售价。', 400);
+        if (listing.commission !== '' && listing.commission != null && (!Number.isFinite(Number(listing.commission)) || Number(listing.commission) < 0 || Number(listing.commission) > 100)) throw new ApiError('店铺佣金必须在 0—100% 之间。', 400);
+      }
       if (product.kind !== 'own') {
         if (/^data:image\//i.test(product.image || '')) product.image = await this.uploadDataImage(product.image, product.name || 'competitor');
         const payload = {
@@ -840,7 +850,7 @@
         const skuPayload = {
           product: raw.id, code: code, barcode: '', cost: sku.cost,
           currency: product.costCurrency || product.salesCurrency || 'CNY', safety_stock: sku.safetyStock || 0,
-          active: true, attributes: sku.attributes || {}, category_code: sku.categoryCode || null,
+          active: sku.active !== false, attributes: sku.attributes || {}, category_code: sku.categoryCode || null,
           packed_weight_g: sku.packedWeightG === '' ? null : sku.packedWeightG,
           purchase_cost_cny: sku.purchaseCostCny === '' ? null : sku.purchaseCostCny,
           default_creator_commission_percent: sku.creatorCommission === '' ? null : sku.creatorCommission
@@ -857,7 +867,7 @@
         }
       }
       product.skuId = requestedSkus[0] && requestedSkus[0].id ? String(requestedSkus[0].id) : '';
-      for (const requestedSku of requestedSkus) {
+      for (const requestedSku of (Array.isArray(product.storeListings) ? requestedSkus : [])) {
         const items = (product.storeListings || []).filter(function (listing) {
           return listing.salePrice !== '' && ((listing.skuId && String(requestedSku.id) === String(listing.skuId)) || (!listing.skuId && requestedSku.code === listing.skuCode));
         }).map(function (listing) {

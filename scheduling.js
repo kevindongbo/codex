@@ -10,6 +10,18 @@
   function knownGrid(grid) { return grid.length === 7 && grid.every(day => day.length === 12 && day.every(c => ['free', 'class'].includes(c.status))); }
   const s = { gateway: null, active: false, page: 'board', context: null, board: null, week: '', followCurrent: true, selectedDay: 0, filter: '', imports: [], evidence: [], draft: null, blob: '', busy: false, error: '', lastSync: '', scope: '', request: 0, dirty: false, keys: new Map() };
   let host;
+  const recognitionErrors = {
+    provider_http_401: '识别 API 鉴权失败，请管理员检查已配置的密钥。',
+    provider_http_403: '识别 API 拒绝访问，请检查模型权限。',
+    provider_http_400: '识别 API 不接受图片或当前请求，请确认配置的模型支持视觉输入。',
+    provider_http_404: '识别 API 地址或模型不存在，请管理员检查配置。',
+    provider_http_429: '识别 API 暂时限流，后台会自动重试；也可稍后重新识别。',
+    provider_timeout_or_network: '识别 API 超时或网络不可达，可稍后重新识别。',
+    invalid_output: '模型返回内容无法解析，请重新识别或更换支持图片的模型。',
+    stale_draft: '识别期间草稿已被修改，旧结果未覆盖你的编辑。',
+    recognition_internal_error: '识别未完成，请管理员检查识别 worker 和模型配置后重试。',
+  };
+  const recognitionError = code => recognitionErrors[code] || '识别未完成（' + String(code || 'unknown') + '），可重新识别或手工校对。';
   const api = (path, options) => { const identity = s.identity; return s.gateway.request('/scheduling/' + path, options).then(result => { if (identity !== s.identity) throw new Error('登录账号已变更，请刷新。'); return result; }); };
   function mutation(path, body, method) {
     const fingerprint = path + JSON.stringify(body);
@@ -98,11 +110,18 @@
   }
   function closeDialog() { const el = document.getElementById('sc-dialog'); if (el) { el.close(); el.remove(); } releaseImage(); }
   async function showImage(id) { const identity = s.identity; releaseImage(); const blob = await s.gateway.privateScheduleImage(id); if (identity !== s.identity || !document.querySelector('#sc-image')) return; s.blob = URL.createObjectURL(blob); document.querySelector('#sc-image').src = s.blob; }
-  async function editImport(id) {
-    s.draft = await api('imports/' + encodeURIComponent(id) + '/'); s.draft.draft_grid = normalizeGrid(s.draft.draft_grid); s.dirty = false;
+  async function editImport(id, preserveEdits = false) {
+    const latest = await api('imports/' + encodeURIComponent(id) + '/');
+    if (preserveEdits && (s.dirty || !s.draft || s.draft.id !== id)) {
+      const label = document.getElementById('sc-job-status');
+      if (label) label.textContent = '识别完成。你有未保存编辑，请先保留编辑，再读取最新版本核对。';
+      return;
+    }
+    s.draft = latest; s.draft.draft_grid = normalizeGrid(s.draft.draft_grid); s.dirty = false;
     editor(); await showImage(s.draft.evidence_id);
     document.querySelectorAll('#sc-editor-form [data-sc=grid]').forEach(el => { const day = Number(el.dataset.day), period = Number(el.dataset.period); el.title = s.draft.draft_grid[day][period].course_name || ''; });
     if (s.draft.job && s.draft.job.warnings) document.getElementById('sc-job-status').textContent = s.draft.job.warnings.join('；');
+    if (s.draft.job && s.draft.job.status === 'failed') document.getElementById('sc-job-status').textContent = recognitionError(s.draft.job.sanitized_error);
     if (s.draft.job && ['queued', 'processing'].includes(s.draft.job.status)) {
       watchJob(id, s.draft.job.id).catch(error => { const label = document.getElementById('sc-job-status'); if (label) label.textContent = error.message; });
     }
@@ -120,15 +139,22 @@
     return watchJob(id, jobId);
   }
   async function watchJob(id, jobId) {
+    if (s.watching === jobId) return;
+    const identity = s.identity;
+    s.watching = jobId;
+    const toggle = disabled => document.querySelectorAll('[data-sc="recognize"]').forEach(el => { el.disabled = disabled; });
+    toggle(true);
+    try {
     for (let attempt = 0; attempt < 90; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 2000));
-      if (!s.active || !document.getElementById('sc-editor-form') || !s.draft || s.draft.id !== id) return;
+      if (identity !== s.identity || s.watching !== jobId || !s.active || !document.getElementById('sc-editor-form') || !s.draft || s.draft.id !== id) return;
       const job = await api('jobs/' + jobId + '/');
-      const label = document.getElementById('sc-job-status'); if (label) label.textContent = '识别状态：' + job.status;
-      if (job.status === 'failed') throw new Error(job.sanitized_error || '识别失败，可重试或手工校对。');
-      if (job.status === 'succeeded') { if (!s.dirty) await editImport(id); else if (label) label.textContent = '识别完成。你有未保存编辑，请保存后读取最新版本。'; return; }
+      const label = document.getElementById('sc-job-status'); if (label) label.textContent = job.status === 'queued' ? (attempt > 15 ? '任务仍在等待识别 worker，请管理员检查 worker 服务。' : '已排队，等待调用已配置的图片识别 API…') : '正在调用图片识别 API（第 ' + (job.attempts || 1) + ' 次尝试）…';
+      if (job.status === 'failed') throw new Error(recognitionError(job.sanitized_error));
+      if (job.status === 'succeeded') { if (!s.dirty) await editImport(id, true); else if (label) label.textContent = '识别完成。你有未保存编辑，请先保留编辑，再读取最新版本核对。'; return; }
     }
     throw new Error('识别仍在后台处理，可以稍后重新打开草稿。');
+    } finally { if (s.watching === jobId) { s.watching = ''; toggle(false); } }
   }
   async function adjustmentDialog() {
     if (!s.board) return;
@@ -171,7 +197,13 @@
         if (action === 'save-draft') { await saveDraft(); document.getElementById('sc-dialog-error').textContent = '草稿已保存。'; }
         if (action === 'clone-draft') { const previous = s.draft; const created = await mutation('imports/', { evidence_id: previous.evidence_id, term_id: previous.term_id, selected_weeks: previous.selected_weeks, weekend_day: previous.weekend_day }); await mutation('imports/' + created.id + '/', { revision: created.revision, draft_grid: previous.draft_grid }, 'PATCH'); await refresh(); await editImport(created.id); }
         if (action === 'publish') { const historical = admin() && !!document.querySelector('[name=historical_correction]:checked'); captureDraft(); if (!knownGrid(s.draft.draft_grid)) throw new Error('请先确认全部84格，包括周末。'); await saveDraft(); const revisions = s.draft.expected_week_revisions || {}; const replacing = Object.values(revisions).some(v => v > 0); if (!root.confirm('将发布第 ' + s.draft.selected_weeks.join('、') + ' 周' + (replacing ? '，并替换这些周已有课表' : '') + '，保留请假和人工调整。' + (historical ? '本次历史修正将更新已开始时段。' : '') + '确认？')) return; await mutation('imports/' + s.draft.id + '/confirm/', { revision: s.draft.revision, expected_week_revisions: revisions, replace_existing: replacing, historical_correction: historical }); closeDialog(); await refresh(); render(); }
-        if (action === 'recognize') { await saveDraft(); await recognize(s.draft.id); }
+        if (action === 'recognize') {
+          if (s.startingRecognition || s.watching) return;
+          if (s.draft.draft_grid.flat().some(c => c.status !== 'unknown') && !root.confirm('重新识别将用新的候选结果替换此草稿的格子，仍需本人校对。继续？')) return;
+          s.startingRecognition = true;
+          try { await saveDraft(); await recognize(s.draft.id); }
+          finally { s.startingRecognition = false; }
+        }
         if (action === 'revoke') { const reason = root.prompt('请填写撤销原因（至少2字）'); if (reason == null) return; await mutation('adjustments/' + el.dataset.id + '/revoke/', { reason, revision: Number(el.dataset.revision) }); await historyDialog(); await refresh(); render(); }
       });
     }
@@ -252,9 +284,10 @@
       if (event.target.closest('#schedulingRoot')) click(event);
     });
     document.addEventListener('change', event => { if (event.target.closest('#schedulingRoot')) change(event); });
+    document.addEventListener('input', event => { if (event.target.closest('#sc-editor-form')) s.dirty = true; });
     document.addEventListener('submit', event => { if (event.target.closest('#schedulingRoot')) submit(event); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
     root.addEventListener('online', poll); root.addEventListener('offline', renderStatus); root.setInterval(poll, 30000);
   }
-  root.DongboScheduling = { mount, normalizeGrid, knownGrid, blankGrid, addDays, escapeHtml: esc };
+  root.DongboScheduling = { mount, normalizeGrid, knownGrid, blankGrid, addDays, escapeHtml: esc, recognitionError };
 })(globalThis);

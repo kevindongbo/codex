@@ -35,6 +35,26 @@ async function loadDomain() {
   return context.__domain;
 }
 
+test('product normalization preserves SKU/store inputs and server profit summaries, including zero commission', async () => {
+  const domain = await loadDomain();
+  const input = {
+    kind: 'own', sku: 'BAG', categoryCode: 'bag-womens-womens-tote-bags', packedWeightG: '200', purchaseCostCny: 0,
+    defaultCreatorCommissionPercent: 0,
+    skus: [{id:'sku-1', code:'BAG', cost:'18.90', creatorCommission:'0'}],
+    storeListings: [{skuId:'sku-1', store:'shop-1', salePrice:'79.90', commission:'0', include:true}],
+    storeProducts: [{store:'shop-1', sale_price_myr:'79.90'}],
+    profitSummary: {gross_profit:{min:'35.00', max:'35.00'}, break_even_roi:{min:'2.28', max:'2.28'}},
+  };
+  const result = domain.normalizeProduct(input);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.skus)), input.skus);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.storeListings)), input.storeListings);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.profitSummary)), input.profitSummary);
+  assert.equal(result.defaultCreatorCommissionPercent, 0);
+  assert.equal(result.purchaseCostCny, 0);
+  const roundTrip = domain.normalizeV5({...domain.emptyState(), products:[result]});
+  assert.equal(roundTrip.products[0].profitSummary.break_even_roi.min, '2.28');
+});
+
 function ownProduct(domain, overrides = {}) {
   return domain.normalizeProduct({
     id: "p-1",

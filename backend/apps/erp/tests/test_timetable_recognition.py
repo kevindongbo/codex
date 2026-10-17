@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 
 from PIL import Image
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.exceptions import Throttled, ValidationError
 
@@ -55,6 +55,7 @@ class RecognitionTests(TestCase):
             enqueue_recognition(self.imp, self.user)
         self.assertFalse(TimetableRecognitionJob.objects.exists())
 
+    @override_settings(SCHEDULING_RECOGNITION_HOURLY_LIMIT=10)
     def test_enqueue_idempotent_and_rate_limited(self):
         first = enqueue_recognition(self.imp, self.user)
         self.assertEqual(first.pk, enqueue_recognition(self.imp, self.user).pk)
@@ -113,12 +114,56 @@ class RecognitionTests(TestCase):
         self.assertEqual(job.status, 'failed')
         self.assertIsNone(claim_job())
 
+    @override_settings(SCHEDULING_RECOGNITION_HOURLY_LIMIT=10)
     def test_retry_attempts_count_towards_hourly_budget(self):
         enqueue_recognition(self.imp, self.user)
         job = claim_job()
         finish_job(job, error=RecognitionError('network', True))
         TimetableRecognitionJob.objects.filter(pk=job.pk).update(available_at=timezone.now(), attempt_history=[timezone.now().timestamp()] * 10)
         self.assertIsNone(claim_job())
+
+    def test_default_budget_allows_more_than_ten_explicit_requests(self):
+        for _ in range(12):
+            enqueue_recognition(self.new_import(), self.user)
+        self.assertEqual(TimetableRecognitionJob.objects.count(), 12)
+
+    def test_failed_job_can_be_retried_without_editing_or_reuploading(self):
+        first = enqueue_recognition(self.imp, self.user)
+        job = claim_job()
+        finish_job(job, error=RecognitionError('provider_http_401'))
+        second = enqueue_recognition(self.imp, self.user)
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertEqual(second.input_revision, first.input_revision + 1)
+        self.assertEqual(second.timetable_import.evidence_id, self.evidence.pk)
+        self.assertEqual(enqueue_recognition(self.imp, self.user).pk, second.pk)
+        first.refresh_from_db()
+        self.assertEqual(first.status, 'failed')
+
+    def test_fenced_and_text_block_provider_responses(self):
+        from apps.erp.timetable_recognition import recognition_payload
+        payload = {'courses':[{'day':2,'start_period':3,'end_period':4,'course_name':'教材研究'}]}
+        for content in ('```json\n' + json.dumps(payload) + '\n```', [{'type':'text','text':json.dumps(payload)}]):
+            parsed = recognition_payload({'choices':[{'message':{'content':content}}]})
+            grid = candidate_grid(parsed, default_periods())
+            self.assertEqual(grid[1][2]['status'], 'class')
+            self.assertEqual(grid[1][3]['status'], 'class')
+            self.assertEqual(grid[0][0]['status'], 'unknown')
+
+    @override_settings(SCHEDULING_ENABLED=True)
+    def test_live_probe_command_never_modifies_draft_or_publishes_schedule(self):
+        from django.core.management import call_command
+        from apps.erp.scheduling_models import MemberWeekPlan
+        output = io.StringIO()
+        grid = candidate_grid({'courses':[{'day':2,'start_period':3,'end_period':4}]}, default_periods())
+        with patch('apps.erp.management.commands.verify_timetable_recognition.invoke_vision', return_value=grid) as vision:
+            call_command('verify_timetable_recognition', import_id=str(self.imp.pk), attempts=2, stdout=output)
+        self.assertEqual(vision.call_count, 1)
+        self.assertIn('occupied_cells=2', output.getvalue())
+        self.imp.refresh_from_db()
+        self.assertEqual(self.imp.revision, 1)
+        self.assertEqual(self.imp.draft_grid, [])
+        self.assertFalse(TimetableRecognitionJob.objects.exists())
+        self.assertFalse(MemberWeekPlan.objects.exists())
 
     def test_mock_transport_vision_original_preserved_and_logs_sanitized(self):
         enqueue_recognition(self.imp, self.user)

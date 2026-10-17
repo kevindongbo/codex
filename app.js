@@ -257,6 +257,16 @@ function normalizeProduct(product) {
     productUrl: String(product.productUrl || product.url || '').trim(),
     purchaseUrl: String(product.purchaseUrl || '').trim(),
     image: image,
+    // These fields cross the form -> gateway and API -> list boundaries.
+    // Dropping them here silently discarded saved SKU/store inputs and results.
+    skus: Array.isArray(product.skus) ? clone(product.skus) : undefined,
+    storeListings: Array.isArray(product.storeListings) ? clone(product.storeListings) : undefined,
+    storeProducts: Array.isArray(product.storeProducts) ? clone(product.storeProducts) : [],
+    profitSummary: product.profitSummary || null,
+    categoryCode: product.categoryCode || '',
+    packedWeightG: product.packedWeightG == null ? '' : product.packedWeightG,
+    purchaseCostCny: product.purchaseCostCny == null ? '' : product.purchaseCostCny,
+    defaultCreatorCommissionPercent: product.defaultCreatorCommissionPercent == null ? '' : product.defaultCreatorCommissionPercent,
     monitoringEnabled: kind !== 'own' ? true : Boolean(product.monitoringEnabled == null ? product.compare : product.monitoringEnabled),
     needsReview: Boolean(product.needsReview),
     createdAt: product.createdAt || new Date().toISOString(),
@@ -3553,28 +3563,30 @@ function storeListingDraft(raw, sku) {
 function renderProductStoreEditor() {
   const list = $('#productStoreList');
   if (!list) return;
-  const stores = (state.stores || []).filter(function (store) { return store.is_active !== false; });
+  const stores = state.stores || [];
   if (!stores.length) { list.innerHTML = '<div class="sku-empty">请先在商品列表下方新增店铺。</div>'; return; }
-  const rows = [];
-  draftProductSkus.forEach(function (sku) {
-    stores.forEach(function (store) {
-      const saved = draftStoreListings.find(function (item) {
-        return String(item.store) === String(store.id) && ((sku.id && String(item.skuId) === String(sku.id)) || (!sku.id && item.skuCode === sku.code));
-      }) || storeListingDraft(null, sku);
-      saved.store = String(store.id); saved.skuCode = sku.code;
-      rows.push('<div class="sku-editor-row store-listing-row" data-store-listing data-listing-id="' + escapeHtml(saved.id) + '" data-sku-id="' + escapeHtml(saved.skuId) + '" data-sku-code="' + escapeHtml(sku.code) + '" data-store-id="' + escapeHtml(String(store.id)) + '">' +
-        '<label>SKU / 店铺<input value="' + escapeHtml((sku.code || '待填写 SKU') + ' · ' + store.name) + '" disabled /></label>' +
-        '<label>售价（RM）<input data-listing-field="price" type="number" min="0" step="0.01" value="' + escapeHtml(saved.salePrice) + '" /></label>' +
+  const rows = draftStoreListings.map(function (saved) {
+      const skuIndex = draftProductSkus.findIndex(function (sku) { return saved.skuId ? String(sku.id) === String(saved.skuId) : sku.code === saved.skuCode; });
+      const options = draftProductSkus.map(function (sku, index) { return '<option value="' + index + '"' + (index === skuIndex ? ' selected' : '') + '>' + escapeHtml(sku.code || '未填写 SKU ' + (index + 1)) + '</option>'; }).join('');
+      const storeOptions = stores.filter(function (store) { return store.is_active !== false || String(store.id) === String(saved.store); }).map(function (store) { return '<option value="' + escapeHtml(String(store.id)) + '"' + (String(store.id) === String(saved.store) ? ' selected' : '') + '>' + escapeHtml(store.name + (store.is_active === false ? '（已停用）' : '')) + '</option>'; }).join('');
+      const sku = draftProductSkus[skuIndex] || {};
+      const store = stores.find(function (item) { return String(item.id) === String(saved.store); });
+      return '<div class="sku-editor-row store-listing-row" data-store-listing data-listing-id="' + escapeHtml(saved.id) + '" data-sku-id="' + escapeHtml(saved.skuId) + '" data-sku-code="' + escapeHtml(sku.code || '') + '">' +
+        '<p class="store-listing-summary" data-listing-summary>' + escapeHtml((sku.code || '选择 SKU') + ' · ' + (store ? store.name : '选择店铺')) + '</p>' +
+        '<label>SKU<select data-listing-field="sku" required><option value="">选择 SKU</option>' + options + '</select></label>' +
+        '<label>店铺<select data-listing-field="store" required><option value="">选择店铺</option>' + storeOptions + '</select></label>' +
+        '<label>售价（RM）<input data-listing-field="price" type="number" min="0" step="0.01" required value="' + escapeHtml(saved.salePrice) + '" /></label>' +
         '<label>手工佣金（%）<input data-listing-field="commission" type="number" min="0" max="100" step="0.01" value="' + escapeHtml(saved.commission) + '" placeholder="留空使用默认" /></label>' +
         '<label>商品链接<input data-listing-field="url" type="url" value="' + escapeHtml(saved.productUrl) + '" /></label>' +
-        '<label class="checkbox-field"><input data-listing-field="include" type="checkbox"' + (saved.include ? ' checked' : '') + ' /><span><strong>参与列表试算</strong></span></label></div>');
-    });
+        '<label class="checkbox-field"><input data-listing-field="include" type="checkbox"' + (saved.include ? ' checked' : '') + ' /><span><strong>参与列表试算</strong></span></label><button type="button" class="button tiny ghost" data-remove-store-listing>移除此店铺配置</button></div>';
   });
-  list.innerHTML = rows.join('') || '<div class="sku-empty">请先填写 SKU。</div>';
+  list.innerHTML = (rows.join('') || '<div class="sku-empty">尚未配置店铺售价，添加后选择对应 SKU 和店铺。</div>') + '<button type="button" class="button ghost" id="addProductStoreListing">添加店铺售价</button>';
 }
 function readStoreListingDrafts() {
   return $$('[data-store-listing]').map(function (row) {
-    return { id: row.dataset.listingId, skuId: row.dataset.skuId, skuCode: row.dataset.skuCode, store: row.dataset.storeId,
+    const index = row.querySelector('[data-listing-field="sku"]').value;
+    const sku = index === '' ? {} : (readProductSkuDrafts()[Number(index)] || {});
+    return { id: row.dataset.listingId, skuId: sku.id || '', skuCode: sku.code || '', store: row.querySelector('[data-listing-field="store"]').value,
       salePrice: row.querySelector('[data-listing-field="price"]').value,
       commission: row.querySelector('[data-listing-field="commission"]').value,
       productUrl: row.querySelector('[data-listing-field="url"]').value.trim(),
@@ -5152,12 +5164,34 @@ function bindEvents() {
     if (removeProductSku) {
       draftStoreListings = readStoreListingDrafts();
       draftProductSkus = readProductSkuDrafts();
-      draftProductSkus.splice(Number(removeProductSku.dataset.removeProductSku), 1);
+      const removedSku = draftProductSkus.splice(Number(removeProductSku.dataset.removeProductSku), 1)[0];
+      draftStoreListings = draftStoreListings.filter(function (item) { return removedSku.id ? String(item.skuId) !== String(removedSku.id) : item.skuCode !== removedSku.code; });
       return renderProductSkuEditor();
+    }
+    if (event.target.closest('#addProductStoreListing')) {
+      draftStoreListings = readStoreListingDrafts();
+      draftProductSkus = readProductSkuDrafts();
+      draftStoreListings.push(storeListingDraft(null, draftProductSkus[0]));
+      return renderProductStoreEditor();
+    }
+    const removeListing = event.target.closest('[data-remove-store-listing]');
+    if (removeListing) {
+      const row = removeListing.closest('[data-store-listing]');
+      row.remove();
+      draftStoreListings = readStoreListingDrafts();
+      return;
     }
   });
   if ($('#addStore')) $('#addStore').addEventListener('click', function () { openStoreEditor(''); });
   if ($('#storeForm')) $('#storeForm').addEventListener('submit', saveStoreFromForm);
+  if ($('#productStoreList')) $('#productStoreList').addEventListener('change', function (event) {
+    const row = event.target.closest('[data-store-listing]');
+    if (!row) return;
+    row.querySelector('[data-listing-summary]').textContent = ['sku', 'store'].map(function (field) {
+      const select = row.querySelector('[data-listing-field="' + field + '"]');
+      return select.selectedOptions[0].textContent;
+    }).join(' · ');
+  });
   if ($('#openCreatorModal')) $('#openCreatorModal').addEventListener('click', function () { openCreatorEditor(''); });
   if ($('#creatorForm')) $('#creatorForm').addEventListener('submit', saveCreatorFromForm);
   if ($('#creatorActivityForm')) $('#creatorActivityForm').addEventListener('submit', saveCreatorActivityFromForm);
