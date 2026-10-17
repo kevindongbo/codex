@@ -6,6 +6,13 @@ from apps.erp.scheduling_models import TimetableImport, TimetableRecognitionJob
 from apps.erp.timetable_recognition import RecognitionError, invoke_vision
 
 
+# Only this explicit, bounded probe repeats malformed model output. The worker's
+# automatic retry policy and recognition budgets remain unchanged.
+PROBE_RETRYABLE_OUTPUT_ERRORS = frozenset({
+    'invalid_output', 'invalid_time', 'invalid_period', 'time_outside_template',
+})
+
+
 class Command(BaseCommand):
     help = '使用所选草稿的原图和已配置 API 做真实识别，只输出课程格数量；会产生供应商调用费用。'
 
@@ -33,6 +40,7 @@ class Command(BaseCommand):
             try:
                 grid = invoke_vision(job)
                 occupied = sum(cell['status'] == 'class' for day in grid for cell in day)
+                last = 'no_courses'
                 self.stdout.write(f'LIVE API attempt={attempt} occupied_cells={occupied} unknown_cells={84-occupied}')
                 if occupied:
                     self.stdout.write(self.style.SUCCESS('真实 API 返回有效课程候选；未保存草稿或发布排班，识别准确率仍需本人校对。'))
@@ -40,7 +48,7 @@ class Command(BaseCommand):
             except RecognitionError as exc:
                 last = exc.code
                 self.stdout.write(f'LIVE API attempt={attempt} status={exc.code}')
-                if not exc.retryable:
+                if not exc.retryable and exc.code not in PROBE_RETRYABLE_OUTPUT_ERRORS:
                     break
             except Exception:
                 # Raw SDK/crypto/file exceptions can contain credentials/paths.

@@ -10,6 +10,7 @@
   function knownGrid(grid) { return grid.length === 7 && grid.every(day => day.length === 12 && day.every(c => ['free', 'class'].includes(c.status))); }
   const s = { gateway: null, active: false, page: 'board', context: null, board: null, week: '', followCurrent: true, selectedDay: 0, filter: '', imports: [], evidence: [], draft: null, blob: '', busy: false, error: '', lastSync: '', scope: '', request: 0, dirty: false, keys: new Map() };
   let host;
+  function markEdited() { s.dirty = true; s.editGeneration = (s.editGeneration || 0) + 1; }
   const recognitionErrors = {
     provider_http_401: '识别 API 鉴权失败，请管理员检查已配置的密钥。',
     provider_http_403: '识别 API 拒绝访问，请检查模型权限。',
@@ -18,6 +19,8 @@
     provider_http_429: '识别 API 暂时限流，后台会自动重试；也可稍后重新识别。',
     provider_timeout_or_network: '识别 API 超时或网络不可达，可稍后重新识别。',
     invalid_output: '模型返回内容无法解析，请重新识别或更换支持图片的模型。',
+    invalid_provider_parameters: '识别模型参数格式无效，请管理员检查模型配置。',
+    unsupported_provider_parameters: '识别模型参数不支持当前图片识别，请管理员移除工具调用或多候选参数。',
     stale_draft: '识别期间草稿已被修改，旧结果未覆盖你的编辑。',
     recognition_internal_error: '识别未完成，请管理员检查识别 worker 和模型配置后重试。',
   };
@@ -131,7 +134,26 @@
     dialog('校对课表 · 版本 ' + d.revision, '<div class="sc-editor"><div><img id="sc-image" alt="上传的原始课表"><label>原图大小<input type="range" min="100" max="250" value="100" data-sc-change="zoom"></label></div><form id="sc-editor-form"><p>点击格子依次切换：待确认 → 无课 → 有课。必须检查全部七天，包括周末。</p><div class="sc-edit-grid"><span>节次</span>' + days.map(d => '<strong>' + d + '</strong>').join('') + Array.from({ length: 12 }, (_, p) => '<strong>' + (p + 1) + '</strong>' + days.map((_, day) => { const c = d.draft_grid[day][p]; return button('grid', { unknown: '?', free: '无课', class: '有课' }[c.status], 'class="sc-grid-' + c.status + '" data-day="' + day + '" data-period="' + p + '" aria-label="' + days[day] + '第' + (p + 1) + '节 ' + c.status + '"' + (readonly ? ' disabled' : '')); }).join('')).join('') + '</div>' + (!readonly ? button('free', '确认剩余待确认格均无课') + '<label>课程备注（选填，仅本人/管理员可见）<input name="course_note" maxlength="200" placeholder="点选有课格后可逐格标记；识别课程名保留"></label>' : '') + weekChoices(term, d.selected_weeks) + '<label>周末工作日<select name="weekend_day">' + option('sat', '周六', d.weekend_day === 'sat') + option('sun', '周日', d.weekend_day === 'sun') + '</select></label>' + (!readonly ? '<div class="sc-actions">' + button('recognize', '重新识别', 'data-sc-write') + button('save-draft', '保存草稿', 'data-sc-write') + button('publish', '确认并自动排班', 'data-sc-write') + button('reload-draft', '读取最新版本') + (admin() ? '<label><input type="checkbox" name="historical_correction">历史修正：允许更新已开始时段，保留历史版本</label>' : '') + '</div>' : '<p>已确认版本只读，修改会新建版本，原凭证保留。</p>' + button('clone-draft', '基于此凭证新建修正草稿', 'data-sc-write')) + '<p id="sc-job-status" role="status"></p></form></div>');
   }
   function captureDraft() { const f = document.getElementById('sc-editor-form'); if (f) { s.draft.selected_weeks = Array.from(f.querySelectorAll('[name=weeks]:checked'), x => Number(x.value)); s.draft.weekend_day = f.elements.weekend_day.value; } }
-  async function saveDraft() { captureDraft(); const d = s.draft; s.draft = await mutation('imports/' + d.id + '/', { revision: d.revision, draft_grid: d.draft_grid, selected_weeks: d.selected_weeks, weekend_day: d.weekend_day }, 'PATCH'); s.dirty = false; }
+  async function saveDraft() {
+    if (s.savingDraft) throw new Error('草稿正在保存，请等待当前请求完成。');
+    captureDraft();
+    const d = s.draft; const generation = s.editGeneration || 0;
+    const payload = JSON.parse(JSON.stringify({ revision: d.revision, draft_grid: d.draft_grid, selected_weeks: d.selected_weeks, weekend_day: d.weekend_day }));
+    s.savingDraft = true;
+    try {
+      const saved = await mutation('imports/' + d.id + '/', payload, 'PATCH');
+      if (!s.draft || s.draft.id !== d.id) throw new Error('当前校对草稿已切换，请重新核对。');
+      if ((s.editGeneration || 0) !== generation) {
+        captureDraft();
+        const local = s.draft;
+        s.draft = Object.assign({}, saved, { draft_grid: local.draft_grid, selected_weeks: local.selected_weeks, weekend_day: local.weekend_day });
+        s.dirty = true;
+        return false;
+      }
+      s.draft = saved; s.dirty = false;
+      return true;
+    } finally { s.savingDraft = false; }
+  }
   async function recognize(id) {
     const result = await mutation('imports/' + id + '/recognize/', {});
     const jobId = result.job_id || result.id;
@@ -184,8 +206,8 @@
     const el = event.target.closest('[data-sc]'); if (!el) return;
     const action = el.dataset.sc;
     if (action === 'close') { closeDialog(); return; }
-    if (action === 'grid') { captureDraft(); const c = s.draft.draft_grid[Number(el.dataset.day)][Number(el.dataset.period)]; c.status = { unknown: 'free', free: 'class', class: 'unknown' }[c.status]; const note = document.querySelector('[name=course_note]'); if (c.status === 'class' && note && note.value) c.course_name = note.value; s.dirty = true; el.textContent = { unknown: '?', free: '无课', class: '有课' }[c.status]; el.className = 'sc-grid-' + c.status; return; }
-    if (action === 'free') { const count = s.draft.draft_grid.flat().filter(c => c.status === 'unknown').length; if (!root.confirm('确认剩余 ' + count + ' 个格子（包括周末待确认格）均无课？')) return; captureDraft(); s.draft.draft_grid.flat().forEach(c => { if (c.status === 'unknown') c.status = 'free'; }); s.dirty = true; editor(); await showImage(s.draft.evidence_id); return; }
+    if (action === 'grid') { captureDraft(); const c = s.draft.draft_grid[Number(el.dataset.day)][Number(el.dataset.period)]; c.status = { unknown: 'free', free: 'class', class: 'unknown' }[c.status]; const note = document.querySelector('[name=course_note]'); if (c.status === 'class' && note && note.value) c.course_name = note.value; markEdited(); el.textContent = { unknown: '?', free: '无课', class: '有课' }[c.status]; el.className = 'sc-grid-' + c.status; return; }
+    if (action === 'free') { const count = s.draft.draft_grid.flat().filter(c => c.status === 'unknown').length; if (!root.confirm('确认剩余 ' + count + ' 个格子（包括周末待确认格）均无课？')) return; captureDraft(); s.draft.draft_grid.flat().forEach(c => { if (c.status === 'unknown') c.status = 'free'; }); markEdited(); editor(); await showImage(s.draft.evidence_id); return; }
     if (action === 'all-weeks') { host.querySelectorAll('[name=weeks]').forEach(e => { e.checked = true; }); return; }
     if (action === 'day') { s.selectedDay = Number(el.dataset.day); render(); return; }
     if (action === 'mine') { s.filter = String(s.context.user.id); render(); return; }
@@ -194,14 +216,14 @@
     if (['save-draft', 'publish', 'recognize', 'reload-draft', 'revoke', 'clone-draft'].includes(action)) {
       return dialogRun(async () => {
         if (action === 'reload-draft') { if (!s.dirty || root.confirm('放弃未保存编辑并读取最新版本？')) await editImport(s.draft.id); }
-        if (action === 'save-draft') { await saveDraft(); document.getElementById('sc-dialog-error').textContent = '草稿已保存。'; }
+        if (action === 'save-draft') { const complete = await saveDraft(); document.getElementById('sc-dialog-error').textContent = complete ? '草稿已保存。' : '前一次草稿已保存；保存期间的新编辑仍未保存，请再次保存。'; }
         if (action === 'clone-draft') { const previous = s.draft; const created = await mutation('imports/', { evidence_id: previous.evidence_id, term_id: previous.term_id, selected_weeks: previous.selected_weeks, weekend_day: previous.weekend_day }); await mutation('imports/' + created.id + '/', { revision: created.revision, draft_grid: previous.draft_grid }, 'PATCH'); await refresh(); await editImport(created.id); }
-        if (action === 'publish') { const historical = admin() && !!document.querySelector('[name=historical_correction]:checked'); captureDraft(); if (!knownGrid(s.draft.draft_grid)) throw new Error('请先确认全部84格，包括周末。'); await saveDraft(); const revisions = s.draft.expected_week_revisions || {}; const replacing = Object.values(revisions).some(v => v > 0); if (!root.confirm('将发布第 ' + s.draft.selected_weeks.join('、') + ' 周' + (replacing ? '，并替换这些周已有课表' : '') + '，保留请假和人工调整。' + (historical ? '本次历史修正将更新已开始时段。' : '') + '确认？')) return; await mutation('imports/' + s.draft.id + '/confirm/', { revision: s.draft.revision, expected_week_revisions: revisions, replace_existing: replacing, historical_correction: historical }); closeDialog(); await refresh(); render(); }
+        if (action === 'publish') { const historical = admin() && !!document.querySelector('[name=historical_correction]:checked'); captureDraft(); if (!knownGrid(s.draft.draft_grid)) throw new Error('请先确认全部84格，包括周末。'); if (!await saveDraft()) throw new Error('保存期间有新编辑，请再次保存并核对后确认。'); const revisions = s.draft.expected_week_revisions || {}; const replacing = Object.values(revisions).some(v => v > 0); if (!root.confirm('将发布第 ' + s.draft.selected_weeks.join('、') + ' 周' + (replacing ? '，并替换这些周已有课表' : '') + '，保留请假和人工调整。' + (historical ? '本次历史修正将更新已开始时段。' : '') + '确认？')) return; await mutation('imports/' + s.draft.id + '/confirm/', { revision: s.draft.revision, expected_week_revisions: revisions, replace_existing: replacing, historical_correction: historical }); closeDialog(); await refresh(); render(); }
         if (action === 'recognize') {
           if (s.startingRecognition || s.watching) return;
           if (s.draft.draft_grid.flat().some(c => c.status !== 'unknown') && !root.confirm('重新识别将用新的候选结果替换此草稿的格子，仍需本人校对。继续？')) return;
           s.startingRecognition = true;
-          try { await saveDraft(); await recognize(s.draft.id); }
+          try { if (!await saveDraft()) throw new Error('保存期间有新编辑，请再次保存并核对后重新识别。'); await recognize(s.draft.id); }
           finally { s.startingRecognition = false; }
         }
         if (action === 'revoke') { const reason = root.prompt('请填写撤销原因（至少2字）'); if (reason == null) return; await mutation('adjustments/' + el.dataset.id + '/revoke/', { reason, revision: Number(el.dataset.revision) }); await historyDialog(); await refresh(); render(); }
@@ -228,7 +250,7 @@
       el.form.elements.provider_id.value = term && term.recognition_provider_id || '';
       return;
     }
-    if (event.target.closest('#sc-editor-form')) s.dirty = true;
+    if (event.target.closest('#sc-editor-form')) markEdited();
     if (action === 'member') { s.filter = el.value; render(); return; }
     if (action === 'participant') return dialogRun(() => mutation('participants/', { target_user: el.dataset.id, active: el.checked }, 'PATCH'));
     if (['term', 'week', 'owner'].includes(action)) return run(async () => { if (action === 'owner') s.scope = el.value.trim(); else { s.followCurrent = false; s.week = action === 'week' ? el.value : (s.context.terms.find(t => t.id === el.value) || {}).first_monday || s.week; } await refresh(); });
@@ -284,7 +306,7 @@
       if (event.target.closest('#schedulingRoot')) click(event);
     });
     document.addEventListener('change', event => { if (event.target.closest('#schedulingRoot')) change(event); });
-    document.addEventListener('input', event => { if (event.target.closest('#sc-editor-form')) s.dirty = true; });
+    document.addEventListener('input', event => { if (event.target.closest('#sc-editor-form')) markEdited(); });
     document.addEventListener('submit', event => { if (event.target.closest('#schedulingRoot')) submit(event); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
     root.addEventListener('online', poll); root.addEventListener('offline', renderStatus); root.setInterval(poll, 30000);

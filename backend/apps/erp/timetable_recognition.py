@@ -48,6 +48,30 @@ class RecognitionError(Exception):
         super().__init__(code)
 
 
+def vision_parameters(parameters):
+    """Keep configured provider options while requiring one JSON text response.
+
+    Streaming is always disabled. Tool/function calls, stream-only options and
+    multiple completions are unsupported and fail explicitly, before API use.
+    Model, messages and credentials belong to the server, never this JSON body.
+    No response_format is added unless the administrator configured it.
+    """
+    if parameters is None:
+        parameters = {}
+    if not isinstance(parameters, dict) or any(not isinstance(key, str) for key in parameters):
+        raise RecognitionError('invalid_provider_parameters')
+    names = {key.lower() for key in parameters}
+    if names & {'model', 'messages', 'api_key', 'authorization', 'auth'}:
+        raise RecognitionError('invalid_provider_parameters')
+    if names & {'tools', 'tool_choice', 'functions', 'function_call', 'stream_options'}:
+        raise RecognitionError('unsupported_provider_parameters')
+    if 'n' in parameters and (type(parameters['n']) is not int or parameters['n'] != 1):
+        raise RecognitionError('unsupported_provider_parameters')
+    body = {key: value for key, value in parameters.items() if key.lower() != 'stream'}
+    body['stream'] = False
+    return body
+
+
 def candidate_grid(payload, periods):
     """Whitelist output. Unknown/absent regions never become free automatically."""
     if not isinstance(payload, dict) or set(payload) - {'courses', 'warnings'}:
@@ -200,10 +224,9 @@ def invoke_vision(job):
               'courses is an array of {day:1..7,start_period:1..12,end_period:1..12,course_name:string}. '
               'If only clock times are clear use start_time/end_time HH:MM instead of period fields. '
               'warnings lists ambiguous/cropped regions. Missing courses remain unknown for human review. Template: ' + json.dumps(periods))
-    parameters = provider.default_parameters or {}
-    body = {key: parameters[key] for key in ('temperature', 'top_p', 'max_tokens') if key in parameters}
-    # Some compatible providers do not implement response_format. JSON is
-    # requested in the prompt and strictly parsed without that optional field.
+    body = vision_parameters(provider.default_parameters)
+    # Some compatible providers do not implement response_format. Request JSON
+    # in the prompt; add that option only when it was explicitly configured.
     body.update(model=provider.model_name, messages=[{'role': 'system', 'content': prompt}, {'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + image_data, 'detail': 'high'}}]}])
     request = Request(endpoint, data=json.dumps(body).encode(), headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + decrypt_secret(provider.api_key_encrypted)}, method='POST')
     started = time.monotonic()

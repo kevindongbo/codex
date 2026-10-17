@@ -37,10 +37,20 @@ urlpatterns = [path('', page), path('<str:name>', page), *production_patterns]
 @override_settings(ROOT_URLCONF=__name__, SCHEDULING_ENABLED=False)
 class StoreProfitBrowserTests(LiveServerTestCase):
     def test_save_two_stores_reload_update_and_profit(self):
+        self._save_two_stores_reload_update_and_profit(Membership.Role.ADMIN)
+
+    def test_default_buyer_saves_two_stores_reload_update_and_profit(self):
+        self._save_two_stores_reload_update_and_profit(Membership.Role.BUYER)
+
+    def _save_two_stores_reload_update_and_profit(self, role):
         org = Organization.objects.create(name='E2E', slug=settings.INTERNAL_ORGANIZATION_SLUG)
-        user = get_user_model().objects.create_user(username='store-e2e')
-        Membership.objects.create(organization=org, user=user, role='admin')
+        user = get_user_model().objects.create_user(username=f'store-e2e-{role}')
+        membership = Membership.objects.create(organization=org, user=user, role=role)
         warehouse = Warehouse.objects.create(organization=org, name='测试仓', code='TEST')
+        membership.authorized_warehouses.add(warehouse)
+        # An empty override list deliberately exercises the real default role
+        # permissions: buyer has neither product_status nor profit_rules.
+        self.assertEqual(membership.permissions, [])
         product = Product.objects.create(organization=org, name='测试帆布包', status='active', source_url='https://example.com/bag')
         sku = SKU.objects.create(organization=org, product=product, code='BAG-E2E', cost='18.90', currency='CNY',
             category_code='bag-womens-womens-tote-bags', packed_weight_g='200', default_creator_commission_percent='15')
@@ -55,3 +65,7 @@ class StoreProfitBrowserTests(LiveServerTestCase):
         self.assertEqual(listings.count(), 2)
         self.assertEqual(str(listings.get(store=stores[0]).sale_price_myr), '99.90')
         self.assertEqual(str(listings.get(store=stores[0]).commission_override_percent), '0.00')
+        self.assertEqual(str(listings.get(store=stores[1]).sale_price_myr), '89.90')
+        self.assertIsNone(listings.get(store=stores[1]).commission_override_percent)
+        product.refresh_from_db()
+        self.assertEqual(product.status, Product.Status.ACTIVE)

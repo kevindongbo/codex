@@ -77,6 +77,12 @@ service_user=$(systemctl show "$service" -p User --value)
 [[ -n "$service_user" && "$service_user" != root && "$service_user" =~ ^[a-zA-Z0-9_-]+$ ]] || fail 'Expected non-root service account.'
 [[ "$(systemctl show "$service" -p WorkingDirectory --value)" == "$app/backend" ]] || fail 'Unexpected working directory.'
 [[ "$(systemctl show "$worker" -p WorkingDirectory --value)" == "$app/backend" ]] || fail 'Unexpected worker working directory.'
+[[ "$(systemctl show "$service" -p EnvironmentFiles --value)" == *"$app/.env"* ]] || fail 'Unexpected web environment configuration.'
+[[ "$(systemctl show "$worker" -p EnvironmentFiles --value)" == *"$app/.env"* ]] || fail 'Unexpected worker environment configuration.'
+if [[ -f /etc/dongbo/scheduling.env ]]; then
+  [[ "$(systemctl show "$service" -p EnvironmentFiles --value)" == *'/etc/dongbo/scheduling.env'* ]] || fail 'Web scheduling configuration differs.'
+  [[ "$(systemctl show "$worker" -p EnvironmentFiles --value)" == *'/etc/dongbo/scheduling.env'* ]] || fail 'Worker scheduling configuration differs.'
+fi
 systemctl is-active --quiet "$service"
 systemctl is-active --quiet "$worker"
 nginx -t
@@ -112,5 +118,5 @@ systemctl is-active --quiet "$service"
 systemctl is-active --quiet "$worker"
 verify_assets "$target"
 trap - ERR
-printf 'RECOGNITION / STORE PROFIT VERIFIED AT LOCAL NGINX ORIGIN\nSHA: %s\nBackup: %s\n' "$target" "$backup"
+printf 'REPAIR CODE / SERVICES / ASSETS VERIFIED AT LOCAL NGINX ORIGIN\nSHA: %s\nBackup: %s\n' "$target" "$backup"
 printf 'No migrations, dependency installs or configuration changes. Live vision and signed-in public workflows still require acceptance.\n'
