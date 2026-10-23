@@ -1777,6 +1777,8 @@ class ReplenishmentRecommendationSerializer(ScopedSerializer):
 
 
 class StoreProductSerializer(OrganizationValidationMixin, ScopedSerializer):
+    sale_price_myr = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'))
+    commission_override_percent = serializers.DecimalField(max_digits=6, decimal_places=2, min_value=Decimal('0'), max_value=Decimal('100'), required=False, allow_null=True)
     store_name = serializers.CharField(source="store.name", read_only=True)
     external_sku_code = serializers.CharField(required=False, allow_blank=True, default="")
     external_listing_id = serializers.CharField(required=False, allow_blank=True, default="")

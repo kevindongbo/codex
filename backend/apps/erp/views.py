@@ -1612,12 +1612,19 @@ class SKUViewSet(OrganizationScopedViewSet):
         seen = set()
         saved = []
         for row in rows:
+            if not isinstance(row, dict):
+                raise ValidationError({"items": "每条店铺配置必须为对象"})
             data = dict(row)
             data["sku"] = str(sku.pk)
             store_id = str(data.get("store", ""))
             if not store_id or store_id in seen:
                 raise ValidationError({"items": "同一店铺只能配置一次"})
             seen.add(store_id)
+            # Validate UUID before filtering so malformed input returns 400.
+            try:
+                uuid.UUID(store_id)
+            except (ValueError, TypeError, AttributeError):
+                raise ValidationError({"store": "请选择有效店铺"})
             existing = sku.store_products.filter(store_id=store_id).first()
             serializer = StoreProductSerializer(
                 existing, data=data, context={"request": request}, partial=existing is not None
@@ -1635,35 +1642,44 @@ class SKUViewSet(OrganizationScopedViewSet):
         )
         return Response(StoreProductSerializer(saved, many=True, context={"request": request}).data)
 
-    def _profit_detail(self, sku, item, snapshot):
+    def _profit_detail(self, sku, item, snapshot, working=None):
         commission = item.commission_override_percent
         if commission is None:
             commission = sku.default_creator_commission_percent
         cost = sku.purchase_cost_cny
         if cost is None and sku.currency == "CNY" and sku.cost > 0:
             cost = sku.cost
+        rate_cny = working.manual_cny_per_myr if working and working.rate_mode == 'manual' else (snapshot.myr_cny if snapshot else None)
+        rate_usd = working.manual_usd_per_myr if working and working.rate_mode == 'manual' else (snapshot.myr_usd if snapshot else None)
+        metadata = {"store": str(item.store_id), "store_name": item.store.name, "sale_price": str(item.sale_price_myr),
+                    "commission_percent": str(commission) if commission is not None else None}
         required = {
             "类目": sku.category_code,
             "包装重量": sku.packed_weight_g,
             "采购成本": cost,
             "达人佣金": commission,
             "商品售价": item.sale_price_myr,
-            "汇率": snapshot,
+            "汇率": rate_cny if rate_cny and rate_cny > 0 and rate_usd and rate_usd > 0 else None,
         }
         missing = [label for label, value in required.items() if value is None or value == ""]
         if missing:
-            return {"store": str(item.store_id), "store_name": item.store.name, "missing": missing, "calculable": False}
+            return {**metadata, "missing": missing, "calculable": False}
         payload = {
             "country": "MY", "seller_type": "cross_border", "shop_identity": "marketplace", "bxp": False,
-            "delivered": True, "commission_adjustment": Decimal("1.00"), "cny_per_myr": snapshot.myr_cny,
-            "usd_per_myr": snapshot.myr_usd,
+            "delivered": True, "commission_adjustment": Decimal("1.00"), "cny_per_myr": rate_cny,
+            "usd_per_myr": rate_usd,
             "items": [{"sku_name": sku.code, "category_code": sku.category_code, "weight_g": sku.packed_weight_g,
                        "item_price": item.sale_price_myr, "product_cost_cny": cost, "affiliate_rate": commission}],
         }
+        if working:
+            payload.update({key: value for key, value in working.config.items() if key in {
+                'seller_type', 'shop_identity', 'bxp', 'commission_adjustment', 'transaction_fee_adjustment',
+                'buyer_pays_shipping', 'buyer_shipping_region',
+            }})
         try:
             result = calculate_profit(payload)
         except (KeyError, ValueError):
-            return {"store": str(item.store_id), "store_name": item.store.name, "missing": ["有效类目规则"], "calculable": False}
+            return {**metadata, "missing": ["有效类目规则"], "calculable": False}
         return {
             "store": str(item.store_id), "store_name": item.store.name, "sale_price": str(item.sale_price_myr),
             "commission_percent": str(commission), "gross_profit": result["gross_profit"],
@@ -1676,12 +1692,14 @@ class SKUViewSet(OrganizationScopedViewSet):
         organization = self.get_organization()
         snapshot = ExchangeRateSnapshot.objects.filter(organization=organization, is_current=True).first()
         response = []
+        working = ProfitCalculationWorkingConfig.objects.filter(organization=organization).first()
         for sku in self.get_queryset():
             items = [item for item in sku.store_products.all() if item.store.is_active and item.include_in_list_calculation]
-            details = [self._profit_detail(sku, item, snapshot) for item in items]
+            details = [self._profit_detail(sku, item, snapshot, working) for item in items]
             calculated = [item for item in details if item["calculable"]]
             def bounds(field):
-                values = [Decimal(item[field]) for item in calculated if item[field] is not None]
+                source = details if field == 'sale_price' else calculated
+                values = [Decimal(item[field]) for item in source if item.get(field) is not None]
                 return {"min": str(min(values)), "max": str(max(values))} if values else None
             response.append({"sku": str(sku.pk), "code": sku.code, "stores": details, "calculable_store_count": len(calculated),
                              "incomplete_store_count": len(details) - len(calculated), "sale_price": bounds("sale_price"),
@@ -1696,7 +1714,8 @@ class SKUViewSet(OrganizationScopedViewSet):
         sku = self.get_object()
         snapshot = ExchangeRateSnapshot.objects.filter(organization=sku.organization, is_current=True).first()
         items = sku.store_products.select_related("store").filter(store__is_active=True, include_in_list_calculation=True)
-        stores = [self._profit_detail(sku, item, snapshot) for item in items]
+        working = ProfitCalculationWorkingConfig.objects.filter(organization=sku.organization).first()
+        stores = [self._profit_detail(sku, item, snapshot, working) for item in items]
         return Response({"sku": str(sku.pk), "exchange_snapshot": str(snapshot.pk) if snapshot else None,
                          "rule_version": next((item["rule_version"] for item in stores if item["calculable"]), None), "stores": stores})
 

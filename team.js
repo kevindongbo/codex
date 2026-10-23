@@ -447,7 +447,12 @@
         '/stores/', '/store-products/', '/skus/profit-summary/'
       ];
       const values = await Promise.all(paths.map((path) => this.listAll(path)).concat([
-        this.request('/profit-calculator/config/'), this.loadSyncVersion()
+        this.request('/profit-calculator/config/').catch(function (error) {
+          // Catalog editors can save SKU/store pricing without permission to
+          // inspect profit rules. Keep only that optional directory empty.
+          if (error.status === 403) return { categories: [], category_tree: [] };
+          throw error;
+        }), this.loadSyncVersion()
       ]));
       const raw = {
         products: values[0], suppliers: values[1], purchaseOrders: values[2],
@@ -793,6 +798,53 @@
     }
 
     async saveProduct(product, initialSnapshot) {
+      // Resolve every SKU/listing before the first write, so an incomplete
+      // draft cannot save some rows and then request an empty SKU URL.
+      let raw = product.kind === 'own' ? this.findRawProduct(product) : null;
+      const requestedSkus = [];
+      if (product.kind === 'own') {
+        if (product.status === 'draft' && raw && raw.status !== 'draft') {
+          throw new ApiError('团队版已启用商品不能退回草稿，请补齐 SKU 资料或移除空白行；也可改为停用。', 409, null);
+        }
+        const skuRows = Array.isArray(product.skus) ? product.skus : [{
+          id: product.skuId, code: product.sku, cost: product.standardCost,
+          safetyStock: product.safetyStock, attributes: {}
+        }];
+        const empty = function (value) { return value == null || String(value).trim() === ''; };
+        const codes = new Set();
+        const ids = new Set();
+        for (const sku of skuRows) {
+          const code = String(sku.code || '').trim();
+          const blankNewRow = !sku.id && !code && empty(sku.cost) &&
+            (!sku.safetyStock || Number(sku.safetyStock) === 0) &&
+            !Object.keys(sku.attributes || {}).length &&
+            ['categoryCode', 'packedWeightG', 'purchaseCostCny', 'creatorCommission'].every(function (field) { return empty(sku[field]); });
+          if (blankNewRow && product.status === 'draft') continue;
+          if (!code) throw new ApiError('请补齐每条 SKU 编码，或移除未填写的 SKU 行后保存。', 400, null);
+          if (codes.has(code.toUpperCase())) throw new ApiError('同一商品内的 SKU 编码不能重复。', 400, null);
+          if (sku.id && ids.has(String(sku.id))) throw new ApiError('同一 SKU 不能重复提交。', 400, null);
+          if (empty(sku.cost) || !Number.isFinite(Number(sku.cost)) || Number(sku.cost) < 0) {
+            throw new ApiError('请填写有效的 SKU 成本；未确定成本的草稿可填写 0。', 400, null);
+          }
+          codes.add(code.toUpperCase());
+          if (sku.id) ids.add(String(sku.id));
+          requestedSkus.push(Object.assign({}, sku, { code: code }));
+        }
+        if (!requestedSkus.length && product.status !== 'draft') throw new ApiError('请至少填写一条 SKU。', 400, null);
+      }
+      const listingKeys = new Set();
+      for (const listing of product.storeListings || []) {
+        if (!listing.store || !(listing.skuId || listing.skuCode)) throw new ApiError('请为每条售价选择 SKU 和店铺。', 400);
+        const skuIndex = requestedSkus.findIndex(function (sku) {
+          return listing.skuId ? String(sku.id) === String(listing.skuId) : sku.code === String(listing.skuCode || '').trim();
+        });
+        if (skuIndex < 0) throw new ApiError('店铺售价引用了未填写或已移除的 SKU，请重新选择 SKU。', 400, null);
+        const key = skuIndex + ':' + listing.store;
+        if (listingKeys.has(key)) throw new ApiError('同一 SKU 在同一家店铺只能配置一次。', 400);
+        listingKeys.add(key);
+        if (listing.salePrice == null || String(listing.salePrice).trim() === '' || !Number.isFinite(Number(listing.salePrice)) || Number(listing.salePrice) < 0) throw new ApiError('请填写有效的店铺售价。', 400);
+        if (listing.commission !== '' && listing.commission != null && (!Number.isFinite(Number(listing.commission)) || Number(listing.commission) < 0 || Number(listing.commission) > 100)) throw new ApiError('店铺佣金必须在 0—100% 之间。', 400);
+      }
       if (product.kind !== 'own') {
         if (/^data:image\//i.test(product.image || '')) product.image = await this.uploadDataImage(product.image, product.name || 'competitor');
         const payload = {
@@ -817,30 +869,21 @@
         source_url: product.productUrl, purchase_url: product.purchaseUrl || '',
         default_supplier: supplier ? supplier.id : null
       };
-      let raw = this.findRawProduct(product);
       if (raw) {
         raw = await this.request('/products/' + raw.id + '/', { method: 'PATCH', body: payload });
       } else {
         raw = await this.request('/products/', { method: 'POST', body: payload });
         product.apiProductId = String(raw.id);
       }
-      const requestedSkus = Array.isArray(product.skus) ? product.skus : [{
-        id: product.skuId, code: product.sku, cost: product.standardCost,
-        safetyStock: product.safetyStock, attributes: {}
-      }];
       const existingSkus = raw.skus || [];
       const requestedIds = new Set(requestedSkus.filter(function (sku) { return sku.id; }).map(function (sku) { return String(sku.id); }));
-      const requestedCodes = new Set();
       for (const sku of requestedSkus) {
         const code = String(sku.code || '').trim();
-        if (!code) continue;
-        if (requestedCodes.has(code.toUpperCase())) throw new ApiError('同一商品内的 SKU 编码不能重复。', 400, null);
-        requestedCodes.add(code.toUpperCase());
         const currentSku = existingSkus.find(function (item) { return String(item.id) === String(sku.id); }) || null;
         const skuPayload = {
           product: raw.id, code: code, barcode: '', cost: sku.cost,
           currency: product.costCurrency || product.salesCurrency || 'CNY', safety_stock: sku.safetyStock || 0,
-          active: true, attributes: sku.attributes || {}, category_code: sku.categoryCode || null,
+          active: sku.active !== false, attributes: sku.attributes || {}, category_code: sku.categoryCode || null,
           packed_weight_g: sku.packedWeightG === '' ? null : sku.packedWeightG,
           purchase_cost_cny: sku.purchaseCostCny === '' ? null : sku.purchaseCostCny,
           default_creator_commission_percent: sku.creatorCommission === '' ? null : sku.creatorCommission
@@ -848,6 +891,7 @@
         const savedSku = currentSku
           ? await this.request('/skus/' + currentSku.id + '/', { method: 'PATCH', body: skuPayload })
           : await this.request('/skus/', { method: 'POST', body: skuPayload });
+        if (!savedSku || !savedSku.id) throw new ApiError('SKU 保存响应缺少编号，请刷新页面确认后重试。', 0, savedSku);
         sku.id = String(savedSku.id);
         requestedIds.add(String(savedSku.id));
       }
@@ -857,9 +901,9 @@
         }
       }
       product.skuId = requestedSkus[0] && requestedSkus[0].id ? String(requestedSkus[0].id) : '';
-      for (const requestedSku of requestedSkus) {
+      for (const requestedSku of (Array.isArray(product.storeListings) ? requestedSkus : [])) {
         const items = (product.storeListings || []).filter(function (listing) {
-          return listing.salePrice !== '' && ((listing.skuId && String(requestedSku.id) === String(listing.skuId)) || (!listing.skuId && requestedSku.code === listing.skuCode));
+          return listing.salePrice !== '' && ((listing.skuId && String(requestedSku.id) === String(listing.skuId)) || (!listing.skuId && requestedSku.code === String(listing.skuCode || '').trim()));
         }).map(function (listing) {
           return { store: listing.store, sale_price_myr: listing.salePrice, product_url: listing.productUrl || '',
             commission_override_percent: listing.commission === '' ? null : listing.commission,
@@ -879,9 +923,9 @@
       }
       if (product.status === 'draft') {
         if (raw.status !== 'draft') throw new ApiError('团队版已启用商品不能退回草稿，可改为停用。', 409, null);
-      } else if (product.status === 'active') {
+      } else if (product.status === 'active' && raw.status !== 'active') {
         raw = await this.request('/products/' + raw.id + '/activate/', { method: 'POST', body: {} });
-      } else if (product.status === 'inactive') {
+      } else if (product.status === 'inactive' && raw.status !== 'inactive') {
         if (raw.status === 'draft') await this.request('/products/' + raw.id + '/activate/', { method: 'POST', body: {} });
         await this.request('/products/' + raw.id + '/deactivate/', { method: 'POST', body: {} });
       }

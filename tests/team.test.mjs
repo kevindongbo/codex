@@ -119,6 +119,62 @@ test('team adapter exposes every SKU and keeps linked monitoring snapshots on th
   );
 });
 
+test('default buyer loads the complete catalog when only the optional profit rule directory returns 403', async () => {
+  const calls = [];
+  const product = { id: 'product-1', name: '商品', status: 'active', images: [], skus: [{ id: 'sku-1', code: 'SKU-1', cost: '10', currency: 'CNY', store_products: [{ id: 'listing-1', store: 'store-1', sale_price_myr: '79.90' }] }] };
+  const summary = { sku: 'sku-1', sale_price: { min: '79.90', max: '79.90' }, gross_profit: { min: '30', max: '30' } };
+  const Team = await loadTeam(async (url, options) => {
+    calls.push({ url, options });
+    if (url === '/api/profit-calculator/config/') return response(403, { detail: '没有查看利润规则权限' });
+    if (url === '/api/sync/version/') return response(200, { revision: 7 });
+    if (url === '/api/products/') return response(200, [product]);
+    if (url === '/api/skus/profit-summary/') return response(200, [summary]);
+    return response(200, []);
+  });
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.user = { is_owner: false };
+  gateway.role = 'buyer';
+  gateway.permissions = ['catalog', 'product_edit', 'purchase', 'replenishment'];
+  gateway.accessToken = 'buyer-access';
+  gateway.organizationId = 'org-1';
+  gateway.warehouseId = 'warehouse-1';
+  gateway.warehouses = [{ id: 'warehouse-1', name: '授权仓', active: true }];
+  const state = await gateway.loadState();
+  assert.equal(gateway.can('profit_rules'), false);
+  assert.equal(calls.length, 18);
+  assert.equal(state.products[0].storeProducts[0].sale_price_myr, '79.90');
+  assert.equal(state.products[0].profitSummary.gross_profit.min, '30');
+  assert.equal(state.profitCategories.length, 0);
+  assert.equal(gateway.cache.profitConfig.category_tree.length, 0);
+  assert.equal(gateway.syncRevision, 7);
+  assert.ok(calls.every(call => call.options.headers.Authorization === 'Bearer buyer-access'));
+});
+
+test('optional profit rule loading still reports authentication, server, and network failures', async () => {
+  for (const status of [401, 500, 0]) {
+    const Team = await loadTeam(async (url) => {
+      if (url === '/api/profit-calculator/config/') {
+        if (status === 0) throw new Error('connection lost');
+        return response(status, { detail: 'request failed' });
+      }
+      return response(200, url === '/api/sync/version/' ? { revision: 1 } : []);
+    });
+    const gateway = new Team.TeamGateway({ apiBase: '/api' });
+    await assert.rejects(gateway.loadState(), error => error.status === status);
+  }
+});
+
+test('403 from a core catalog endpoint is never hidden by optional profit rule fallback', async () => {
+  for (const corePath of ['/api/products/', '/api/skus/profit-summary/']) {
+    const Team = await loadTeam(async (url) => {
+      if (url === corePath || url === '/api/profit-calculator/config/') return response(403, { detail: '禁止访问' });
+      return response(200, url === '/api/sync/version/' ? { revision: 1 } : []);
+    });
+    const gateway = new Team.TeamGateway({ apiBase: '/api' });
+    await assert.rejects(gateway.loadState(), error => error.status === 403);
+  }
+});
+
 test('saving one product writes every requested SKU and retires removed SKUs safely', async () => {
   const Team = await loadTeam();
   const gateway = new Team.TeamGateway({ apiBase: '/api' });
@@ -150,15 +206,164 @@ test('saving one product writes every requested SKU and retires removed SKUs saf
   });
   assert.deepEqual(calls.map((call) => call.path), [
     '/products/product-1/', '/skus/sku-keep/', '/skus/', '/skus/sku-old/',
-    '/skus/sku-keep/store-products/', '/skus/sku-new/store-products/',
     '/product-images/', '/products/product-1/activate/',
   ]);
   assert.equal(calls[1].options.body.code, 'KEEP');
   assert.equal(calls[2].options.body.code, 'NEW');
   assert.equal(calls[3].options.body.active, false);
-  assert.equal(calls[4].options.method, 'PUT');
-  assert.deepEqual(Array.from(calls[4].options.body.items), []);
-  assert.match(calls[6].options.body.url, /^data:image\/webp;base64,/);
+  assert.equal(calls.some(call => call.path.includes('/store-products/')), false, 'omitted listing draft must not erase existing store prices');
+  assert.match(calls[4].options.body.url, /^data:image\/webp;base64,/);
+});
+
+function productDraft(overrides = {}) {
+  return {
+    kind: 'own', apiProductId: 'product-1', name: '商品', defaultSupplier: '',
+    salesCurrency: 'CNY', costCurrency: 'CNY', productUrl: 'https://example.com/p',
+    status: 'active', monitoringEnabled: false,
+    skus: [{ id: 'sku-1', code: 'SKU-1', cost: '10', safetyStock: 0 }],
+    storeListings: [{ skuId: 'sku-1', store: 'store-1', salePrice: '79.90', commission: '0' }],
+    ...overrides,
+  };
+}
+
+test('product editors save store pricing without status permission when product status is unchanged', async () => {
+  const Team = await loadTeam();
+  for (const status of ['active', 'inactive']) {
+    const gateway = new Team.TeamGateway({ apiBase: '/api' });
+    const raw = { id: 'product-1', status, skus: [{ id: 'sku-1', code: 'SKU-1', active: true }], images: [] };
+    gateway.cache = { products: [raw], suppliers: [] };
+    const calls = [];
+    gateway.request = async (path, options) => {
+      calls.push({ path, options });
+      if (/\/(?:activate|deactivate)\/$/.test(path)) throw new Error('403: buyer has product_edit but no product_status');
+      if (path === '/products/product-1/') return raw;
+      if (path === '/skus/sku-1/') return { id: 'sku-1' };
+      return [];
+    };
+    await gateway.saveProduct(productDraft({ status }));
+    const listing = calls.find(call => call.path === '/skus/sku-1/store-products/');
+    assert.equal(listing.options.body.items[0].sale_price_myr, '79.90');
+    assert.equal(listing.options.body.items[0].commission_override_percent, '0');
+    assert.equal(calls.some(call => /\/(?:activate|deactivate)\/$/.test(call.path)), false);
+  }
+});
+
+test('an explicit product status change still calls the protected status endpoint', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  const raw = { id: 'product-1', status: 'active', skus: [{ id: 'sku-1', code: 'SKU-1' }], images: [] };
+  gateway.cache = { products: [raw], suppliers: [] };
+  const calls = [];
+  gateway.request = async (path) => {
+    calls.push(path);
+    if (path === '/products/product-1/') return raw;
+    if (path === '/skus/sku-1/') return { id: 'sku-1' };
+    return {};
+  };
+  await gateway.saveProduct(productDraft({ status: 'inactive', storeListings: [] }));
+  assert.equal(calls.filter(path => path === '/products/product-1/deactivate/').length, 1);
+});
+
+test('duplicate and incomplete SKU rows are rejected before supplier or product writes', async () => {
+  const Team = await loadTeam();
+  const cases = [
+    { skus: [{ code: 'SKU-A', cost: 10 }, { code: ' sku-a ', cost: 20 }], expected: /编码不能重复/ },
+    { skus: [{ code: '', cost: 10 }], expected: /补齐每条 SKU 编码/ },
+    { skus: [{ id: 'sku-1', code: 'SKU-1', cost: '' }], expected: /有效的 SKU 成本/ },
+    { skus: [{ id: 'sku-1', code: 'SKU-1', cost: 'abc' }], expected: /有效的 SKU 成本/ },
+    { skus: [{ id: 'sku-1', code: 'SKU-1', cost: -1 }], expected: /有效的 SKU 成本/ },
+  ];
+  for (const { skus, expected } of cases) {
+    const gateway = new Team.TeamGateway({ apiBase: '/api' });
+    gateway.cache = { products: [], suppliers: [] };
+    const calls = [];
+    gateway.request = async (path) => { calls.push(path); return {}; };
+    await assert.rejects(gateway.saveProduct(productDraft({ skus, defaultSupplier: '尚未创建的供应商', storeListings: [] })), expected);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test('a completely blank new SKU can remain an empty draft without requesting a SKU URL', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  const raw = { id: 'product-1', status: 'draft', skus: [], images: [] };
+  gateway.cache = { products: [raw], suppliers: [] };
+  const calls = [];
+  gateway.request = async (path) => { calls.push(path); return raw; };
+  await gateway.saveProduct(productDraft({ status: 'draft', skus: [{ id: '', code: '', cost: '', safetyStock: 0, attributes: {}, packedWeightG: '', purchaseCostCny: '', creatorCommission: '', categoryCode: '' }], storeListings: [] }));
+  assert.deepEqual(calls, ['/products/product-1/']);
+});
+
+test('an incomplete edit cannot downgrade a live product after saving some of its fields', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  gateway.cache = { products: [{ id: 'product-1', status: 'active', skus: [], images: [] }], suppliers: [] };
+  const calls = [];
+  gateway.request = async (path) => { calls.push(path); return {}; };
+  await assert.rejects(gateway.saveProduct(productDraft({ status: 'draft' })), /不能退回草稿/);
+  assert.deepEqual(calls, []);
+});
+
+test('unknown or skipped SKU listing references are rejected before any write', async () => {
+  const Team = await loadTeam();
+  for (const listing of [
+    { skuId: 'removed-sku', store: 'store-1', salePrice: '10', commission: '' },
+    { skuCode: 'REMOVED', store: 'store-1', salePrice: '10', commission: '' },
+  ]) {
+    const gateway = new Team.TeamGateway({ apiBase: '/api' });
+    gateway.cache = { products: [], suppliers: [] };
+    const calls = [];
+    gateway.request = async (path) => { calls.push(path); return {}; };
+    await assert.rejects(gateway.saveProduct(productDraft({ storeListings: [listing] })), /未填写或已移除的 SKU/);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test('invalid listing prices and duplicate id/code aliases are rejected before any write', async () => {
+  const Team = await loadTeam();
+  const valid = { skuId: 'sku-1', store: 'store-1', salePrice: '10', commission: '' };
+  const cases = [
+    { rows: [{ ...valid, salePrice: null }], expected: /有效的店铺售价/ },
+    { rows: [{ ...valid, salePrice: ' ' }], expected: /有效的店铺售价/ },
+    { rows: [valid, { ...valid, skuId: '', skuCode: 'SKU-1' }], expected: /只能配置一次/ },
+  ];
+  for (const { rows, expected } of cases) {
+    const gateway = new Team.TeamGateway({ apiBase: '/api' });
+    gateway.cache = { products: [], suppliers: [] };
+    const calls = [];
+    gateway.request = async (path) => { calls.push(path); return {}; };
+    await assert.rejects(gateway.saveProduct(productDraft({ storeListings: rows })), expected);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test('multi SKU drafts route existing and new SKU store prices correctly while skipping blank new rows', async () => {
+  const Team = await loadTeam();
+  const gateway = new Team.TeamGateway({ apiBase: '/api' });
+  const raw = { id: 'product-1', status: 'draft', skus: [{ id: 'sku-1', code: 'SKU-1' }], images: [] };
+  gateway.cache = { products: [raw], suppliers: [] };
+  const calls = [];
+  gateway.request = async (path, options) => {
+    calls.push({ path, options });
+    if (path === '/products/product-1/') return raw;
+    if (path === '/skus/sku-1/') return { id: 'sku-1' };
+    if (path === '/skus/') return { id: 'sku-new' };
+    return [];
+  };
+  await gateway.saveProduct(productDraft({ status: 'draft',
+    skus: [{ id: 'sku-1', code: 'SKU-1', cost: 10 }, { code: ' SKU-NEW ', cost: 0 }, { code: '', cost: '', safetyStock: 0, attributes: {} }],
+    storeListings: [
+      { skuId: 'sku-1', store: 'store-1', salePrice: '79.90', commission: '0', include: false },
+      { skuCode: 'SKU-NEW', store: 'store-2', salePrice: '89.90', commission: '' },
+    ],
+  }));
+  const listingCalls = calls.filter(call => call.path.includes('/store-products/'));
+  assert.deepEqual(listingCalls.map(call => call.path), ['/skus/sku-1/store-products/', '/skus/sku-new/store-products/']);
+  assert.equal(listingCalls[0].options.body.items[0].store, 'store-1');
+  assert.equal(listingCalls[0].options.body.items[0].include_in_list_calculation, false);
+  assert.equal(listingCalls[1].options.body.items[0].store, 'store-2');
+  assert.equal(listingCalls[1].options.body.items[0].commission_override_percent, null);
+  assert.equal(calls.find(call => call.path === '/skus/').options.body.cost, 0);
 });
 
 test('team gateway hard-deletes an eligible product and a draft purchase', async () => {

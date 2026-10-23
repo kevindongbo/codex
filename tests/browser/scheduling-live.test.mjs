@@ -50,6 +50,7 @@ try {
   await page.locator('[name=reason]').fill('私密测试请假原因');
   await page.locator('#sc-adjust button[type=submit]').click();
   await page.locator('#sc-dialog').waitFor({state:'detached'});
+  await page.locator('.sc-absence').filter({hasText:'请假'}).first().waitFor();
   assert.match(await page.locator('.sc-board').innerText(), /请假/);
   const privacy = await page.evaluate(async password => {
     const login=await fetch('/api/auth/token/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'schedule-e2e-other',password})});
