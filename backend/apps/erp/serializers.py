@@ -291,7 +291,9 @@ class SKUSerializer(OrganizationValidationMixin, ScopedSerializer):
     def get_store_products(self, obj):
         return [{
             "id": str(item.pk), "store": str(item.store_id), "store_name": item.store.name,
-            "store_active": item.store.is_active, "sale_price_myr": str(item.sale_price_myr),
+            "store_active": item.store.is_active, "sale_price_myr": str(item.sale_price_myr) if item.sale_price_myr is not None else None,
+            "price_amount": str(item.price_amount) if item.price_amount is not None else (str(item.sale_price_myr) if item.sale_price_myr is not None else None),
+            "country": item.country, "currency": item.currency,
             "product_url": item.product_url,
             "commission_override_percent": None if item.commission_override_percent is None else str(item.commission_override_percent),
             "include_in_list_calculation": item.include_in_list_calculation,
@@ -430,14 +432,21 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
             self.fields["purchaser"].queryset = get_user_model().objects.filter(
                 erp_memberships__organization=organization,
                 erp_memberships__active=True,
+                erp_memberships__employment_status="employed",
                 is_active=True,
             ).distinct()
+            if self.instance and self.instance.purchaser_id:
+                from django.db.models import Q
+                self.fields["purchaser"].queryset = get_user_model().objects.filter(
+                    Q(pk__in=self.fields["purchaser"].queryset.values("pk")) | Q(pk=self.instance.purchaser_id))
+
 
     def get_purchaser_display_name(self, order):
         if not order.purchaser_id:
             return ""
         membership = order.purchaser.erp_memberships.filter(organization=order.organization).first()
-        return (membership.display_name if membership else "") or order.purchaser.get_username()
+        name = (membership.display_name if membership else "") or order.purchaser.get_username()
+        return name + ("（已离职）" if membership and membership.employment_status == "departed" else "")
 
     def get_in_transit_quantity(self, order):
         if order.status not in {PurchaseOrder.Status.SUBMITTED, PurchaseOrder.Status.PARTIAL}:
@@ -578,8 +587,14 @@ class PurchaseOrderEditInputSerializer(OrganizationValidationMixin, serializers.
         self.fields["purchaser"].queryset = get_user_model().objects.filter(
             erp_memberships__organization=organization,
             erp_memberships__active=True,
+            erp_memberships__employment_status="employed",
             is_active=True,
         ).distinct()
+        original = self.context.get("purchase_order")
+        if original is not None and original.organization_id == organization.pk and original.purchaser_id:
+            from django.db.models import Q
+            self.fields["purchaser"].queryset = get_user_model().objects.filter(
+                Q(pk__in=self.fields["purchaser"].queryset.values("pk")) | Q(pk=original.purchaser_id))
         self.fields["lines"].child.fields["sku"].queryset = SKU.objects.filter(
             organization=organization, active=True, product__status=Product.Status.ACTIVE
         )
@@ -1762,6 +1777,33 @@ class OwnStoreSerializer(ScopedSerializer):
             raise serializers.ValidationError({"name": "同一组织内店铺名称必须唯一"})
         if attrs.get("platform_code") == "other" and not attrs.get("custom_platform_name", getattr(self.instance, "custom_platform_name", "")):
             raise serializers.ValidationError({"custom_platform_name": "Other 平台必须填写自定义名称"})
+        from .market_calculator import CURRENCIES
+        aliases = {"MY": "MY", "马来西亚": "MY", "Malaysia": "MY", "US": "US", "美国": "US", "USA": "US", "MX": "MX", "墨西哥": "MX", "Mexico": "MX"}
+        c = attrs.get("country_code", getattr(self.instance, "country_code", "") if "market" not in attrs else "")
+        if not c and "market" in attrs:
+            c = aliases.get(attrs["market"].strip(), "")
+        if c:
+            if c not in CURRENCIES:
+                raise serializers.ValidationError({"country_code": "支持MY/US/MX"})
+            currency = attrs.get("currency") or CURRENCIES[c]
+            if currency != CURRENCIES[c]:
+                raise serializers.ValidationError({"currency": "店铺国家与币种不一致"})
+            if self.instance and self.instance.store_products.exists() and self.instance.country_code not in ("", c):
+                raise serializers.ValidationError("已有售价的店铺不能直接换国，请新建店铺")
+            if self.instance and self.instance.store_products.filter(sale_price_myr__isnull=False).exists() and c != "MY":
+                raise serializers.ValidationError("已有MYR历史售价的店铺不能改为US/MX，请新建店铺")
+            attrs["country_code"], attrs["currency"] = c, currency
+        elif attrs.get("currency"):
+            raise serializers.ValidationError({"country_code": "先明确店铺国家再设置币种"})
+        if "fulfillment_capabilities" in attrs:
+            capabilities = attrs["fulfillment_capabilities"]
+            if not isinstance(capabilities, list) or any(x not in ["seller_shipping", "platform_label_standard", "platform_collection", "platform_warehouse"] for x in capabilities):
+                raise serializers.ValidationError({"fulfillment_capabilities": "履约能力无效"})
+            if c == "MX" and "platform_warehouse" in capabilities:
+                raise serializers.ValidationError("墨西哥平台仓未核验，不可确认开通")
+            request = self.context.get("request")
+            if not request or not request.user.is_superuser:
+                raise serializers.ValidationError("只有主账号可确认店铺履约资格")
         return attrs
 
     class Meta(ScopedSerializer.Meta):
@@ -1777,7 +1819,8 @@ class ReplenishmentRecommendationSerializer(ScopedSerializer):
 
 
 class StoreProductSerializer(OrganizationValidationMixin, ScopedSerializer):
-    sale_price_myr = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'))
+    sale_price_myr = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    price_amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
     commission_override_percent = serializers.DecimalField(max_digits=6, decimal_places=2, min_value=Decimal('0'), max_value=Decimal('100'), required=False, allow_null=True)
     store_name = serializers.CharField(source="store.name", read_only=True)
     external_sku_code = serializers.CharField(required=False, allow_blank=True, default="")
@@ -1791,6 +1834,31 @@ class StoreProductSerializer(OrganizationValidationMixin, ScopedSerializer):
     def validate(self, attrs):
         self.require_same_organization(attrs.get("store", getattr(self.instance, "store", None)), "store")
         self.require_same_organization(attrs.get("sku", getattr(self.instance, "sku", None)), "sku")
+        store = attrs.get("store", getattr(self.instance, "store", None))
+        from .market_calculator import CURRENCIES
+        c = store.country_code if store else ""
+        c = c or (getattr(self.instance, "country", "") if self.instance else "") or "MY"  # Legacy MY endpoint, never inferred for US/MX.
+        currency = CURRENCIES.get(c)
+        if attrs.get("country", c) != c or attrs.get("currency", currency) != currency:
+            raise serializers.ValidationError("售价国家／币种与店铺不一致")
+        legacy = attrs.get("sale_price_myr")
+        value = attrs.get("price_amount")
+        if c != "MY" and legacy is not None:
+            raise serializers.ValidationError({"sale_price_myr": "此字段只接受马来西亚MYR售价"})
+        if c == "MY":
+            if legacy is not None and value is not None and value != legacy:
+                raise serializers.ValidationError("MY新旧售价字段不一致")
+            value = value if value is not None else legacy
+            if value is None and self.instance:
+                value = self.instance.price_amount if self.instance.price_amount is not None else self.instance.sale_price_myr
+            if value is not None:
+                attrs["sale_price_myr"] = value
+        else:
+            value = value if value is not None else (self.instance.price_amount if self.instance else None)
+            attrs["sale_price_myr"] = None
+        if value is None:
+            raise serializers.ValidationError({"price_amount": "请填写店铺售价，允许明确填0"})
+        attrs["country"], attrs["currency"], attrs["price_amount"] = c, currency, value
         return attrs
 
     class Meta(ScopedSerializer.Meta):

@@ -361,7 +361,14 @@
     }
 
     async listInternalAccounts() {
-      return this.request('/internal-accounts/');
+      return this.request('/internal-accounts/?employment=all');
+    }
+
+    async accountDeparturePreview(id) { return this.request('/internal-accounts/' + encodeURIComponent(id) + '/departure-preview/'); }
+    async transitionAccount(id, action, payload, key) {
+      return this.request('/internal-accounts/' + encodeURIComponent(id) + '/' + action + '/', {
+        method: 'POST', body: payload, headers: { 'Idempotency-Key': key }
+      });
     }
 
     async listPurchaseMembers() {
@@ -905,7 +912,7 @@
         const items = (product.storeListings || []).filter(function (listing) {
           return listing.salePrice !== '' && ((listing.skuId && String(requestedSku.id) === String(listing.skuId)) || (!listing.skuId && requestedSku.code === String(listing.skuCode || '').trim()));
         }).map(function (listing) {
-          return { store: listing.store, sale_price_myr: listing.salePrice, product_url: listing.productUrl || '',
+          return { store: listing.store, ...(listing.currency && listing.currency !== 'MYR' ? { price_amount: listing.salePrice, currency: listing.currency } : { sale_price_myr: listing.salePrice }), product_url: listing.productUrl || '',
             commission_override_percent: listing.commission === '' ? null : listing.commission,
             include_in_list_calculation: listing.include !== false };
         });

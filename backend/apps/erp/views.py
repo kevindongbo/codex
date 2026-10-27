@@ -604,24 +604,8 @@ def _require_owner(request):
 
 
 def _account_payload(membership):
-    user = membership.user
-    return {
-        "id": str(membership.pk),
-        "user_id": user.pk,
-        "username": user.get_username(),
-        "display_name": membership.display_name or user.get_username(),
-        "role": membership.role,
-        "active": bool(membership.active and user.is_active),
-        "permissions": sorted(membership_permissions(membership)),
-        "warehouse_ids": [str(pk) for pk in membership.authorized_warehouses.values_list("pk", flat=True)],
-        "warehouses": [
-            {"id": str(warehouse.pk), "name": warehouse.name, "code": warehouse.code}
-            for warehouse in membership.authorized_warehouses.order_by("code", "id")
-        ],
-        "is_owner": bool(user.is_superuser),
-        "last_login": user.last_login,
-        "created_at": membership.created_at,
-    }
+    from .account_lifecycle import payload
+    return payload(membership)
 
 
 @api_view(["GET", "POST"])
@@ -631,8 +615,24 @@ def internal_accounts(request):
         memberships = Membership.objects.filter(organization=organization).select_related("user").order_by(
             "user__is_superuser", "user__username", "id"
         )
+        employment = request.query_params.get("employment", "employed")
+        active = request.query_params.get("active", "all")
+        if employment not in ("employed", "departed", "all") or active not in ("true", "false", "all"):
+            raise ValidationError("人员筛选条件无效")
+        all_members = list(memberships)
+        counts = {"employed": sum(m.employment_status == "employed" for m in all_members if not m.user.is_superuser),
+                  "departed": sum(m.employment_status == "departed" for m in all_members if not m.user.is_superuser),
+                  "disabled": sum(m.employment_status == "employed" and not (m.active and m.user.is_active) for m in all_members if not m.user.is_superuser)}
+        if employment != "all":
+            memberships = memberships.filter(employment_status=employment)
+        if active != "all":
+            memberships = memberships.filter(active=(active == "true"))
+        search = request.query_params.get("search", "").strip()
+        if search:
+            memberships = memberships.filter(Q(display_name__icontains=search) | Q(user__username__icontains=search))
         return Response({
             "permission_catalog": PERMISSION_CATALOG,
+            "counts": counts,
             "roles": {key: value for key, value in Membership.Role.choices},
             "warehouses": [
                 {"id": str(warehouse.pk), "name": warehouse.name, "code": warehouse.code, "active": warehouse.active}
@@ -685,74 +685,6 @@ def internal_accounts(request):
     return Response(_account_payload(membership), status=status.HTTP_201_CREATED)
 
 
-@api_view(["PATCH", "DELETE"])
-def internal_account_detail(request, membership_id):
-    organization = _require_owner(request)
-    try:
-        membership = Membership.objects.select_related("user").get(pk=membership_id, organization=organization)
-    except (Membership.DoesNotExist, ValueError) as exc:
-        raise NotFound("子账号不存在") from exc
-    if membership.user.is_superuser:
-        raise PermissionDenied("主账号不能在此处修改，请使用主账号安全设置")
-    if request.method == "DELETE":
-        membership.active = False
-        membership.user.is_active = False
-        membership.active = False
-        membership.save(update_fields=["active", "updated_at"])
-        membership.user.save(update_fields=["is_active"])
-        write_audit(
-            organization=organization,
-            actor=request.user,
-            action="account.disable",
-            instance=membership,
-            after={"username": membership.user.username, "active": False},
-        )
-        bump_sync_revision(organization_id=organization.pk)
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-    serializer = InternalAccountSerializer(data=request.data, partial=True)
-    serializer.is_valid(raise_exception=True)
-    data = serializer.validated_data
-    if "username" in data and data["username"] != membership.user.username:
-        if get_user_model().objects.exclude(pk=membership.user_id).filter(username=data["username"]).exists():
-            raise ValidationError({"username": "该账号名已被使用"})
-        membership.user.username = data["username"]
-    if "password" in data:
-        try:
-            validate_password(data["password"], membership.user)
-        except DjangoValidationError as exc:
-            raise ValidationError({"password": list(exc.messages)}) from exc
-        membership.user.set_password(data["password"])
-    if "active" in data:
-        membership.active = data["active"]
-        membership.user.is_active = data["active"]
-    if "permissions" in data:
-        membership.permissions = data["permissions"]
-    if "display_name" in data:
-        membership.display_name = data["display_name"].strip()
-    if "role" in data:
-        membership.role = data["role"]
-        if "permissions" not in data:
-            membership.permissions = []
-    with transaction.atomic():
-        if "warehouse_ids" in data:
-            warehouses = list(Warehouse.objects.filter(organization=organization, pk__in=data["warehouse_ids"]))
-            if len(warehouses) != len(set(data["warehouse_ids"])):
-                raise ValidationError({"warehouse_ids": "存在不属于当前组织的仓库。"})
-            membership.authorized_warehouses.set(warehouses)
-        membership.user.save()
-        membership.save()
-        write_audit(
-            organization=organization,
-            actor=request.user,
-            action="account.update",
-            instance=membership,
-            after={"username": membership.user.username, "display_name": membership.display_name, "role": membership.role, "permissions": sorted(membership_permissions(membership)), "warehouse_ids": [str(item.pk) for item in membership.authorized_warehouses.all()], "active": membership.active},
-        )
-        bump_sync_revision(organization_id=organization.pk)
-    return Response(_account_payload(membership))
-
-
 @api_view(["GET"])
 @permission_classes([OrganizationRolePermission])
 def purchase_members(request):
@@ -762,6 +694,7 @@ def purchase_members(request):
         organization=organization,
         active=True,
         user__is_active=True,
+        employment_status="employed",
     ).select_related("user").order_by("display_name", "user__username", "id")
     return Response([
         {
@@ -775,6 +708,10 @@ def purchase_members(request):
 
 
 class InternalTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        from .authentication import issue_refresh
+        return issue_refresh(user)
     default_error_messages = {
         "no_active_account": "账号名或密码错误，或账号已被停用",
     }
@@ -803,7 +740,8 @@ def verify_owner_login(request):
         code=request.data.get("code"),
         purpose=OwnerEmailChallenge.Purpose.LOGIN,
     )
-    refresh = RefreshToken.for_user(user)
+    from .authentication import issue_refresh
+    refresh = issue_refresh(user)
     return Response({"refresh": str(refresh), "access": str(refresh.access_token)})
 
 
@@ -1652,7 +1590,37 @@ class SKUViewSet(OrganizationScopedViewSet):
         rate_cny = working.manual_cny_per_myr if working and working.rate_mode == 'manual' else (snapshot.myr_cny if snapshot else None)
         rate_usd = working.manual_usd_per_myr if working and working.rate_mode == 'manual' else (snapshot.myr_usd if snapshot else None)
         metadata = {"store": str(item.store_id), "store_name": item.store.name, "sale_price": str(item.sale_price_myr),
-                    "commission_percent": str(commission) if commission is not None else None}
+                    "commission_percent": str(commission) if commission is not None else None, "currency": "MYR", "country": "MY"}
+        if item.country and item.country != "MY":
+            detail = {**metadata, "sale_price": str(item.price_amount), "currency": item.currency, "country": item.country,
+                    "calculable": False, "missing": ["请在" + item.country + "试算中选择有效物流、税务及汇率"],
+                    "gross_profit": None, "gross_margin": None, "break_even_roi": None}
+            from .models import MarketSnapshot
+            profile = sku.market_profiles.filter(country=item.country).first()
+            commission = item.commission_override_percent
+            if commission is None and profile and profile.profile.get("affiliate_rate") is not None:
+                commission = Decimal(profile.profile["affiliate_rate"])
+            detail["commission_percent"] = str(commission) if commission is not None else None
+            snapshots = MarketSnapshot.objects.filter(organization=sku.organization, country=item.country, kind="plan",
+                payload__input__store_id=str(item.store_id)).order_by("-created_at")[:100]
+            for saved in snapshots:
+                raw = saved.payload["input"]
+                matched = next((i for i in raw["items"] if str(i.get("sku_id")) == str(sku.pk)), None)
+                if not matched:
+                    continue
+                if (Decimal(matched["unit_price"]) != item.price_amount
+                        or commission is None or Decimal(matched["affiliate_rate"]) != commission
+                        or cost is None or Decimal(matched["product_cost_cny"]) != cost):
+                    detail["missing"] = ["售价、成本或佣金已变更，请重新测算保存"]
+                    return detail
+                result = next(i for i in saved.payload["result"]["items"] if i["client_item_id"] == matched["client_item_id"])
+                from .market_calculator import money as market_money
+                detail.update(calculable=True, missing=[], gross_profit=str(market_money(Decimal(result["gross_profit"]) / matched["quantity"])),
+                    gross_margin=result["gross_margin"], break_even_roi=result["break_even_roi"],
+                    rule_version=saved.payload["result"]["context"]["rule_version"], snapshot_id=str(saved.pk),
+                    calculation_mode="merchant_scenario", saved_at=saved.created_at.isoformat())
+                return detail
+            return detail
         required = {
             "类目": sku.category_code,
             "包装重量": sku.packed_weight_g,
@@ -1682,7 +1650,7 @@ class SKUViewSet(OrganizationScopedViewSet):
             return {**metadata, "missing": ["有效类目规则"], "calculable": False}
         return {
             "store": str(item.store_id), "store_name": item.store.name, "sale_price": str(item.sale_price_myr),
-            "commission_percent": str(commission), "gross_profit": result["gross_profit"],
+            "currency": "MYR", "country": "MY", "commission_percent": str(commission), "gross_profit": result["gross_profit"],
             "gross_margin": result["gross_margin"], "break_even_roi": result["break_even_roi"],
             "missing": [], "calculable": True, "breakdown": result["breakdown"], "rule_version": result["rule_version"],
         }
@@ -1699,10 +1667,12 @@ class SKUViewSet(OrganizationScopedViewSet):
             calculated = [item for item in details if item["calculable"]]
             def bounds(field):
                 source = details if field == 'sale_price' else calculated
+                if len({item.get("currency", "MYR") for item in source}) > 1:
+                    return None
                 values = [Decimal(item[field]) for item in source if item.get(field) is not None]
                 return {"min": str(min(values)), "max": str(max(values))} if values else None
             response.append({"sku": str(sku.pk), "code": sku.code, "stores": details, "calculable_store_count": len(calculated),
-                             "incomplete_store_count": len(details) - len(calculated), "sale_price": bounds("sale_price"),
+                             "incomplete_store_count": len(details) - len(calculated), "currency": details[0].get("currency", "MYR") if details and len({i.get("currency", "MYR") for i in details}) == 1 else None, "sale_price": bounds("sale_price"),
                              "gross_profit": bounds("gross_profit"), "gross_margin": bounds("gross_margin"),
                              "break_even_roi": bounds("break_even_roi"), "exchange_snapshot": str(snapshot.pk) if snapshot else None,
                              "rule_version": calculated[0]["rule_version"] if calculated else None,
@@ -1826,7 +1796,7 @@ class PurchaseOrderViewSet(OrganizationScopedViewSet):
         try:
             input_serializer = PurchaseOrderEditInputSerializer(
                 data=request.data,
-                context=self.get_serializer_context(),
+                context={**self.get_serializer_context(), "purchase_order": self.get_object()},
             )
             input_serializer.is_valid(raise_exception=True)
             _require_warehouse_access(

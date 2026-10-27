@@ -1063,3 +1063,35 @@ body.team-readonly [data-team-write] { opacity: .5; pointer-events: none; }
   .confirm-bar { align-items: stretch; flex-direction: column; }
   .confirm-bar div { justify-content: flex-end; }
 }
+
+.account-lifecycle-dialog { border:1px solid #cfdce6; border-radius:16px; padding:24px; width:min(560px,calc(100vw - 32px)); max-height:85vh; overflow:auto; color:#17334c; }
+.account-lifecycle-dialog::backdrop { background:#14283c66; }
+.account-lifecycle-dialog label { display:grid; gap:8px; margin:16px 0; }
+.account-lifecycle-dialog textarea { min-height:80px; }
+.account-row > div:first-child { min-width:0; overflow-wrap:anywhere; }
+.account-row details { margin-top:10px; }
+@media(max-width:600px) { .account-row { flex-direction:column; align-items:stretch; } .account-row .inline-actions { flex-wrap:wrap; } }
+
+.market-selector { display:flex; align-items:center; flex-wrap:wrap; gap:20px; padding:20px; margin-bottom:20px; }
+.market-selector label { display:flex; align-items:center; gap:12px; font-weight:700; }
+.market-active > .profit-view-page { display:none !important; }
+.market-profit-panel { padding:24px; }
+.market-profit-panel h1 { margin-top:0; }
+.market-profit-panel p { line-height:1.7; overflow-wrap:anywhere; }
+.market-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; margin:20px 0; }
+.market-grid label { display:flex; flex-direction:column; gap:8px; min-width:0; }
+.market-grid input, .market-grid select { width:100%; min-width:0; }
+.market-item { border:1px solid #d8e3eb; border-radius:14px; padding:20px; margin:20px 0; }
+.market-item h3 { margin-top:0; }
+.market-actions, .market-checks { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin:16px 0; }
+.market-check { display:flex; align-items:flex-start; gap:8px; }
+.market-check input { width:auto; min-width:18px; }
+.market-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.market-metrics div { padding:18px; background:#eef7f6; border-radius:12px; }
+.market-metrics strong, .market-metrics small { display:block; margin-top:6px; }
+.market-error { color:#a52a2a; }
+#marketResults { margin:24px 0; }
+#marketResults table { width:100%; table-layout:fixed; margin:12px 0; }
+#marketResults td { overflow-wrap:anywhere; padding:10px; }
+@media(max-width:1100px) { .market-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:600px) { .market-grid, .market-metrics { grid-template-columns:1fr; } .market-profit-panel, .market-item { padding:14px; } .market-selector label { flex-wrap:wrap; } .market-actions > * { max-width:100%; } }

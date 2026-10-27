@@ -34,6 +34,9 @@ def ensure_internal_organization(owner):
             name="默认仓",
             country="CN",
         )
+    # Bootstrap and lifecycle mutations share this lock. Two first owner
+    # requests must not race to insert the same owner membership.
+    organization = Organization.objects.select_for_update().get(pk=organization.pk)
     membership = Membership.objects.filter(organization=organization, user=owner).first()
     if membership is None:
         Membership.objects.create(
@@ -57,4 +60,5 @@ def active_internal_membership(user):
         organization=organization,
         user=user,
         active=True,
+        employment_status="employed",
     ).select_related("organization", "user").first()

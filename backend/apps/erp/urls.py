@@ -2,6 +2,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from . import views
+from . import account_lifecycle
 
 router = DefaultRouter()
 router.register("organizations", views.OrganizationViewSet, basename="organization")
@@ -47,6 +48,7 @@ router.register("ai-invocations", views.AIInvocationLogViewSet, basename="ai-inv
 router.register("ai-recommendations", views.AIRecommendationViewSet, basename="ai-recommendation")
 
 urlpatterns = [
+    path("profit-calculator/v2/", include("apps.erp.market_urls")),
     path("scheduling/", include("apps.erp.scheduling_urls")),
     path("health/", views.health, name="health"),
     path("profit-calculator/config/", views.profit_calculator_config, name="profit-calculator-config"),
@@ -63,7 +65,10 @@ urlpatterns = [
     path("product-selection/keywords/", views.ProductSelectionKeywordView.as_view(), name="product-selection-keywords"),
     path("product-selection/report/", views.ProductSelectionReportView.as_view(), name="product-selection-report"),
     path("internal-accounts/", views.internal_accounts, name="internal-accounts"),
-    path("internal-accounts/<uuid:membership_id>/", views.internal_account_detail, name="internal-account-detail"),
+    path("internal-accounts/<uuid:membership_id>/", account_lifecycle.detail, name="internal-account-detail"),
+    path("internal-accounts/<uuid:membership_id>/departure-preview/", account_lifecycle.departure_preview),
+    path("internal-accounts/<uuid:membership_id>/archive/", account_lifecycle.archive),
+    path("internal-accounts/<uuid:membership_id>/restore/", account_lifecycle.restore),
     path("purchase-members/", views.purchase_members, name="purchase-members"),
     path(
         "replenishment/recommendations/",

@@ -29,6 +29,9 @@ class VisionTransportTests(SimpleTestCase):
         self.private_root.enable()
         self.addCleanup(self.private_root.disable)
         Image.new('RGB', (10, 10)).save(Path(folder.name) / 'test.png')
+        account = patch('apps.erp.timetable_recognition.recognition_account_active', return_value=True)
+        account.start()
+        self.addCleanup(account.stop)
         self.provider = SimpleNamespace(enabled=True, organization_id=1,
             api_base_url='https://vision.example/v1', model_name='vision-test',
             api_key_encrypted='test-encrypted', default_parameters={}, timeout_seconds=45)

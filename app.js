@@ -18,6 +18,7 @@ const MOVEMENT_LABELS = {
 const RUNTIME_CONFIG = Object.assign({ mode: 'local', apiBase: '/api', allowLocalFallback: false }, globalThis.DONGBO_CONFIG || {});
 const TEAM_MODE = RUNTIME_CONFIG.mode === 'team';
 const teamGateway = TEAM_MODE && globalThis.DongboTeam ? new globalThis.DongboTeam.TeamGateway(RUNTIME_CONFIG) : null;
+if (globalThis.DongboProfitCalculator) globalThis.DongboProfitCalculator.bindGateway(teamGateway);
 
 function emptyState() {
   return {
@@ -1130,14 +1131,43 @@ function renderInternalAccountManager() {
   $('#internalAccountPermissions').innerHTML = permissions.map(function (key) {
     return '<label><input type="checkbox" value="' + escapeHtml(key) + '" />' + escapeHtml(ownerPermissionCatalog[key]) + '</label>';
   }).join('');
-  $('#internalAccountRows').innerHTML = internalAccounts.length ? internalAccounts.map(function (account) {
-    const status = account.active ? '已启用' : '已停用';
-    const access = (account.permissions || []).map(function (key) { return ownerPermissionCatalog[key] || key; }).join('、') || '仅查看';
-    const warehouseNames = (account.warehouses || []).map(function (warehouse) { return warehouse.name; }).join('、') || (account.role === 'admin' ? '全部仓库' : '未授权仓库');
-    return '<div class="account-row"><div><strong>' + escapeHtml(account.display_name || account.username) + '</strong><small>' + escapeHtml('账号：' + account.username + ' · ' + (roleCatalog[account.role] || account.role) + ' · ' + status + ' · 仓库：' + warehouseNames + ' · ' + access) + '</small></div><div class="inline-actions">' +
-      '<button class="button tiny secondary" type="button" data-account-action="edit" data-account-id="' + escapeHtml(account.id) + '">编辑</button>' +
-      '<button class="button tiny ' + (account.active ? 'danger-outline' : 'secondary') + '" type="button" data-account-action="toggle" data-account-id="' + escapeHtml(account.id) + '">' + (account.active ? '停用' : '启用') + '</button></div></div>';
-  }).join('') : '<p class="session-help">还没有子账号。新增后成员可直接登录，无需创建组织。</p>';
+  renderInternalAccountRows();
+}
+
+let accountLifecyclePending = null;
+function renderInternalAccountRows() {
+  const filter = $('#internalAccountFilter').value;
+  const search = $('#internalAccountSearch').value.trim().toLowerCase();
+  const employed = internalAccounts.filter(a => a.employment_status !== 'departed');
+  $('#internalAccountCounts').textContent = '在职 ' + employed.length + ' · 已停用 ' + employed.filter(a => !a.active).length + ' · 已离职 ' + (internalAccounts.length - employed.length);
+  const accounts = internalAccounts.filter(function(a) {
+    return (filter === 'all' || (filter === 'departed' ? a.employment_status === 'departed' : a.employment_status !== 'departed' && (filter !== 'disabled' || !a.active))) &&
+      ((a.display_name || '') + ' ' + a.username).toLowerCase().includes(search);
+  });
+  $('#internalAccountRows').innerHTML = accounts.map(function(account) {
+    const departed = account.employment_status === 'departed';
+    const status = departed ? '已离职' : (account.active ? '在职 · 已启用' : '在职 · 已停用');
+    const warehouses = (account.warehouses || []).map(w => w.name).join('、') || (account.role === 'admin' ? '全部仓库' : '未授权仓库');
+    const access = (account.permissions || []).map(key => ownerPermissionCatalog[key] || key).join('、');
+    const button = (action, label) => '<button type="button" class="button tiny secondary" data-account-action="' + action + '" data-account-id="' + escapeHtml(account.id) + '">' + label + '</button>';
+    return '<div class="account-row"><div><strong>' + escapeHtml(account.display_name || account.username) + '</strong><small>' + escapeHtml(account.username + ' · ' + (ownerRoleCatalog[account.role] || account.role) + ' · ' + status) + '</small>' +
+      (account.needs_password_reset ? '<p>恢复后待设置新密码、审核权限并启用</p>' : '') +
+      '<details><summary>仓库与权限（' + (account.permissions || []).length + '项）</summary><small>' + escapeHtml(warehouses + ' · ' + access) + '</small></details></div><div class="inline-actions">' +
+      (departed ? button('restore', '恢复为在职') : button('edit', '编辑') + button('toggle', account.active ? '停用' : '启用') + button('archive', '移入已离职')) + '</div></div>';
+  }).join('') || '<p>没有符合条件的人员。</p>';
+}
+async function openAccountLifecycle(account, action) {
+  const preview = action === 'archive' ? await teamGateway.accountDeparturePreview(account.id) : account;
+  accountLifecyclePending = { account: preview, action: action, key: crypto.randomUUID() };
+  $('#accountLifecycleTitle').textContent = (action === 'archive' ? '移入已离职：' : '恢复为在职：') + (account.display_name || account.username);
+  $('#accountLifecycleImpact').textContent = action === 'archive'
+    ? preview.message + ' 未完成采购：' + preview.purchase_orders + '；未来排班格：' + preview.future_schedule_cells + '。'
+    : '恢复后仍停用，仅保留查看权限，仓库授权及排班参与不会自动恢复。请设置新密码、审核权限后启用。';
+  $('#accountDepartureDateLabel').hidden = action !== 'archive';
+  $('#accountDepartureDate').value = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  $('#accountDepartureReason').value = '';
+  $('#accountLifecycleError').textContent = '';
+  $('#accountLifecycleDialog').showModal();
 }
 
 async function openInternalAccountManager() {
@@ -1825,9 +1855,9 @@ function renderProducts() {
     else if (teamCapabilityAllowed('catalog')) actions += rowButton('delete-product', product.id, '删除/停用', 'danger');
     const detail = (summary.stores || []).map(function (store) {
       return '<article class="store-profit-card"><strong>' + escapeHtml(store.store_name) + '</strong>' +
-        (store.calculable ? '<span>售价 RM' + escapeHtml(store.sale_price) + ' · 毛利 RM' + escapeHtml(store.gross_profit) + '</span><span>毛利率 ' + escapeHtml(store.gross_margin) + '% · ROI ' + escapeHtml(store.break_even_roi == null ? '不可盈利' : store.break_even_roi) + '</span>' : '<span>待完善：' + escapeHtml((store.missing || []).join('、')) + '</span>') + '</article>';
+        (store.calculable ? '<span>' + escapeHtml(store.currency || 'MYR') + ' 售价 ' + escapeHtml(store.sale_price) + ' · 毛利 ' + escapeHtml(store.gross_profit) + (store.calculation_mode === 'merchant_scenario' ? '（商家情景快照）' : '') + '</span><span>毛利率 ' + escapeHtml(store.gross_margin) + '% · ROI ' + escapeHtml(store.break_even_roi == null ? '不可盈利' : store.break_even_roi) + '</span>' : '<span>售价 ' + escapeHtml((store.currency || 'MYR') + ' ' + store.sale_price) + ' · 待完善：' + escapeHtml((store.missing || []).join('、')) + '</span>') + '</article>';
     }).join('') || '<span>尚未配置参与试算的店铺售价。</span>';
-    return '<tr><td>' + productMedia(product) + '</td><td>' + metric(summary.sale_price, 'RM', '') + '</td><td>' + metric(summary.gross_profit, 'RM', '') + '</td><td>' + metric(summary.gross_margin, '', '%') + '</td><td>' + metric(summary.break_even_roi, '', '') + '</td>' +
+    return '<tr><td>' + productMedia(product) + '</td><td>' + metric(summary.sale_price, summary.currency || '', '') + '</td><td>' + metric(summary.gross_profit, summary.currency || '', '') + '</td><td>' + metric(summary.gross_margin, '', '%') + '</td><td>' + metric(summary.break_even_roi, '', '') + '</td>' +
       '<td><span class="stock-number ' + (available < product.safetyStock ? 'low' : 'instock') + '">' + available + '</span></td><td><div class="row-actions">' + actions + '</div></td></tr>' +
       (expandedProfitSkuIds.has(product.id) ? '<tr class="product-profit-detail"><td colspan="7"><div class="store-profit-grid">' + detail + '</div></td></tr>' : '');
   }).join('');
@@ -3412,7 +3442,9 @@ function importSelectionProduct(index) {
 }
 
 function render() {
+  if (globalThis.DongboProfitCalculator) globalThis.DongboProfitCalculator.bindGateway(teamGateway);
   if (globalThis.DongboScheduling) globalThis.DongboScheduling.mount(teamGateway, state.ui.module === 'scheduling');
+  if (globalThis.DongboMarketProfit) globalThis.DongboMarketProfit.mount(teamGateway);
   renderNavigation();
   renderSidebar();
   renderProductSummary();
@@ -3541,6 +3573,8 @@ function openStoreEditor(storeId) {
   $('#storeModalTitle').textContent = store ? '编辑店铺' : '新增店铺';
   $('#storeName').value = store ? store.name : ''; $('#storePlatform').value = store ? store.platform : 'TikTok Shop';
   $('#storeMarket').value = store ? store.market : '马来西亚'; $('#storeActive').value = store && store.is_active === false ? 'false' : 'true';
+  $('#storeSellerProgram').value = store && store.seller_program || '';
+  $$('#storeCapabilities input').forEach(input => { input.checked = Boolean(store && (store.fulfillment_capabilities || []).includes(input.value)); input.disabled = !(teamGateway && teamGateway.user && teamGateway.user.is_owner); });
   openModal('storeModal');
 }
 
@@ -3549,13 +3583,15 @@ async function saveStoreFromForm(event) {
   if (!TEAM_MODE) return showToast('店铺管理仅在团队服务器模式中使用。');
   const id = $('#storeEditId').value;
   const store = { name: $('#storeName').value, platform: $('#storePlatform').value, market: $('#storeMarket').value, is_active: $('#storeActive').value === 'true' };
+  store.seller_program = $('#storeSellerProgram').value.trim();
+  if (teamGateway.user && teamGateway.user.is_owner) store.fulfillment_capabilities = $$('#storeCapabilities input:checked').map(input => input.value);
   const saved = await executeTeamCommand(function () { return teamGateway.saveStore(store, id); }, id ? '店铺已更新。' : '店铺已创建。', 'store');
   if (saved) closeModal('storeModal');
 }
 function storeListingDraft(raw, sku) {
   return {
     id: raw && raw.id ? String(raw.id) : '', skuId: sku && sku.id ? String(sku.id) : '', skuCode: sku ? sku.code : '',
-    store: raw ? String(raw.store) : '', salePrice: raw && raw.sale_price_myr != null ? raw.sale_price_myr : '',
+    store: raw ? String(raw.store) : '', salePrice: raw && raw.price_amount != null ? raw.price_amount : (raw && raw.sale_price_myr != null ? raw.sale_price_myr : ''),
     productUrl: raw && raw.product_url || '', commission: raw && raw.commission_override_percent != null ? raw.commission_override_percent : '',
     include: !raw || raw.include_in_list_calculation !== false
   };
@@ -3571,11 +3607,11 @@ function renderProductStoreEditor() {
       const storeOptions = stores.filter(function (store) { return store.is_active !== false || String(store.id) === String(saved.store); }).map(function (store) { return '<option value="' + escapeHtml(String(store.id)) + '"' + (String(store.id) === String(saved.store) ? ' selected' : '') + '>' + escapeHtml(store.name + (store.is_active === false ? '（已停用）' : '')) + '</option>'; }).join('');
       const sku = draftProductSkus[skuIndex] || {};
       const store = stores.find(function (item) { return String(item.id) === String(saved.store); });
-      return '<div class="sku-editor-row store-listing-row" data-store-listing data-listing-id="' + escapeHtml(saved.id) + '" data-sku-id="' + escapeHtml(saved.skuId) + '" data-sku-code="' + escapeHtml(sku.code || '') + '">' +
+      return '<div class="sku-editor-row store-listing-row" data-store-listing data-listing-currency="' + escapeHtml((store && store.currency) || 'MYR') + '" data-listing-id="' + escapeHtml(saved.id) + '" data-sku-id="' + escapeHtml(saved.skuId) + '" data-sku-code="' + escapeHtml(sku.code || '') + '">' +
         '<p class="store-listing-summary" data-listing-summary>' + escapeHtml((sku.code || '选择 SKU') + ' · ' + (store ? store.name : '选择店铺')) + '</p>' +
         '<label>SKU<select data-listing-field="sku" required><option value="">选择 SKU</option>' + options + '</select></label>' +
         '<label>店铺<select data-listing-field="store" required><option value="">选择店铺</option>' + storeOptions + '</select></label>' +
-        '<label>售价（RM）<input data-listing-field="price" type="number" min="0" step="0.01" required value="' + escapeHtml(saved.salePrice) + '" /></label>' +
+        '<label>售价（' + escapeHtml((store && store.currency) || 'MYR') + '）<input data-listing-field="price" type="number" min="0" step="0.01" required value="' + escapeHtml(saved.salePrice) + '" /></label>' +
         '<label>手工佣金（%）<input data-listing-field="commission" type="number" min="0" max="100" step="0.01" value="' + escapeHtml(saved.commission) + '" placeholder="留空使用默认" /></label>' +
         '<label>商品链接<input data-listing-field="url" type="url" value="' + escapeHtml(saved.productUrl) + '" /></label>' +
         '<label class="checkbox-field"><input data-listing-field="include" type="checkbox"' + (saved.include ? ' checked' : '') + ' /><span><strong>参与列表试算</strong></span></label><button type="button" class="button tiny ghost" data-remove-store-listing>移除此店铺配置</button></div>';
@@ -3588,6 +3624,7 @@ function readStoreListingDrafts() {
     const sku = index === '' ? {} : (readProductSkuDrafts()[Number(index)] || {});
     return { id: row.dataset.listingId, skuId: sku.id || '', skuCode: sku.code || '', store: row.querySelector('[data-listing-field="store"]').value,
       salePrice: row.querySelector('[data-listing-field="price"]').value,
+      currency: ((state.stores || []).find(s => String(s.id) === row.querySelector('[data-listing-field="store"]').value) || {}).currency || 'MYR',
       commission: row.querySelector('[data-listing-field="commission"]').value,
       productUrl: row.querySelector('[data-listing-field="url"]').value.trim(),
       include: row.querySelector('[data-listing-field="include"]').checked };
@@ -3849,6 +3886,9 @@ async function openPurchaseEditor(existingOrder) {
   $('#purchasePurchaser').innerHTML = purchaseMembers.map(function (member) {
     return '<option value="' + escapeHtml(String(member.user_id)) + '">' + escapeHtml(member.display_name || member.username) + '</option>';
   }).join('') || '<option value="">当前操作员</option>';
+  if (existingOrder && existingOrder.purchaserId && !purchaseMembers.some(m => String(m.user_id) === String(existingOrder.purchaserId))) {
+    const option = new Option(existingOrder.purchaserName || '原采购人（已停用或离职）', existingOrder.purchaserId); $('#purchasePurchaser').add(option);
+  }
   $('#purchasePurchaser').value = existingOrder ? (existingOrder.purchaserId || operator) : operator;
   $('#purchaseModalTitle').textContent = existingOrder ? '编辑采购单' : '创建采购单';
   $('#purchaseSkuSearch').value = '';
@@ -5187,6 +5227,14 @@ function bindEvents() {
   if ($('#productStoreList')) $('#productStoreList').addEventListener('change', function (event) {
     const row = event.target.closest('[data-store-listing]');
     if (!row) return;
+    const selectedStore = (state.stores || []).find(s => String(s.id) === row.querySelector('[data-listing-field="store"]').value);
+    const priceInput = row.querySelector('[data-listing-field="price"]');
+    const nextCurrency = (selectedStore && selectedStore.currency) || 'MYR';
+    if (row.dataset.listingCurrency !== nextCurrency) {
+      priceInput.value = ''; row.querySelector('[data-listing-field="commission"]').value = '';
+      row.dataset.listingCurrency = nextCurrency; showToast('店铺币种已变化，请重新填写售价和佣金。');
+    }
+    priceInput.parentElement.firstChild.textContent = '售价（' + ((selectedStore && selectedStore.currency) || 'MYR') + '）';
     row.querySelector('[data-listing-summary]').textContent = ['sku', 'store'].map(function (field) {
       const select = row.querySelector('[data-listing-field="' + field + '"]');
       return select.selectedOptions[0].textContent;
@@ -5510,21 +5558,45 @@ function bindEvents() {
     const password = $('#internalAccountPassword').value;
     if (password) payload.password = password;
     try {
-      if (id) await teamGateway.updateInternalAccount(id, payload); else await teamGateway.createInternalAccount(payload);
+      if (id) { payload.revision = internalAccounts.find(a => a.id === id).revision; await teamGateway.updateInternalAccount(id, payload); } else await teamGateway.createInternalAccount(payload);
       await openInternalAccountManager();
       showToast(id ? '子账号设置已保存。' : '子账号已创建，可以直接登录。');
     } catch (error) { handleTeamError(error); }
+  });
+  $('#internalAccountSearch').addEventListener('input', renderInternalAccountRows);
+  $('#internalAccountFilter').addEventListener('change', renderInternalAccountRows);
+  $('#cancelAccountLifecycle').addEventListener('click', () => $('#accountLifecycleDialog').close());
+  $('#accountLifecycleForm').addEventListener('submit', async function(event) {
+    event.preventDefault();
+    if (!accountLifecyclePending) return;
+    const pending = accountLifecyclePending;
+    const body = { revision: pending.account.revision, reason: $('#accountDepartureReason').value.trim() };
+    if (pending.action === 'archive') body.departure_date = $('#accountDepartureDate').value;
+    const button = $('#confirmAccountLifecycle'); button.disabled = true;
+    try {
+      await teamGateway.transitionAccount(pending.account.id, pending.action, body, pending.key);
+      $('#accountLifecycleDialog').close();
+      await openInternalAccountManager();
+      purchaseMembers = [];
+      showToast(pending.action === 'archive' ? '人员已移入已离职，历史记录保留。' : '已恢复为在职停用，请设置新密码并审核权限。');
+    } catch (error) { $('#accountLifecycleError').textContent = error.message || '操作失败，请刷新后重试'; }
+    finally { button.disabled = false; }
   });
   $('#internalAccountRows').addEventListener('click', async function (event) {
     const button = event.target.closest('[data-account-action]');
     if (!button) return;
     const id = button.dataset.accountId;
+    const account = internalAccounts.find(item => item.id === id);
+    if (['archive', 'restore'].includes(button.dataset.accountAction) && account) {
+      try { await openAccountLifecycle(account, button.dataset.accountAction); } catch (error) { handleTeamError(error); }
+      return;
+    }
     if (button.dataset.accountAction === 'edit') return editInternalAccount(id);
     if (button.dataset.accountAction === 'toggle') {
       const account = internalAccounts.find(function (item) { return item.id === id; });
       if (!account) return;
       try {
-        await teamGateway.updateInternalAccount(id, { active: !account.active });
+        await teamGateway.updateInternalAccount(id, { active: !account.active, revision: account.revision });
         await openInternalAccountManager();
         showToast(account.active ? '子账号已停用。' : '子账号已重新启用。');
       } catch (error) { handleTeamError(error); }

@@ -159,6 +159,11 @@ def claim_job():
             if not TimetableRecognitionJob.objects.filter(pk=job_id).filter(eligible).exists():
                 continue
             imp = job.timetable_import
+            if not recognition_account_active(imp):
+                job.status, job.sanitized_error = 'failed', 'account_departed'
+                job.lease_until, job.lease_token = None, None
+                job.save()
+                continue
             if imp.state != 'draft' or imp.revision != job.input_revision or job.attempts >= 3:
                 job.status, job.sanitized_error = 'failed', 'stale_draft' if imp.revision != job.input_revision or imp.state != 'draft' else 'attempts_exhausted'
                 job.save(update_fields=['status', 'sanitized_error', 'updated_at'])
@@ -190,7 +195,16 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
+def recognition_account_active(imp):
+    from .models import Membership
+    from django.contrib.auth import get_user_model
+    return (get_user_model().objects.filter(pk=imp.owner_id, is_active=True).exists() and not Membership.objects.filter(
+        organization_id=imp.organization_id, user_id=imp.owner_id, employment_status='departed').exists())
+
+
 def invoke_vision(job):
+    if not recognition_account_active(job.timetable_import):
+        raise RecognitionError('account_departed')
     from PIL import Image, ImageOps
     provider = job.provider
     if not provider or not provider.enabled or provider.organization_id != job.organization_id:
@@ -268,7 +282,9 @@ def finish_job(job, grid=None, error=None):
     current = TimetableRecognitionJob.objects.select_for_update().get(pk=job.pk)
     if current.status != 'processing' or current.lease_token != job.lease_token or current.lease_until <= timezone.now():
         return False
-    if imp.state != 'draft' or imp.revision != job.input_revision:
+    if not recognition_account_active(imp):
+        error = RecognitionError('account_departed')
+    elif imp.state != 'draft' or imp.revision != job.input_revision:
         error = RecognitionError('stale_draft')
     if error:
         current.sanitized_error = error.code

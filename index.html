@@ -20,8 +20,8 @@
   <meta name="twitter:description" content="商品、多仓库存、智能补货、订单履约与数据分析一体化运营工作台。" />
   <meta name="twitter:image" content="https://dongbokeji.com/assets/dongbo-erp-mark.png" />
   <title>东铂跨境 · 跨境电商运营管理系统</title>
-  <link rel="stylesheet" href="styles.css?v=20261023-recognition-store-2" />
-  <link rel="stylesheet" href="scheduling.css?v=20261011-erp-optimization-1" />
+  <link rel="stylesheet" href="styles.css?v=20261027-account-market-1" />
+  <link rel="stylesheet" href="scheduling.css?v=20261027-account-market-1" />
 </head>
 <body>
   <header class="app-header">
@@ -145,7 +145,7 @@
       </section>
 
       <section class="sidebar-module" data-sidebar-module="profit">
-        <div class="sidebar-heading"><span>利润试算</span><small>TIKTOK SHOP MY</small></div>
+        <div class="sidebar-heading"><span>利润试算</span><small>TIKTOK SHOP · MY / US / MX</small></div>
         <nav class="sidebar-nav" aria-label="利润试算功能">
           <div class="sidebar-group">
             <p>结算测算</p>
@@ -800,8 +800,15 @@
           <label>店铺名称 <span>*</span><input id="storeName" required maxlength="160" /></label>
           <label>状态<select id="storeActive"><option value="true">启用</option><option value="false">停用</option></select></label>
           <label>平台<input id="storePlatform" value="TikTok Shop" /></label>
-          <label>市场<input id="storeMarket" value="马来西亚" /></label>
+          <label>市场<input id="storeMarket" list="storeMarkets" value="马来西亚" /><datalist id="storeMarkets"><option value="马来西亚"><option value="美国"><option value="墨西哥"></datalist></label>
         </div>
+        <label>卖家项目／主体（US/MX必填，仓库所在地不能代替主体身份）<input id="storeSellerProgram" maxlength="40" placeholder="例如：local／cross_border，按实际资格填写" /></label>
+        <fieldset id="storeCapabilities"><legend>主账号确认已开通的当地履约（不会修改平台店铺设置）</legend>
+          <label><input type="checkbox" value="seller_shipping" /> 当地仓自发货</label>
+          <label><input type="checkbox" value="platform_label_standard" /> 平台Standard面单</label>
+          <label><input type="checkbox" value="platform_collection" /> 平台揽收</label>
+          <label><input type="checkbox" value="platform_warehouse" /> 平台仓／FBT（MX待核验不可用）</label>
+        </fieldset>
         <div class="modal-actions"><button class="button secondary" type="button" data-close="storeModal">取消</button><button class="button primary" type="submit">保存店铺</button></div>
       </form>
     </section>
@@ -1307,7 +1314,21 @@
           <div class="permission-checklist" id="internalAccountPermissions"></div>
           <div class="modal-actions"><button class="button secondary" id="cancelInternalAccount" type="button">取消</button><button class="button primary" id="saveInternalAccount" type="submit">新增子账号</button></div>
         </form>
+        <div class="account-filters form-grid two">
+          <label>搜索人员<input id="internalAccountSearch" type="search" placeholder="姓名或账号" /></label>
+          <label>人员状态<select id="internalAccountFilter"><option value="employed">在职人员</option><option value="disabled">已停用</option><option value="departed">已离职</option><option value="all">全部</option></select></label>
+        </div>
+        <p id="internalAccountCounts" role="status"></p>
         <div class="account-list" id="internalAccountRows"></div>
+        <dialog id="accountLifecycleDialog" class="account-lifecycle-dialog" aria-labelledby="accountLifecycleTitle">
+          <form id="accountLifecycleForm">
+            <h2 id="accountLifecycleTitle"></h2><p id="accountLifecycleImpact"></p>
+            <label id="accountDepartureDateLabel">离职日期<input id="accountDepartureDate" type="date" /></label>
+            <label>原因（选填，仅主账号可见）<textarea id="accountDepartureReason" maxlength="500"></textarea></label>
+            <p id="accountLifecycleError" role="alert"></p>
+            <div class="modal-actions"><button type="button" class="button secondary" id="cancelAccountLifecycle">取消</button><button type="submit" class="button primary" id="confirmAccountLifecycle">确认</button></div>
+          </form>
+        </dialog>
       </section>
 
       <section id="integrationsPanel" hidden>
@@ -1359,10 +1380,11 @@
   <div class="toast" id="toast" role="status"></div>
 
   <script src="runtime-config.js?v=20260728-profit-calculator-server-1"></script>
-  <script src="team.js?v=20261023-recognition-store-2"></script>
-  <script src="profit-calculator.js?v=20261011-erp-optimization-1"></script>
-  <script src="scheduling.js?v=20261023-recognition-store-2"></script>
-  <script src="app.js?v=20261023-recognition-store-2"></script>
+  <script src="team.js?v=20261027-account-market-1"></script>
+  <script src="profit-calculator.js?v=20261027-account-market-1"></script>
+  <script src="scheduling.js?v=20261027-account-market-1"></script>
+  <script src="market-profit.js?v=20261027-account-market-1"></script>
+  <script src="app.js?v=20261027-account-market-1"></script>
 </body>
 </html>
 

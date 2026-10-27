@@ -1,6 +1,7 @@
 (function (root) {
   'use strict';
 
+  let sharedGateway = null, sharedIdentity = '', initialized = false, configPromise = null;
   const runtime = Object.assign({ apiBase: '/api' }, root.DONGBO_CONFIG || {});
   const fallbackTree = [
     { label: '箱包', children: [{ label: '女包', children: [
@@ -95,6 +96,11 @@
   }
 
   async function request(path, options) {
+    if (sharedGateway) {
+      if (!sharedGateway.accessToken && sharedGateway.refreshToken) await sharedGateway.refreshAccessToken();
+      if (!sharedGateway.accessToken) throw new Error('请先登录团队账号');
+      return sharedGateway.request(path, options);
+    }
     if (root.DongboTeam) return new root.DongboTeam.TeamGateway(runtime).request(path, options);
     const settings = Object.assign({ headers: { Accept: 'application/json' } }, options || {});
     if (settings.body && typeof settings.body !== 'string') {
@@ -723,7 +729,12 @@
     return config;
   }
 
-  async function loadConfig() {
+  function loadConfig() {
+    if (!configPromise) configPromise = loadConfigInternal().finally(function () { configPromise = null; });
+    return configPromise;
+  }
+
+  async function loadConfigInternal() {
     const failures = [];
     try {
       await loadStaticConfig();
@@ -981,6 +992,7 @@
         setGroupExpanded(group, total.getAttribute('aria-expanded') !== 'true');
       }
     });
+    initialized = true;
     loadConfig();
     updateBuyerShippingUi();
   }
@@ -993,7 +1005,14 @@
     strategyActivationPayload: strategyActivationPayload,
     advertisingRebateConfig: function (value) { return { advertising_rebate_percent: value == null || value === '' ? '0.00' : fixed(value) }; }
   };
-  root.DongboProfitCalculator = { loadCalculation: loadCalculation };
+  root.DongboProfitCalculator = { loadCalculation: loadCalculation, bindGateway: function (gateway) {
+    sharedGateway = gateway;
+    const identity = gateway && gateway.user ? String(gateway.user.id) : '';
+    if (identity !== sharedIdentity) {
+      sharedIdentity = identity;
+      if (identity && initialized) loadConfig();
+    }
+  } };
   if (!root.document) return;
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })(typeof window === 'undefined' ? globalThis : window);

@@ -41,6 +41,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "apps.erp.authentication.AccountWriteTransactionMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -102,6 +103,7 @@ USE_I18N = True
 USE_TZ = True
 INTERNAL_ORGANIZATION_NAME = os.getenv("INTERNAL_ORGANIZATION_NAME", "东铂跨境")
 INTERNAL_ORGANIZATION_SLUG = os.getenv("INTERNAL_ORGANIZATION_SLUG", "dongbo-internal")
+MARKET_V2_ENABLED = env_bool("MARKET_V2_ENABLED", True)
 OWNER_EMAIL_VERIFICATION_REQUIRED = env_bool("OWNER_EMAIL_VERIFICATION_REQUIRED")
 OWNER_EMAIL_CODE_TTL_SECONDS = int(os.getenv("OWNER_EMAIL_CODE_TTL_SECONDS", "600"))
 ALPHASHOP_ACCESS_KEY = os.getenv("ALPHASHOP_ACCESS_KEY", os.getenv("ALPHACLAW_ACCESS_KEY", "")).strip()
@@ -144,7 +146,7 @@ X_FRAME_OPTIONS = "DENY"
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "apps.erp.authentication.InternalJWTAuthentication",
-        "rest_framework.authentication.SessionAuthentication",
+        "apps.erp.authentication.InternalSessionAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",

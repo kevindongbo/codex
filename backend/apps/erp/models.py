@@ -67,7 +67,36 @@ class Membership(TimeStampedModel):
     class Meta:
         verbose_name = "成员关系"
         verbose_name_plural = "成员关系"
-        constraints = [models.UniqueConstraint(fields=["organization", "user"], name="uniq_org_user")]
+        constraints = [models.UniqueConstraint(fields=["organization", "user"], name="uniq_org_user"),
+                       models.CheckConstraint(condition=Q(employment_status="employed") | Q(active=False), name="departed_membership_disabled")]
+
+    employment_status = models.CharField(max_length=12, choices=[("employed", "在职"), ("departed", "已离职")], default="employed")
+    departed_at = models.DateTimeField(null=True, blank=True)
+    departure_date = models.DateField(null=True, blank=True)
+    departure_reason = models.CharField(max_length=500, blank=True)
+    departed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    restored_at = models.DateTimeField(null=True, blank=True)
+    restored_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    revision = models.PositiveBigIntegerField(default=1)
+
+
+class AccountSecurityState(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, primary_key=True, on_delete=models.CASCADE, related_name="account_security")
+    auth_version = models.PositiveBigIntegerField(default=0)
+    requires_password_reset = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class AccountLifecycleRequest(TimeStampedModel):
+    organization = models.ForeignKey(Organization, on_delete=models.PROTECT)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    operation = models.CharField(max_length=12)
+    key = models.CharField(max_length=100)
+    payload_hash = models.CharField(max_length=64)
+    response = models.JSONField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["organization", "actor", "operation", "key"], name="account_lifecycle_idempotency")]
 
 
 class OwnerEmailChallenge(TimeStampedModel):
@@ -198,6 +227,10 @@ class SKU(OrganizationScopedModel):
 
 
 class OwnStore(OrganizationScopedModel):
+    country_code = models.CharField(max_length=2, blank=True)
+    currency = models.CharField(max_length=3, blank=True)
+    seller_program = models.CharField(max_length=40, blank=True)
+    fulfillment_capabilities = models.JSONField(default=list, blank=True)
     name = models.CharField(max_length=160)
     platform_code = models.CharField(max_length=40, default="tiktok_shop")
     custom_platform_name = models.CharField(max_length=120, blank=True)
@@ -215,7 +248,10 @@ class StoreProduct(OrganizationScopedModel):
     external_listing_id = models.CharField(max_length=200, blank=True)
     store = models.ForeignKey(OwnStore, on_delete=models.PROTECT, related_name="store_products")
     sku = models.ForeignKey(SKU, on_delete=models.PROTECT, related_name="store_products")
-    sale_price_myr = models.DecimalField(max_digits=14, decimal_places=2)
+    sale_price_myr = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    price_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=3, blank=True)
+    country = models.CharField(max_length=2, blank=True)
     product_url = models.URLField(max_length=2000, blank=True)
     commission_override_percent = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     include_in_list_calculation = models.BooleanField(default=True)
@@ -1744,3 +1780,4 @@ class LocalImport(OrganizationScopedModel):
 from .scheduling_models import (ScheduleTerm, ScheduleParticipant, TimetableEvidence,
     TimetableImport, TimetableRecognitionJob, MemberWeekPlan, MemberWeekPlanVersion,
     WorkScheduleCell, ScheduleOverride, ScheduleMutation)
+from .market_models import MarketWorkspace, MarketStrategy, MarketSnapshot, SKUMarketProfile

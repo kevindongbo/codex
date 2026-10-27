@@ -17,7 +17,7 @@ from config.urls import urlpatterns as production_patterns
 from apps.erp.models import Organization, Membership, Warehouse, Product, SKU, OwnStore, StoreProduct, ProductImage, ExchangeRateSnapshot
 
 ROOT = Path(__file__).resolve().parents[4]
-FILES = {'index.html':'text/html', 'app.js':'text/javascript', 'team.js':'text/javascript', 'scheduling.js':'text/javascript',
+FILES = {'market-profit.js':'text/javascript', 'index.html':'text/html', 'app.js':'text/javascript', 'team.js':'text/javascript', 'scheduling.js':'text/javascript',
     'profit-calculator.js':'text/javascript', 'runtime-config.js':'text/javascript', 'styles.css':'text/css', 'scheduling.css':'text/css'}
 
 
