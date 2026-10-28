@@ -435,7 +435,7 @@ class PurchaseOrderSerializer(OrganizationValidationMixin, ScopedSerializer):
                 erp_memberships__employment_status="employed",
                 is_active=True,
             ).distinct()
-            if self.instance and self.instance.purchaser_id:
+            if isinstance(self.instance, PurchaseOrder) and self.instance.purchaser_id:
                 from django.db.models import Q
                 self.fields["purchaser"].queryset = get_user_model().objects.filter(
                     Q(pk__in=self.fields["purchaser"].queryset.values("pk")) | Q(pk=self.instance.purchaser_id))
