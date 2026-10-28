@@ -16,6 +16,9 @@ django.setup()
 from django.db import connection
 
 QUERIES = {
+    "products": "SELECT id, organization_id, name, status FROM erp_product ORDER BY id",
+    "skus": "SELECT id, organization_id, product_id, code, cost, currency, active FROM erp_sku ORDER BY id",
+    "stores": "SELECT id, organization_id, name, platform_code, market, is_active FROM erp_ownstore ORDER BY id",
     "users": "SELECT id, is_active FROM auth_user ORDER BY id",
     "members": "SELECT id, user_id, role, active FROM erp_membership ORDER BY id",
     "prices": "SELECT id, store_id, sku_id, sale_price_myr, commission_override_percent FROM erp_storeproduct ORDER BY id",

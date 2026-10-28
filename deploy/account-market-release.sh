@@ -145,6 +145,7 @@ health
 systemctl is-active --quiet "$service"
 systemctl is-active --quiet "$worker"
 verify_assets "$target"
+"$python" deploy/verify-dashboard-reads.py
 trap - ERR
 printf 'ACCOUNT / MARKET CODE, MIGRATIONS, HISTORY, SERVICES, ASSETS VERIFIED AT LOCAL NGINX ORIGIN\nSHA: %s\nBackup: %s\n' "$target" "$backup"
 printf 'US/MX merchant scenarios available when MARKET_V2_ENABLED=true; official leaf mappings, full carrier tariffs and real shop tax/eligibility remain gated. Signed-in acceptance is required.\n'

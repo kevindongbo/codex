@@ -39,6 +39,7 @@ if [[ "$1" == -c ]]; then
   if [[ "$2" == *current_user* ]]; then printf 'fixture_role\\n'; else read -r payload; [[ "$payload" == '{"status":"ok","database":"ok"}' ]]; fi
 elif [[ "\u0024{2:-}" == inventory ]]; then printf '{}' > "$3"
 elif [[ "\u0024{2:-}" == compare && "$HARNESS_SCENARIO" == compare ]]; then exit 73
+elif [[ "$1" == deploy/verify-dashboard-reads.py && "$HARNESS_SCENARIO" == dashboard ]]; then exit 74
 elif [[ "$*" == *'migrate --noinput'* && "$HARNESS_SCENARIO" == migrate ]]; then exit 71
 elif [[ "\u0024{2:-}" == grant && "$HARNESS_SCENARIO" == grant ]]; then exit 72
 fi
@@ -72,6 +73,6 @@ test('complete market release backs up, migrates, reconciles and verifies assets
 for(const [scenario,code] of [['backup',47],['switch',53],['build',61]]) test('pre-migration '+scenario+' failure restores prior services',()=>{
   const r=simulate(scenario); assert.equal(r.status,code,r.stderr+'\n'+r.events); assert.equal(r.sha,oldSha); assert.equal(r.active,'active'); assert.match(r.stdout,/PRE-MIGRATION CODE\/SERVICES RESTORED/);
 });
-for(const [scenario,code] of [['migrate',71],['grant',72],['compare',73],['restart',57],['health',1],['assets',1]]) test('post-migration '+scenario+' failure preserves new auth and holds maintenance',()=>{
+for(const [scenario,code] of [['migrate',71],['grant',72],['compare',73],['restart',57],['health',1],['assets',1],['dashboard',74]]) test('post-migration '+scenario+' failure preserves new auth and holds maintenance',()=>{
   const r=simulate(scenario); assert.equal(r.status,code,r.stderr+'\n'+r.events); assert.equal(r.sha,target); assert.equal(r.active,'inactive'); assert.match(r.stderr,/MAINTENANCE/); assert.doesNotMatch(r.stdout,/VERIFIED AT LOCAL NGINX ORIGIN/);
 });

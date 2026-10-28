@@ -1049,10 +1049,12 @@ function renderRuntimeState() {
     return;
   }
   const online = teamGateway.online !== false;
+  const loadErrors = teamGateway.loadErrors || [];
+  const incomplete = loadErrors.length > 0 || !teamGateway.stateLoaded;
   button.classList.toggle('offline', !online);
   const membership = teamGateway.memberships[0] || null;
   const warehouse = teamGateway.warehouses.find(function (item) { return String(item.id) === teamGateway.warehouseId; });
-  setText('#runtimeStateText', teamBusy ? '正在同步' : (online ? '团队已同步' : '离线只读'));
+  setText('#runtimeStateText', teamBusy ? '正在同步' : (incomplete ? '数据未完整加载' : (online ? '团队已同步' : '离线只读')));
   setText('#sidebarRuntimeTitle', membership ? membership.organization.name : '内部系统');
   setText('#sidebarRuntimeDetail', (warehouse ? warehouse.name : '未选仓库') + ' · ' + (teamGateway.user.is_owner ? '主账号' : '内部成员'));
   setText('#teamIdentity', (teamGateway.user.username || teamGateway.user.email || '内部账号'));
@@ -1064,7 +1066,15 @@ function renderRuntimeState() {
   $('#teamWarehouse').value = teamGateway.warehouseId;
   $('#ownerAccountActions').hidden = !teamGateway.user.is_owner;
   if ($('#openSelectionConfig')) $('#openSelectionConfig').hidden = !teamGateway.user.is_owner;
-  if (!online) {
+  if (incomplete) {
+    setText('#connectionBannerTitle', '数据未完整加载，请勿重复录入');
+    setText('#connectionBannerDetail', loadErrors.length
+      ? '以下接口读取失败：' + loadErrors.map(function (item) { return item.path + '（HTTP ' + item.status + '）'; }).join('、') + '。已显示成功读取及上次读取的数据；空白不代表原数据已删除。写入暂时停用，请重试。'
+      : '等待首次完整同步。当前数字不代表服务器实际记录数量。');
+    $('#retryConnection').hidden = false;
+    banner.classList.add('danger');
+    banner.hidden = false;
+  } else if (!online) {
     setText('#connectionBannerTitle', '团队服务器连接中断');
     setText('#connectionBannerDetail', '已保留上次同步的数据用于查看；所有写入已暂停，不会转存到本机。');
     $('#retryConnection').hidden = false;
@@ -1073,7 +1083,7 @@ function renderRuntimeState() {
   } else {
     banner.hidden = true;
   }
-  document.body.classList.toggle('team-readonly', !online || !teamGateway.canWrite());
+  document.body.classList.toggle('team-readonly', !online || incomplete || !teamGateway.canWrite());
   renderModeControls();
   renderMigrationPreview(pendingMigrationPreview);
 }

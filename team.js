@@ -110,6 +110,9 @@
       this.syncRevision = 0;
       this.warehouses = [];
       this.cache = {};
+      this.loadErrors = [];
+      this.stateLoaded = false;
+      this.nextLoadRetryAt = 0;
       this.pendingIdempotency = new Map();
       this.online = root.navigator ? root.navigator.onLine !== false : true;
       this.restoreSessionSelection();
@@ -149,6 +152,9 @@
       this.syncRevision = 0;
       this.warehouses = [];
       this.cache = {};
+      this.loadErrors = [];
+      this.stateLoaded = false;
+      this.nextLoadRetryAt = 0;
       this.pendingIdempotency.clear();
       try { root.sessionStorage.removeItem(SESSION_KEY); } catch (_) { /* noop */ }
     }
@@ -161,6 +167,10 @@
 
     async request(path, options) {
       const settings = Object.assign({ method: 'GET', auth: true, organization: true, retry: true }, options || {});
+      if (this.loadErrors.length && !['GET', 'HEAD', 'OPTIONS'].includes(settings.method.toUpperCase())
+          && !path.startsWith('/auth/')) {
+        throw new ApiError('数据未完整加载，写入已暂停。请先重新同步。', 409, null);
+      }
       const headers = Object.assign({ Accept: 'application/json' }, settings.headers || {});
       if (settings.auth && this.accessToken) headers.Authorization = 'Bearer ' + this.accessToken;
       if (settings.organization && this.organizationId) headers['X-Organization-ID'] = this.organizationId;
@@ -344,6 +354,9 @@
 
     async pollForUpdates() {
       if (!this.accessToken || this.online === false) return null;
+      if (this.loadErrors.length || !this.stateLoaded) {
+        return Date.now() >= this.nextLoadRetryAt ? this.loadState() : null;
+      }
       const revision = await this.loadSyncVersion();
       if (this.syncRevision && revision !== this.syncRevision) return this.loadState();
       this.syncRevision = revision;
@@ -351,6 +364,7 @@
     }
 
     canWrite() {
+      if (this.loadErrors.length) return false;
       return Boolean(this.user && (this.user.is_owner || this.permissions.some(function (item) { return item !== 'view'; })));
     }
 
@@ -453,7 +467,10 @@
         '/replenishment/recommendations/?warehouse=' + encodeURIComponent(this.warehouseId),
         '/stores/', '/store-products/', '/skus/profit-summary/'
       ];
-      const values = await Promise.all(paths.map((path) => this.listAll(path)).concat([
+      const keys = ['products', 'suppliers', 'purchaseOrders', 'balances', 'ledger', 'orders',
+        'shipments', 'returns', 'competitors', 'snapshots', 'transfers', 'replenishmentPolicies',
+        'replenishmentRecommendations', 'stores', 'storeProducts', 'profitSummaries', 'profitConfig', 'syncRevision'];
+      const results = await Promise.allSettled(paths.map((path) => this.listAll(path)).concat([
         this.request('/profit-calculator/config/').catch(function (error) {
           // Catalog editors can save SKU/store pricing without permission to
           // inspect profit rules. Keep only that optional directory empty.
@@ -461,6 +478,17 @@
           throw error;
         }), this.loadSyncVersion()
       ]));
+      this.loadErrors = results.flatMap((result, index) => result.status === 'rejected'
+        ? [{ path: paths[index] || (index === 16 ? '/profit-calculator/config/' : '/sync/version/'),
+          status: result.reason.status || 0, message: result.reason.message || '读取失败' }] : []);
+      this.nextLoadRetryAt = Date.now() + 15000;
+      // Never keep or publish a newly loaded partial state after authorization
+      // failure. Server/network failures may retain last-good collections, with
+      // a persistent warning and all writes disabled until a complete refresh.
+      const denied = results.find(result => result.status === 'rejected' && [401, 403].includes(result.reason.status));
+      if (denied) throw denied.reason;
+      const values = results.map((result, index) => result.status === 'fulfilled'
+        ? result.value : (this.cache[keys[index]] || (index === 16 ? { categories: [], category_tree: [] } : index === 17 ? this.syncRevision : [])));
       const raw = {
         products: values[0], suppliers: values[1], purchaseOrders: values[2],
         balances: values[3], ledger: values[4], orders: values[5], shipments: values[6],
@@ -469,7 +497,8 @@
         stores: values[13], storeProducts: values[14], profitSummaries: values[15], profitConfig: values[16]
       };
       this.cache = raw;
-      this.syncRevision = values[17] || this.syncRevision;
+      this.stateLoaded = true;
+      if (!this.loadErrors.length) this.syncRevision = values[17] || this.syncRevision;
       return this.adaptState(raw);
     }
 

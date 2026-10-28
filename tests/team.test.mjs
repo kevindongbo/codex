@@ -150,7 +150,7 @@ test('default buyer loads the complete catalog when only the optional profit rul
   assert.ok(calls.every(call => call.options.headers.Authorization === 'Bearer buyer-access'));
 });
 
-test('optional profit rule loading still reports authentication, server, and network failures', async () => {
+test('profit rule failures remain visible; authentication failure still rejects the load', async () => {
   for (const status of [401, 500, 0]) {
     const Team = await loadTeam(async (url) => {
       if (url === '/api/profit-calculator/config/') {
@@ -160,7 +160,12 @@ test('optional profit rule loading still reports authentication, server, and net
       return response(200, url === '/api/sync/version/' ? { revision: 1 } : []);
     });
     const gateway = new Team.TeamGateway({ apiBase: '/api' });
-    await assert.rejects(gateway.loadState(), error => error.status === status);
+    if (status === 401) await assert.rejects(gateway.loadState(), error => error.status === status);
+    else {
+      await gateway.loadState();
+      assert.equal(gateway.loadErrors[0].status, status);
+      assert.equal(gateway.canWrite(), false);
+    }
   }
 });
 
@@ -173,6 +178,50 @@ test('403 from a core catalog endpoint is never hidden by optional profit rule f
     const gateway = new Team.TeamGateway({ apiBase: '/api' });
     await assert.rejects(gateway.loadState(), error => error.status === 403);
   }
+});
+
+test('purchase outage preserves products and cached purchases, blocks writes, and retries without a revision change', async () => {
+  let failing = false;
+  const product = { id: 'p1', name: 'Existing', status: 'active', images: [], skus: [{id:'s1', code:'CAM', currency:'CNY', cost:'10'}] };
+  const Team = await loadTeam(async url => {
+    if (url === '/api/purchase-orders/' && failing) return response(500, {detail:'failed'});
+    if (url === '/api/products/') return response(200, [product]);
+    if (url === '/api/purchase-orders/') return response(200, [{id:'po1',number:'OLD',lines:[]}]);
+    if (url === '/api/sync/version/') return response(200, {revision:7});
+    return response(200, []);
+  });
+  const gateway = new Team.TeamGateway({apiBase:'/api'});
+  gateway.user = {is_owner:true};
+  gateway.accessToken = 'test';
+  await gateway.loadState();
+  failing = true;
+  const partial = await gateway.loadState();
+  assert.equal(partial.products[0].name, 'Existing');
+  assert.equal(gateway.cache.purchaseOrders[0].id, 'po1');
+  assert.equal(gateway.loadErrors[0].path, '/purchase-orders/');
+  assert.equal(gateway.canWrite(), false);
+  await assert.rejects(gateway.request('/orders/', {method:'POST',body:{}}), error => error.status === 409);
+  assert.equal(await gateway.pollForUpdates(), null);
+  failing = false;
+  gateway.nextLoadRetryAt = 0;
+  assert.ok(await gateway.pollForUpdates());
+  assert.equal(gateway.loadErrors.length, 0);
+  assert.equal(gateway.canWrite(), true);
+});
+
+test('first-load purchase failure cannot conceal successful catalog and stock reads', async () => {
+  const Team = await loadTeam(async url => {
+    if (url === '/api/purchase-orders/') return response(500, {detail:'failed'});
+    if (url === '/api/products/') return response(200, [{id:'p',name:'Camera',status:'active',skus:[{id:'s',code:'CAM',cost:'1'}]}]);
+    if (url === '/api/stock-balances/') return response(200, [{id:'b',sku:'s',warehouse:'w',on_hand:'17',reserved:'0'}]);
+    return response(200, []);
+  });
+  const gateway = new Team.TeamGateway({apiBase:'/api'});
+  const state = await gateway.loadState();
+  assert.equal(state.products.length, 1);
+  assert.equal(gateway.cache.balances[0].on_hand, '17');
+  assert.equal(gateway.loadErrors.length, 1);
+  assert.equal(gateway.canWrite(), false);
 });
 
 test('saving one product writes every requested SKU and retires removed SKUs safely', async () => {
