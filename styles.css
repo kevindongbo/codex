@@ -761,6 +761,7 @@ body.team-readonly [data-team-write] { opacity: .5; pointer-events: none; }
 .confirm-bar { position: fixed; left: 50%; bottom: 24px; z-index: 30; width: min(560px, calc(100% - 30px)); padding: 13px 15px; border: 1px solid rgba(255,255,255,.12); border-radius: 11px; color: white; background: var(--navy); box-shadow: 0 16px 42px rgba(15,39,64,.34); transform: translate(-50%, 120px); transition: .24s ease; display: flex; align-items: center; justify-content: space-between; gap: 15px; font-size: 11px; }
 .confirm-bar { z-index: 200; }
 .confirm-bar.show { transform: translate(-50%, 0); }
+.confirm-bar[aria-hidden="true"] { visibility:hidden; pointer-events:none; }
 .confirm-bar div { display: flex; gap: 6px; }
 .toast { position: fixed; left: 50%; bottom: 24px; z-index: 40; max-width: min(520px, calc(100% - 30px)); padding: 13px 18px; border-radius: 10px; color: white; background: var(--navy-strong); box-shadow: 0 16px 42px rgba(15,39,64,.34); transform: translate(-50%, 100px); opacity: 0; transition: .24s ease; text-align: center; font-size: 11px; }
 .toast { z-index: 210; }
@@ -1095,3 +1096,54 @@ body.team-readonly [data-team-write] { opacity: .5; pointer-events: none; }
 #marketResults td { overflow-wrap:anywhere; padding:10px; }
 @media(max-width:1100px) { .market-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:600px) { .market-grid, .market-metrics { grid-template-columns:1fr; } .market-profit-panel, .market-item { padding:14px; } .market-selector label { flex-wrap:wrap; } .market-actions > * { max-width:100%; } }
+
+/* US follows the existing Malaysia calculator's panel/table hierarchy. */
+#marketProfitPanel, #marketForm, [data-market-view] { min-width:0; }
+#marketProfitPanel .panel { margin-bottom:18px; }
+.profit-config-grid > .market-selector { display:block; padding:0; margin:0; min-width:0; }
+.market-selector label { display:flex; flex-direction:column; align-items:stretch; gap:8px; font-size:13px; color:#52677d; }
+.market-selector select { width:100%; min-width:0; min-height:44px; border:1px solid var(--border,#d8e3eb); border-radius:9px; background:#fff; color:#163b4f; padding:10px 12px; font:inherit; font-weight:600; }
+#marketProfitPanel .panel-title > .market-selector { min-width:200px; margin-right:24px; }
+.us-rate-card { min-width:320px; max-width:440px; }
+#usRateControls { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:10px 0; }
+#usRateControls label { min-width:0; display:flex; flex-direction:column; gap:6px; font-size:11px; }
+#usRateControls input { min-width:0; width:100%; min-height:36px; padding:6px 8px; border:1px solid #d8e3eb; border-radius:7px; font:inherit; }
+.us-advanced { margin:0 20px 18px; border-top:1px solid #e5edf3; padding-top:14px; }
+.us-advanced summary, #usStrategySettings summary { cursor:pointer; color:#287e82; font-size:13px; font-weight:600; }
+.us-advanced > p { font-size:12px; color:#708498; margin:12px 0; }
+.us-advanced .market-grid, .us-detail-row .market-grid { grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
+.us-advanced .market-grid label, .us-detail-row label { font-size:12px; color:#52677d; }
+.us-advanced input, .us-advanced select, .us-detail-row input, .us-detail-row select { border:1px solid #d8e3eb; border-radius:8px; min-height:40px; background:white; padding:8px; color:#163b4f; font:inherit; }
+.us-advanced .market-checks { font-size:12px; gap:16px; }
+.us-advanced .market-check input { min-height:18px; }
+.us-input-table { width:100%; min-width:1000px; table-layout:fixed; }
+.us-input-table th:nth-child(1) { width:12%; }.us-input-table th:nth-child(2) { width:22%; }
+.us-input-table th:nth-child(3) { width:12%; }.us-input-table th:nth-child(4),.us-input-table th:nth-child(5) { width:10%; }
+.us-input-table th:nth-child(6) { width:9%; }.us-input-table th:nth-child(7) { width:16%; }.us-input-table th:nth-child(8) { width:9%; }
+.us-input-table .market-item { border:0; margin:0; padding:0; }
+.us-input-table label { margin:0; min-width:0; display:block; }
+.us-input-table input,.us-input-table select { width:100%; min-width:0; font-size:11px; }
+.us-input-table td { vertical-align:middle; }
+.us-weight { display:grid; grid-template-columns:minmax(0,1fr) 48px; gap:3px; }
+.us-weight select { padding-inline:3px; }
+.us-ad { display:grid; gap:5px; }
+.us-input-table .row-action { width:auto; min-width:0; padding:6px 4px; font-size:11px; }
+.us-detail-row > td { padding:18px!important; background:#f6f9fb; }
+.us-detail-heading { display:flex; justify-content:space-between; gap:16px; font-size:12px; color:#708498; }
+.us-detail-heading strong { color:#163b4f; }
+.us-input-footer { display:flex; justify-content:space-between; gap:12px; padding:16px 20px; border-top:1px solid #e5edf3; }
+.us-settlement dl { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:20px; padding:18px 20px; margin:0; }
+.us-settlement dt { color:#708498; font-size:12px; }.us-settlement dd { margin:8px 0 0; font-weight:700; font-size:18px; }
+.us-plan-controls,.us-rules { padding:20px; }.us-plan-controls { display:flex; flex-wrap:wrap; gap:12px; }
+#marketPlans { display:flex; flex-wrap:wrap; gap:12px; padding:0 20px 20px; }
+.us-plan-controls input,.us-rules input,.us-rules select { border:1px solid #d8e3eb; border-radius:8px; min-height:42px; padding:8px 10px; font:inherit; }
+#marketStatus { margin:0 0 14px; color:#708498; font-size:12px; line-height:1.6; }
+#marketStatus.market-error,.us-missing { color:#a52a2a; }
+#marketResults .table-wrap { overflow-x:auto; }
+#marketResults .us-breakdown { min-width:660px; table-layout:auto; }
+#marketResults .us-breakdown td,#marketResults .us-breakdown th { padding:12px; font-size:12px; text-align:left; }
+#marketResults .us-breakdown td:last-child { max-width:280px; color:#708498; }
+.us-settings-link { display:flex!important; flex-direction:column; align-items:stretch; gap:8px; }
+.us-settings-link .button { min-height:44px; }
+@media(max-width:1100px) { .us-advanced .market-grid,.us-detail-row .market-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .us-settlement dl { grid-template-columns:1fr 1fr; } }
+@media(max-width:600px) { .us-rate-card { min-width:0; max-width:none; width:100%; } .us-advanced .market-grid,.us-detail-row .market-grid { grid-template-columns:1fr; } .us-advanced { margin-inline:12px; } .us-detail-heading { flex-direction:column; } .us-plan-controls > * { max-width:100%; } #marketProfitPanel .panel-title { flex-wrap:wrap; gap:12px; } }

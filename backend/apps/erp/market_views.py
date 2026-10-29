@@ -35,7 +35,7 @@ def country_of(raw):
 
 def enabled():
     if not settings.MARKET_V2_ENABLED:
-        raise NotFound("美国／墨西哥试算暂未启用")
+        raise NotFound("美国试算暂未启用")
 
 
 def country(request):
@@ -44,7 +44,10 @@ def country(request):
     body = request.data.get("country") if isinstance(request.data, dict) else None
     if query and body and query != body:
         raise ValidationError({"country": "查询参数与请求内容国家不一致"})
-    return country_of(query or body)
+    c = country_of(query or body)
+    if c == "MX" and not settings.MARKET_MX_ENABLED and request.method not in ("GET", "HEAD", "OPTIONS"):
+        raise ValidationError({"country": "墨西哥试算已暂停，历史记录保留只读"})
+    return c
 
 
 def check_store(org, data):
@@ -65,13 +68,15 @@ def markets(request):
         {"code": "MY", "label": "马来西亚", "currency": "MYR", "mode": "legacy"},
         *[{"code": c, "label": n, "currency": CURRENCIES[c], "enabled": settings.MARKET_V2_ENABLED,
            "mode": "merchant_scenario", "official_status": "blocked", "reason": "官方末级类目、店铺税务资格及完整物流价表待核验；可填写有依据的人工情景"}
-          for c, n in [("US", "美国"), ("MX", "墨西哥")]]]})
+          for c, n in ([("US", "美国"), ("MX", "墨西哥")] if settings.MARKET_MX_ENABLED else [("US", "美国")])]]})
 
 
 @api_view(["GET"])
 def config(request):
     org = require(request)
     c = country(request)
+    if c == "MX" and not settings.MARKET_MX_ENABLED:
+        raise NotFound("墨西哥试算已暂停，历史记录保留只读")
     return Response({"schema_version": 2, "country": c, "currency": CURRENCIES[c], "rule_version": RULE_VERSION,
         "mode": "merchant_scenario", "sources": {k: v for k, v in SOURCES.items() if k.startswith(c)},
         "official_status": "blocked", "categories": [{"id": c + ":" + key, "label": "3C／数码 · " + label,
@@ -90,8 +95,7 @@ def config(request):
                                for l in s.store_products.all() if l.country == c]}
                  for s in SKU.objects.filter(organization=org, active=True).select_related("product").prefetch_related("market_profiles", "store_products")[:1000]],
         "notes": ["尾程不默认免费；头程独立填写，已包含成本的项目明确填0并说明。",
-                  "完整官方价卡尚未准入：包裹重量尺寸用于绑定人工报价，不自动猜测区域、体积重或旺季费用。",
-                  "墨西哥6 MXN/件、SFP8%封顶40/件仅在本次适用已确认时计算；不默认开通补贴。"]})
+                  "完整官方价卡尚未准入：包裹重量尺寸用于绑定人工报价，不自动猜测区域、体积重或旺季费用。"]})
 
 
 class SKUProfileInput(StrictSerializer):
@@ -313,6 +317,8 @@ def shipping_quote(request):
     serializer = QuoteInput(data=request.data)
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
+    if data["country"] == "MX" and not settings.MARKET_MX_ENABLED:
+        raise ValidationError({"country": "墨西哥试算已暂停，历史记录保留只读"})
     check_store(org, data)
     value = jsonable(data)
     value.update(binding_hash=quote_binding(data), source_type="merchant_manual", rule_version=RULE_VERSION)
@@ -338,6 +344,8 @@ def perform_calculation(org, raw):
     serializer = CalculationInput(data=raw)
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
+    if data["country"] == "MX" and not settings.MARKET_MX_ENABLED:
+        raise ValidationError({"country": "墨西哥试算已暂停，历史记录保留只读"})
     check_store(org, data)
     for item in data["items"]:
         if item.get("sku_id") and not SKU.objects.filter(pk=item["sku_id"], organization=org).exists():

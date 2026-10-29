@@ -148,4 +148,4 @@ verify_assets "$target"
 "$python" deploy/verify-dashboard-reads.py
 trap - ERR
 printf 'ACCOUNT / MARKET CODE, MIGRATIONS, HISTORY, SERVICES, ASSETS VERIFIED AT LOCAL NGINX ORIGIN\nSHA: %s\nBackup: %s\n' "$target" "$backup"
-printf 'US/MX merchant scenarios available when MARKET_V2_ENABLED=true; official leaf mappings, full carrier tariffs and real shop tax/eligibility remain gated. Signed-in acceptance is required.\n'
+printf 'US merchant scenarios available when MARKET_V2_ENABLED=true; MX new activity is paused and historical records are preserved. Official leaf mappings, full carrier tariffs and real shop tax/eligibility remain gated. Signed-in acceptance is required.\n'

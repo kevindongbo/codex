@@ -58,6 +58,6 @@ class AccountMarketBrowserTests(LiveServerTestCase):
         member.refresh_from_db()
         self.assertEqual((member.employment_status, member.active, member.permissions), ("employed", False, ["view"]))
         plans = MarketSnapshot.objects.filter(kind="plan")
-        self.assertEqual(plans.count(), 2)
-        self.assertEqual(set(plans.values_list("country", flat=True)), {"US", "MX"})
+        self.assertEqual(plans.count(), 1)
+        self.assertEqual(set(plans.values_list("country", flat=True)), {"US"})
         self.assertEqual(plans.get(country="US").payload["result"]["gross_profit"], "53.00")

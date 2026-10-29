@@ -76,6 +76,6 @@ class PopulatedDashboardTests(TestCase):
         output = StringIO()
         with patch("urllib.request.urlopen", side_effect=local_get), redirect_stdout(output):
             probe.verify()
-        self.assertEqual(len(paths), 19)
+        self.assertEqual(len(paths), 24 if settings.MARKET_V2_ENABLED else 19)
         self.assertIn("AUTHENTICATED DASHBOARD READS VERIFIED", output.getvalue())
         self.assertNotIn("Bearer", output.getvalue())

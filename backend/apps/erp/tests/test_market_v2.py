@@ -11,6 +11,7 @@ from apps.erp.models import MarketSnapshot, Membership, Organization, OwnStore, 
 from apps.erp.market_calculator import allocation, package_metrics, PackageInput
 
 
+@override_settings(MARKET_MX_ENABLED=True)
 class MarketV2Tests(TestCase):
     def setUp(self):
         self.org = Organization.objects.create(name="团队", slug=settings.INTERNAL_ORGANIZATION_SLUG)

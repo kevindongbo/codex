@@ -43,6 +43,13 @@ def verify():
              "/stores/", "/store-products/", "/skus/profit-summary/", "/profit-calculator/config/", "/sync/version/"]
     for path in paths:
         read(path)
+    from django.conf import settings
+    if settings.MARKET_V2_ENABLED:
+        available = read('/profit-calculator/v2/markets/')['markets']
+        if not settings.MARKET_MX_ENABLED and any(m['code'] == 'MX' for m in available):
+            raise RuntimeError('Paused Mexico market remains advertised')
+        for path in ('config/', 'working-config/', 'strategies/', 'plans/'):
+            read('/profit-calculator/v2/' + path + '?country=US')
     print("AUTHENTICATED DASHBOARD READS VERIFIED; GET requests only; no paid API calls")
 
 

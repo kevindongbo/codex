@@ -1711,6 +1711,7 @@ function renderNavigation() {
   $$('[data-profit-view-page]').forEach(function (page) {
     page.hidden = state.ui.module !== 'profit' || page.dataset.profitViewPage !== profitView;
   });
+  window.dispatchEvent(new CustomEvent('dongbo-profit-view-change', { detail: profitView }));
 }
 
 function renderSidebar() {
